@@ -599,6 +599,23 @@ impl App {
             self.dialog = None;
             return;
         }
+        if menu == Menu::Help {
+            let dialog = self.dialog.as_mut().unwrap();
+            let pages = crate::help::PAGES.len();
+            match key.code {
+                KeyCode::Left | KeyCode::Up | KeyCode::BackTab => {
+                    dialog.cursor = (dialog.cursor + pages - 1) % pages
+                }
+                KeyCode::Right | KeyCode::Down | KeyCode::Tab => {
+                    dialog.cursor = (dialog.cursor + 1) % pages
+                }
+                KeyCode::Char(number @ '1'..='4') if key.modifiers.is_empty() => {
+                    dialog.cursor = number as usize - '1' as usize
+                }
+                _ => {}
+            }
+            return;
+        }
         if key.code == KeyCode::Enter {
             self.confirm_menu();
             return;

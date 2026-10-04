@@ -138,6 +138,13 @@ try:
     assert "Permitir esta ação?" not in screen.text()
     assert "183" not in screen.text()
     capture("empty-80x24")
+    expect_output("Colagem multilinha", b"?")
+    expect_output("Escolher modelo", b"\x1b[C")
+    expect_output("/intervene", b"\x1b[C")
+    expect_output("Retomar trabalho pausado", b"\x1b[C")
+    capture("help-control-80x24")
+    os.write(fd, b"\x1b")
+    time.sleep(0.12)
     expect_output("Modelo da próxima mensagem", b"/model\r")
     os.write(fd, b"\x1b")
     time.sleep(0.12)  # Bare Escape must not be decoded as an Alt-prefixed next key.
