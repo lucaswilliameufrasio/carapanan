@@ -128,3 +128,59 @@ fn should_fall_back_to_ansi_colors_without_requiring_256_colors_or_truecolor() {
         Color::Indexed(_) | Color::Rgb(..)
     )));
 }
+
+#[test]
+fn should_render_approval_as_distinct_vertical_options_with_focus_only_on_the_selected_row() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let mut app = App::default();
+    app.enqueue_demo("demonstração");
+    for _ in 0..3 {
+        app.advance(Duration::from_secs(1));
+    }
+    for (width, height) in [(80, 24), (160, 48)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let lines: Vec<String> = (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let allow_row = lines
+            .iter()
+            .position(|line| line.contains("1. Permitir uma vez"))
+            .unwrap();
+        let deny_row = lines
+            .iter()
+            .position(|line| line.contains("> 2. Negar e pausar"))
+            .unwrap();
+        assert_eq!(deny_row, allow_row + 1);
+        assert_eq!(
+            cell_at_text(buffer, "Negar e pausar").bg,
+            Color::Indexed(24)
+        );
+        assert_eq!(cell_at_text(buffer, "Permitir uma vez").bg, Color::Reset);
+        assert_eq!(
+            cell_at_text(buffer, "Somente esta ação").fg,
+            Color::Indexed(245)
+        );
+        // The selected band spans the option row, not just its label.
+        assert_eq!(buffer[(4, deny_row as u16)].bg, Color::Indexed(24));
+    }
+    app.key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.scenario().id, "approval"); // Navigation never authorizes.
+    let buffer = draw(&app);
+    assert_eq!(
+        cell_at_text(&buffer, "Permitir uma vez").bg,
+        Color::Indexed(24)
+    );
+    assert_eq!(cell_at_text(&buffer, "Negar e pausar").bg, Color::Reset);
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+        cell_at_text(&draw(&app), "Permitir uma vez").bg,
+        Color::Reset
+    );
+    app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(
+        cell_at_text(&draw(&app), "Permitir uma vez").bg,
+        Color::Indexed(24)
+    );
+}

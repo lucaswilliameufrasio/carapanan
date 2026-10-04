@@ -48,6 +48,16 @@ Terminais `256color`/truecolor usam cores indexadas estáveis (sem exigir RGB);
 os demais usam ANSI básico. `--plain` remove todas as cores, mantendo os
 marcadores, textos de estado, negrito e seleção por inversão.
 
+A aprovação usa um seletor vertical numerado, com faixa de foco, contexto neutro
+e borda âmbar. ↑/↓ ou 1/2 selecionam; **Enter confirma**. Negar é o padrão.
+Tab leva ao composer sem autorizar e remove a faixa de foco da decisão.
+Referências visuais: [captura oficial do Claude Code](https://code.claude.com/docs/en/permissions)
+e [componente público de aprovação do OpenCode](https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/routes/session/permission.tsx).
+A captura do Claude tem lista vertical; o componente do OpenCode tem opções com
+fundo destacado. Esta prévia combina esses sinais, sem copiar suas políticas de
+permissão nem adicionar aprovação permanente. A branch `dev` do OpenCode é móvel;
+não representa uma captura de uma versão instalada específica do V2.
+
 - A aprovação aparece **no contexto da ação**, sem precisar descobrir `/approve`.
   `←/→` ou `1/2` escolhe; `Enter` confirma. **Negar** é a opção inicialmente selecionada.
 - `Tab` alterna entre a decisão e o composer; enviar dali só enfileira, nunca autoriza.

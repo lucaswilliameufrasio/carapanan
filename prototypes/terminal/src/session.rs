@@ -390,11 +390,11 @@ impl App {
     pub fn approval_text(&self) -> String {
         let action = &self.approval_action;
         format!(
-            "Permitir esta ação?\n{action}\nEscopo: apenas esta ação · motivo: demonstrar alteração protegida\n1 {} Permitir uma vez    2 {} Negar e pausar\n{}",
+            "Permitir esta ação?\n{action}\nEscopo: apenas esta ação · motivo: demonstrar alteração protegida\n{} 1. Permitir uma vez\n{} 2. Negar e pausar\n{}",
             if self.approval_cursor == 0 { ">" } else { " " },
             if self.approval_cursor == 1 { ">" } else { " " },
             if self.approval_focus {
-                "←/→ escolhe · Enter confirma · Tab escreve na fila · Esc interrompe"
+                "↑/↓ escolhe · 1/2 seleciona · Enter confirma · Tab escreve na fila · Esc interrompe"
             } else {
                 "Escrevendo na fila · Tab volta à decisão; Enter só envia a mensagem"
             }
