@@ -58,6 +58,12 @@ fundo destacado. Esta prévia combina esses sinais, sem copiar suas políticas d
 permissão nem adicionar aprovação permanente. A branch `dev` do OpenCode é móvel;
 não representa uma captura de uma versão instalada específica do V2.
 
+A ajuda (`?` ou `/help`) separa Conversa, Seleção, Fila e Controle em páginas.
+←/→, Tab ou 1–4 trocam o assunto; Esc fecha sem alterar o rascunho.
+Teclas ficam alinhadas e destacadas em azul, descrições em texto normal,
+com notas e navegação no rodapé. Todos os assuntos cabem em 80×24, inclusive
+com rascunho multilinha aberto.
+
 - A aprovação aparece **no contexto da ação**, sem precisar descobrir `/approve`.
   `←/→` ou `1/2` escolhe; `Enter` confirma. **Negar** é a opção inicialmente selecionada.
 - `Tab` alterna entre a decisão e o composer; enviar dali só enfileira, nunca autoriza.

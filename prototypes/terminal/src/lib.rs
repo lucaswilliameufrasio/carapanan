@@ -8,6 +8,7 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
 
+pub mod help;
 pub mod interaction;
 pub mod palette;
 pub mod session;
@@ -671,6 +672,59 @@ fn project_input(app: &App, width: usize) -> (String, usize, usize) {
     (output, cursor_row, cursor_col)
 }
 
+fn render_help(frame: &mut Frame, page: usize, area: Rect, palette: &palette::Palette) {
+    let page = page.min(help::PAGES.len() - 1);
+    let rows = Layout::vertical([
+        Constraint::Length(if area.height >= 10 { 2 } else { 1 }),
+        Constraint::Min(6),
+        Constraint::Length(2),
+    ])
+    .split(area);
+    let tabs = help::PAGES
+        .iter()
+        .enumerate()
+        .map(|(index, section)| {
+            Span::styled(
+                format!(" {} {} ", index + 1, section.title),
+                if index == page {
+                    palette.selected
+                } else {
+                    palette.muted
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(Line::from(tabs)), rows[0]);
+    let entries = help::PAGES[page]
+        .entries
+        .iter()
+        .map(|(key, description)| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {key:<23}"),
+                    palette.interaction.add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(*description),
+            ])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(entries), rows[1]);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(format!(" {}", help::PAGES[page].note), palette.muted),
+            Line::from(vec![
+                Span::styled(" ←/→ ou Tab", palette.interaction),
+                Span::styled(" assunto   ", palette.muted),
+                Span::styled("1–4", palette.interaction),
+                Span::styled(" acesso direto   ", palette.muted),
+                Span::styled("Esc", palette.interaction),
+                Span::styled(" fecha", palette.muted),
+            ]),
+        ]),
+        rows[2],
+    );
+}
+
 fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
     use interaction::Menu;
     let dialog = app.dialog.as_ref().unwrap();
@@ -708,7 +762,7 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if dialog.menu == Menu::Help {
-        frame.render_widget(Paragraph::new("Enter envia; Shift+Enter / Ctrl+J / \\+Enter: nova linha.\nCtrl+P / Ctrl+K / /: paleta; Tab completa comando.\nAlt+P: modelo; Alt+M: perfil; Alt+V: raciocínio.\nMenus: ↑/↓ ou Ctrl+P/N; Enter confirma; Esc cancela.\nModelo: ←/→ raciocínio; Shift+Tab: próximo perfil.\nEsc na conversa: interrompe; preserva fila e rascunho.\nCtrl+C: cancela menu/interrompe; ocioso limpa, 2x sai.\n↑/↓: histórico; colagem multilinha nunca envia sozinha.\nCtrl+O: detalhes/conversa; Ctrl+T: plano; PgUp/Down: rolar.\nFila: Enter edita; d remove; -/+ reordena; Esc cancela.\nIntervenção: Alt+I; F2 etapa segura; F3 concluir (mocks).\nCtrl+Q sai. Cmd+C continua sendo copiar no terminal.").wrap(Wrap { trim: false }),inner);
+        render_help(frame, dialog.cursor, inner, &palette);
         return;
     }
     let rows = Layout::vertical([
