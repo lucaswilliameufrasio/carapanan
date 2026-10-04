@@ -1,0 +1,60 @@
+/* Semantic tokens. This file is the visual source of truth, not a component kit. */
+:root {
+  color-scheme: light;
+  --surface: #f5f7f9;
+  --surface-muted: #edf1f4;
+  --surface-raised: #ffffff;
+  --text-primary: #20272e;
+  --text-secondary: #475661;
+  --text-muted: #596b77;
+  --text-disabled: #78858e;
+  --interactive: #146480;
+  --focus: #146480;
+  --success: #276843;
+  --warning: #805516;
+  --danger: #a83735;
+  --attention: #805516;
+  --border: #d8e0e6;
+  --border-strong: #9eafb9;
+  --accent-surface: #e3f0f5;
+  --attention-surface: #fff5df;
+  --danger-surface: #fcecea;
+  --success-surface: #eaf5ed;
+  --font-ui: 'IBM Plex Sans', sans-serif;
+  --font-code: 'IBM Plex Mono', monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --radius: 5px;
+  --motion: 120ms;
+}
+[data-theme='dark'] {
+  color-scheme: dark;
+  --surface: #191e24;
+  --surface-muted: #14191e;
+  --surface-raised: #20272e;
+  --text-primary: #e5ebef;
+  --text-secondary: #b2c0c9;
+  --text-muted: #94a6b3;
+  --text-disabled: #75848e;
+  --interactive: #91c6df;
+  --focus: #91c6df;
+  --success: #9dc9ab;
+  --warning: #e7be78;
+  --danger: #efa3a0;
+  --attention: #e7be78;
+  --border: #343f48;
+  --border-strong: #617582;
+  --accent-surface: #213541;
+  --attention-surface: #332c20;
+  --danger-surface: #3a282b;
+  --success-surface: #23362b;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion: 0ms;
+  }
+}

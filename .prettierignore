@@ -1,0 +1,8 @@
+pnpm-lock.yaml
+**/Cargo.lock
+**/target/**
+**/.svelte-kit/**
+**/build/**
+**/node_modules/**
+test-results/
+playwright-report/
