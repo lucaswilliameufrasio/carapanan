@@ -1,6 +1,6 @@
 use carapana_ui_prototype::{App, headless, render, scenarios};
 use clap::{Parser, Subcommand};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event};
 use std::{
     io::{self, IsTerminal},
     process::ExitCode,
@@ -42,117 +42,22 @@ enum Commands {
 fn tui(plain: bool) -> io::Result<()> {
     let mut terminal = ratatui::init();
     let result = (|| {
+        crossterm::execute!(io::stdout(), crossterm::event::EnableBracketedPaste)?;
         let mut app = App {
             plain,
             ..App::default()
         };
         loop {
             terminal.draw(|frame| render(frame, &app))?;
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
-                    break;
-                }
-                if key.modifiers.contains(KeyModifiers::ALT) {
-                    match key.code {
-                        KeyCode::Char('p') => app.cycle_profile(),
-                        KeyCode::Char('m') => app.cycle_model(),
-                        KeyCode::Char('v') => app.cycle_variant(),
-                        KeyCode::Char('i') => app.send(true),
-                        _ => {}
-                    }
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('q') if !app.editing => break,
-                    KeyCode::Char('b') if !app.editing => app.cycle_profile(),
-                    KeyCode::Char('m') if !app.editing => app.cycle_model(),
-                    KeyCode::Char('v') if !app.editing => app.cycle_variant(),
-                    KeyCode::Char('i') if !app.editing => {
-                        app.editing = true;
-                        app.notice = "Digite a intervenção; Alt+I envia. Ou Enter enfileira, depois w intervém.".into();
-                    }
-                    KeyCode::Char('w') if !app.editing && app.scenario().id != "offline" => {
-                        if let Some(message) = app.queue.pop() {
-                            app.pending = Some(message);
-                            app.notice = "Intervenção pendente; approval invalidado. f aplica na etapa segura.".into();
-                        }
-                    }
-                    KeyCode::Char('j') if !app.editing => app.scroll = app.scroll.saturating_add(1),
-                    KeyCode::Char('k') if !app.editing => app.scroll = app.scroll.saturating_sub(1),
-                    KeyCode::BackTab => app.cycle_profile(),
-                    KeyCode::F(2) | KeyCode::Char('f') if !app.editing => app.safe_step(),
-                    KeyCode::F(3) | KeyCode::Char('g') if !app.editing => app.finish(),
-                    KeyCode::F(4) | KeyCode::Char('c') if !app.editing => {
-                        app.scene = (app.scene + 1) % app.scenes.len();
-                        app.pending = None;
-                        app.scroll = 0;
-                    }
-                    KeyCode::F(5) | KeyCode::Char('e') if !app.editing => {
-                        if let Some(m) = app.queue.first() {
-                            app.input = m.text.clone();
-                            app.editing = true;
-                            app.editing_queue = true;
-                            if let Some(i) = app.profiles.iter().position(|p| p == &m.selection) {
-                                app.selected = i;
-                            }
-                        }
-                    }
-                    KeyCode::F(6) | KeyCode::Char('d')
-                        if !app.editing && app.scenario().id != "offline" =>
-                    {
-                        if !app.queue.is_empty() {
-                            app.queue.remove(0);
-                        }
-                    }
-                    KeyCode::F(7) | KeyCode::Char('o')
-                        if !app.editing && app.scenario().id != "offline" =>
-                    {
-                        if app.queue.len() > 1 {
-                            app.queue.swap(0, 1);
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if app.editing {
-                            app.send(false);
-                        } else {
-                            app.editing = true;
-                        }
-                    }
-                    KeyCode::Esc => {
-                        app.editing = false;
-                        app.editing_queue = false;
-                    }
-                    KeyCode::Backspace if app.editing => {
-                        app.input.pop();
-                    }
-                    KeyCode::Char(c) if app.editing => app.input.push(c),
-                    KeyCode::Char('a') => app.approve(true),
-                    KeyCode::Char('n') => app.approve(false),
-                    KeyCode::Char('p') => {
-                        app.set_scene("recovery");
-                        app.notice = "Pausa simulada. Fila e arquivos preservados.".into();
-                    }
-                    KeyCode::Char('r') if app.scenario().id == "recovery" => {
-                        app.set_scene("running")
-                    }
-                    KeyCode::Char('s') => {
-                        app.set_scene("recovery");
-                        app.notice =
-                            "Parado (mock): temporários encerrados, arquivos preservados.".into();
-                    }
-                    KeyCode::Tab | KeyCode::Char('t') if !app.editing => {
-                        app.pane = (app.pane + 1) % carapana_ui_prototype::PANES.len();
-                        app.scroll = 0;
-                    }
-                    _ => {}
-                }
+            match event::read()? {
+                Event::Key(key) if app.key(key) => break,
+                Event::Paste(text) => app.paste(&text),
+                _ => {}
             }
         }
         Ok(())
     })();
+    let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
     result
 }

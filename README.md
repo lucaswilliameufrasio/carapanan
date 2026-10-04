@@ -43,14 +43,49 @@ Códigos ilustrativos: `0` conclusão, `2` pausa/erro, `3` validação incomplet
 
 ### Teclado
 
-- Web: `Ctrl/⌘ K` busca, `Alt P` alterna perfil, `Ctrl/⌘ Enter` envia.
+- Web: `Ctrl/⌘ P` abre a paleta (`Ctrl/⌘ K` também), `Alt P` alterna perfil,
+  `Ctrl/⌘ Enter` envia. A paleta intercepta o atalho para não abrir impressão.
 - TUI: mínimo **80×24**, sem mouse/truecolor obrigatório; `--plain` sem cores.
-  `Enter` escreve/envia; `b/m/v` perfil/modelo/variante; `t` painel; `j/k` rola;
-  `c` cenário; `a/n` permite/nega; `f` etapa segura; `g` conclui;
-  `e/d/o` edita/remove/reordena primeira mensagem; `p/r/s` pausa/retoma/para;
-  `q` sai. Letras funcionam fora do editor. Para intervir sem tecla especial,
-  envie com Enter e use `w` para promover a última mensagem da fila à intervenção.
-  Alt/F-keys são alternativas, não requisitos. `Esc` cancela edição sem apagar rascunho.
+  Input já focado: digite e envie com `Enter`; `Ctrl+J`, `Shift+Enter` (quando
+  encaminhado pelo terminal) ou `\\` seguido de `Enter` quebra linha.
+  Colagem delimitada pelo terminal preserva quebras de linha e nunca envia sozinha.
+  `↑/↓` recupera mensagens enviadas e restaura o rascunho ao voltar ao fim do histórico.
+  `Ctrl+P` abre a paleta de opções (`Ctrl+K` e `/` também); `?` abre ajuda.
+  `/model`, `/profile` e `/effort` abrem pickers, sem alterar a execução atual.
+  Setas ou `Ctrl+P/N` navegam; `Enter` confirma; `Esc` cancela e preserva rascunho.
+  No picker de modelo, esquerda/direita escolhe raciocínio explicitamente.
+  `/queue` abre a fila: selecione qualquer mensagem; `Enter` edita, `d` remove,
+  `-/+` reordena. Ao editar, `Enter` salva e `Esc` cancela, restaurando o rascunho.
+  `/config`, `/sessions`, `/mcp`, `/plan`, `/diff` e `/scenario` abrem opções sob demanda.
+  Para intervir com um rascunho, `Ctrl+P`, busque `intervene` e confirme.
+  `/safe` simula etapa segura; `/approve` abre a decisão; `/finish` simula conclusão.
+  `Ctrl+O` expande/recolhe detalhes mock de tools (ou retorna à conversa);
+  `Ctrl+T` alterna plano/conversa; `PageUp/Down` rola; `Ctrl+Q` sai.
+  Na conversa, `Esc` ou `Ctrl+C` interrompe a execução simulada sem perder fila,
+  rascunho ou alterações; `/resume` retoma explicitamente. Em um popup, essas
+  teclas cancelam apenas o popup; na edição da fila, cancelam apenas a edição.
+  Quando ocioso, `Ctrl+C` limpa o input; outra pressão em até 2s sai.
+  `Cmd+C` continua reservado à cópia pelo terminal, não é alias de interrupção.
+  `Alt+P/M/V` são alternativas para modelo/perfil/raciocínio, não requisitos via SSH.
+  A paleta mostra os atalhos diretos ao lado das ações. Dentro de um menu,
+  `Ctrl+P` significa item anterior, não reabre a paleta.
+  No terminal macOS, `Cmd+P` é aceito se o terminal encaminhar Command/Super.
+  Terminais que interceptam essa tecla precisam mapeá-la para enviar `Ctrl+P`;
+  `Ctrl+P` funciona sem esse mapeamento. Isso não altera atalhos do terminal automaticamente.
+
+A revisão da TUI usa os padrões documentados de [modo interativo do Claude Code](https://code.claude.com/docs/en/interactive-mode)
+e [picker de modelo](https://code.claude.com/docs/en/model-config#setting-your-model).
+Não copia sua política de aplicação/persistência: a seleção continua válida apenas
+para o próximo envio, conforme nossas decisões de produto. Não há integração real.
+
+Comparação local realizada com Claude Code **2.1.289**, em diretório temporário
+vazio, safe mode, sem tools/MCP e sem enviar prompts: input, autocomplete `/`,
+picker `/model`, esforço ←/→, cancelamento e ajuda `?` foram observados no binário.
+Interrupção, histórico, colagem e multilinha foram comparados com a documentação
+oficial de modo interativo/configuração do terminal, não com execução real de agente.
+Não se copia o default persistente do picker, envio que altera o turno atual,
+nem atalhos de shell/rewind que impliquem runtime ou descarte de alterações.
+O protótipo continua sem runtime. Mac e SSH remoto ainda exigem revisão própria.
 
 ### Revisão do Delivery 0
 
@@ -82,7 +117,10 @@ just verify
 ```
 
 O gate inclui format/lint/typecheck/unit/build/e2e web, snapshots desktop/mobile,
-format/clippy/test/build Rust e testes CLI headless. Não há infraestrutura real
+format/clippy/test/build Rust, testes CLI headless e interação do binário em PTY
+Unix (requer Python 3 para esse teste). O launcher tem regressão para o contrato
+de template do `mktemp` BSD e encerramento da web na saída da TUI. A simulação do
+contrato BSD no Linux não substitui execução no macOS. Não há infraestrutura real
 para subir no Delivery 0. Títulos dos testes começam com `Should` / `should_`.
 
 Licença definida para o projeto: **Apache-2.0**. Integração com a assinatura ChatGPT e

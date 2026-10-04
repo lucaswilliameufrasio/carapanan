@@ -185,7 +185,7 @@
     mobileHome = false;
   }
   function keydown(event: KeyboardEvent) {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    if ((event.ctrlKey || event.metaKey) && ['p', 'k'].includes(event.key.toLowerCase())) {
       event.preventDefault();
       modal = modal === 'palette' ? '' : 'palette';
       search = '';
@@ -257,7 +257,7 @@
         class="search-button desktop-only"
         onclick={() => {
           modal = 'palette';
-        }}><Search size={15} />{t('command')}<kbd>⌘ K</kbd></button
+        }}><Search size={15} />{t('command')}<kbd>Ctrl/⌘ P</kbd></button
       ><label class="theme-control"
         ><span class="sr-only">{t('theme')}</span><select aria-label={t('theme')} bind:value={theme}
           ><option value="system">{t('system')}</option><option value="dark">{t('dark')}</option
