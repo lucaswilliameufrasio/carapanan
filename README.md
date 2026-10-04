@@ -40,6 +40,14 @@ leitura → plano → aprovação → ação simulada → validação → result
 O composer fica estável na base do terminal e usa toda a largura disponível.
 Metadados são discretos; atividade concluída aparece recolhida, com detalhes em Ctrl+O.
 
+Cores têm função, não decoram o texto inteiro: azul identifica interação/foco e
+o marcador do usuário; ciano, resposta/atividade em andamento; verde, conclusão;
+âmbar, aprovação/pausa; cinza, descrições e metadados. A seleção da paleta usa
+fundo azul, com nome e descrição separados visualmente nas demais opções.
+Terminais `256color`/truecolor usam cores indexadas estáveis (sem exigir RGB);
+os demais usam ANSI básico. `--plain` remove todas as cores, mantendo os
+marcadores, textos de estado, negrito e seleção por inversão.
+
 - A aprovação aparece **no contexto da ação**, sem precisar descobrir `/approve`.
   `←/→` ou `1/2` escolhe; `Enter` confirma. **Negar** é a opção inicialmente selecionada.
 - `Tab` alterna entre a decisão e o composer; enviar dali só enfileira, nunca autoriza.

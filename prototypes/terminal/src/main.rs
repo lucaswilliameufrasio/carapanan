@@ -45,6 +45,9 @@ fn tui(plain: bool) -> io::Result<()> {
         crossterm::execute!(io::stdout(), crossterm::event::EnableBracketedPaste)?;
         let mut app = App {
             plain,
+            ansi256: std::env::var("TERM").is_ok_and(|term| term.contains("256color"))
+                || std::env::var("COLORTERM")
+                    .is_ok_and(|term| matches!(term.as_str(), "truecolor" | "24bit")),
             ..App::default()
         };
         let mut last_tick = std::time::Instant::now();
