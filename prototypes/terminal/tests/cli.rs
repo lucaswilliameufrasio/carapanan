@@ -1,5 +1,20 @@
 use std::process::Command;
 
+#[cfg(unix)]
+#[test]
+fn should_open_pickers_and_resize_in_a_real_controlling_terminal() {
+    let output = Command::new("python3")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pty_smoke.py"))
+        .arg(env!("CARGO_BIN_EXE_carapana-prototype"))
+        .output()
+        .expect("Python 3 is required for the Unix PTY integration gate");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn should_return_structured_approval_and_exit_without_waiting() {
     let output = Command::new(env!("CARGO_BIN_EXE_carapana-prototype"))

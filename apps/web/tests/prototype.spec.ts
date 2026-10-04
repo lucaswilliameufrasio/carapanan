@@ -189,6 +189,21 @@ test('Should navigate the command palette with keyboard and return focus', async
   await expect(page.getByLabel('Perfil', { exact: true })).toHaveValue('auto');
 });
 
+for (const shortcut of ['Control+p', 'Meta+p']) {
+  test(`Should open the palette with ${shortcut} without printing or losing the draft`, async ({
+    page,
+  }) => {
+    await detail(page);
+    await page.locator('#composer').fill('Rascunho preservado');
+    await page.locator('#composer').focus();
+    await page.keyboard.press(shortcut);
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#composer')).toHaveValue('Rascunho preservado');
+    await expect(page.locator('#composer')).toBeFocused();
+  });
+}
+
 for (const theme of ['light', 'dark']) {
   test(`Should render ${theme} review golden states without overflow`, async ({ page }) => {
     await page.goto('/');
