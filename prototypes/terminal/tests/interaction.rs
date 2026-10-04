@@ -229,6 +229,7 @@ fn should_edit_any_queued_message_and_restore_composer_draft_after_cancel_or_sav
         app.queue.push(Message {
             text: "segunda".into(),
             selection: app.profiles[2].clone(),
+            demo: true,
         });
         type_text(&mut app, "rascunho original");
         app.open_menu(Menu::Queue);
@@ -260,6 +261,7 @@ fn should_reorder_and_remove_highlighted_messages_but_never_mutate_offline_queue
     app.queue.push(Message {
         text: "segunda".into(),
         selection: app.executing.clone(),
+        demo: true,
     });
     app.open_menu(Menu::Queue);
     press(&mut app, KeyCode::Down);

@@ -29,6 +29,7 @@ impl App {
         app.queue.push(Message {
             text: "Verifica a reutilização de tokens.".into(),
             selection: app.profiles[2].clone(),
+            demo: true,
         });
         app
     }
@@ -59,6 +60,7 @@ impl App {
             text: "Demonstração: corrigir a rotação de tokens, preservando minhas alterações."
                 .into(),
             selection: self.profiles[2].clone(),
+            demo: true,
         };
         self.executing = message.selection.clone();
         let waiting = self.scenario().status == "waiting-for-approval";
@@ -120,28 +122,65 @@ impl App {
 
     pub fn transcript(&self) -> String {
         if self.turns.is_empty() {
-            return "Comece com uma mensagem ou abra Ctrl+P para opções.\n\nExemplo: Corrige a rotação dos tokens.".into();
+            return "Prévia interativa · sem modelo conectado\n\nConverse para testar o editor e a fila.\n/demo inicia o exemplo de execução com aprovação.".into();
         }
         let mut text = String::new();
         for turn in &self.turns {
             text.push_str(&format!("> {}\n\n", turn.message.text));
-            text.push_str(&format!(
-                "  {} / {} / {}\n",
-                turn.message.selection.name,
-                turn.message.selection.model,
-                turn.message.selection.variant
-            ));
+            if self.verbose {
+                text.push_str(&format!(
+                    "  {} / {} / {}\n",
+                    turn.message.selection.name,
+                    turn.message.selection.model,
+                    turn.message.selection.variant
+                ));
+            }
+            if !self.verbose && turn.status == TurnStatus::Completed {
+                let tools: Vec<&str> = turn
+                    .events
+                    .iter()
+                    .filter_map(|event| {
+                        if event.starts_with("Read ") {
+                            Some("Read")
+                        } else if event.starts_with("Edit ") {
+                            Some("Edit")
+                        } else if event.starts_with("Test ") {
+                            Some("Test")
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !tools.is_empty() {
+                    text.push_str(&format!(
+                        "  ✓ {} · {} ações\n",
+                        tools.join(" · "),
+                        tools.len()
+                    ));
+                }
+            }
             for event in &turn.events {
-                text.push_str(&format!("  {event}\n"));
+                if !self.verbose && turn.status == TurnStatus::Completed {
+                    continue;
+                }
+                if !self.verbose
+                    && !(event.starts_with("Read ")
+                        || event.starts_with("Edit ")
+                        || event.starts_with("Test "))
+                {
+                    continue;
+                }
+                let compact = event.replace(" (simulado)", "").replace(" (fixture)", "");
+                text.push_str(&format!("  ✓ {compact}\n"));
                 if self.verbose && event.starts_with("Test") {
                     text.push_str("    fixture: exit: 0 · 183 passed · 0 failed · 4,8s\n    Nenhum processo foi iniciado.\n");
                 }
             }
             if let Some(result) = &turn.result {
-                text.push_str(&format!("\nCarapanã\n{result}\n"));
+                text.push_str(&format!("\n● {result}\n"));
             } else {
                 let status = match turn.status {
-                    TurnStatus::Processing => "Processando demonstração…  Esc interrompe",
+                    TurnStatus::Processing => "Em andamento…",
                     TurnStatus::Waiting => "Aguardando sua decisão; fila não avança.",
                     TurnStatus::Paused => "Em pausa; /resume retoma explicitamente.",
                     _ => "Demonstração encerrada.",
@@ -159,10 +198,30 @@ impl App {
         text
     }
 
+    pub fn enqueue_demo(&mut self, text: &str) {
+        if self.queue_edit.is_some() {
+            self.notice = "Salve ou cancele a edição antes de iniciar uma demonstração.".into();
+            return;
+        }
+        if self.scenario().id == "offline" || !self.compatible() {
+            self.notice = "Demonstração bloqueada; revise conexão e seleção.".into();
+            return;
+        }
+        self.queue.push(Message {
+            text: text.into(),
+            selection: self.next_selection().clone(),
+            demo: true,
+        });
+        self.start_next();
+    }
+
     pub fn plan_text(&self) -> String {
         let Some(turn) = self.turns.last() else {
             return "Plano\nNenhum trabalho iniciado. Envie uma mensagem para começar.".into();
         };
+        if !turn.message.demo {
+            return "Plano\nNenhuma execução solicitada. /demo inicia o roteiro de revisão.".into();
+        }
         let mut text = format!("Plano da demonstração\n{}\n\n", turn.message.text);
         for (prefix, label) in [
             ("Read", "Inspecionar autenticação"),
@@ -236,7 +295,7 @@ impl App {
         self.executing = message.selection.clone();
         self.turns.push(Turn {
             message,
-            events: vec!["Roteiro local iniciado · nenhum provider conectado".into()],
+            events: Vec::new(),
             result: None,
             status: TurnStatus::Processing,
             step: 0,
@@ -276,6 +335,13 @@ impl App {
             return;
         };
         let turn = &mut self.turns[index];
+        if !turn.message.demo {
+            turn.result = Some(
+                "Mensagem recebida nesta prévia. /demo inicia uma execução demonstrativa.".into(),
+            );
+            self.complete_turn();
+            return;
+        }
         match turn.step {
             0 => turn
                 .events

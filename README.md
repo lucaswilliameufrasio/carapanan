@@ -33,10 +33,12 @@ override. pt-BR completo; inglês ainda parcial, com fallback explícito.
 
 ### Fluxo da TUI para revisar
 
-A TUI abre **vazia**, em Perguntar, sem tarefa/approval pré-carregados. Envie uma
-mensagem: seu texto aparece na conversa e o roteiro local progride automaticamente
-por leitura → plano → aprovação → ação simulada → validação → resultado.
-O editor acompanha a conversa; não fica isolado no fundo do terminal.
+A TUI abre **vazia**, em Perguntar, sem tarefa/approval pré-carregados. Mensagens
+arbitrárias são recebidas na prévia, sem fingir que um modelo as interpretou.
+**`/demo` inicia explicitamente** o exemplo de autenticação, que progride por
+leitura → plano → aprovação → ação simulada → validação → resultado.
+O composer fica estável na base do terminal e usa toda a largura disponível.
+Metadados são discretos; atividade concluída aparece recolhida, com detalhes em Ctrl+O.
 
 - A aprovação aparece **no contexto da ação**, sem precisar descobrir `/approve`.
   `←/→` ou `1/2` escolhe; `Enter` confirma. **Negar** é a opção inicialmente selecionada.
@@ -52,7 +54,7 @@ O editor acompanha a conversa; não fica isolado no fundo do terminal.
 - `/scenario` carrega explicitamente fixtures de revisão, preservando histórico,
   rascunho e fila. Não é a experiência inicial.
 
-O roteiro usa um exemplo fixo de autenticação: **não interpreta pedidos arbitrários**,
+O roteiro `/demo` usa um exemplo fixo de autenticação: **não interpreta pedidos arbitrários**,
 não chama modelo/tools nem toca arquivos. Menus e edição da fila pausam o relógio
 do mock para permitir inspeção; isso não representa bloqueio de um runtime real.
 Plano, diff e validação acompanham as etapas demonstradas, sem antecipar resultados.

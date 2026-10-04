@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,7 @@ pub struct Selection {
 pub struct Message {
     pub text: String,
     pub selection: Selection,
+    pub demo: bool,
 }
 
 pub struct App {
@@ -211,6 +212,9 @@ impl App {
         let message = Message {
             text: self.input.trim().into(),
             selection: self.next_selection().clone(),
+            demo: self
+                .queue_edit
+                .is_some_and(|index| self.queue.get(index).is_some_and(|m| m.demo)),
         };
         if self.queue_edit.is_none() {
             self.history.push(self.input.clone());
@@ -243,7 +247,7 @@ impl App {
                 "Intervenção pendente. Approval invalidado. /safe aplica na etapa segura.".into();
         } else {
             self.queue.push(message);
-            self.notice = "Enfileirado com a seleção do envio.".into();
+            self.notice.clear();
         }
         self.input = self.saved_draft.take().unwrap_or_default();
         self.input_cursor = None;
@@ -320,10 +324,8 @@ impl App {
                 self.step_demo();
                 return;
             }
-            self.turns[index].result = Some(format!(
-                "Roteiro concluído para: {}\nFluxo de atividade e decisão demonstrado com fixtures.\nNenhum arquivo alterado; nenhum teste ou comando executado.",
-                self.turns[index].message.text
-            ));
+            self.turns[index].result =
+                Some("Rotação demonstrada. Validação simulada: 183 testes passaram.".into());
         }
         self.complete_turn();
     }
@@ -354,13 +356,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         frame.render_widget(Paragraph::new("Carapanã · Delivery 0\nAmplie o terminal para pelo menos 80×24.\nCtrl+Q para sair. Nenhuma execução real.").wrap(Wrap { trim: false }), area);
         return;
     }
-    let content = Rect::new(2, 1, area.width.saturating_sub(4).min(110), area.height - 2);
+    let content = Rect::new(2, 1, area.width.saturating_sub(4), area.height - 2);
     let (input, cursor_row, cursor_col) = project_input(app, content.width as usize);
     let input_height = (input.lines().count() as u16 + 2).clamp(3, 6);
     let accent = if app.plain {
         Style::default()
     } else {
-        Style::default().fg(Color::LightBlue)
+        Style::default().fg(Color::DarkGray)
     };
     let attention = if app.plain {
         Style::default().add_modifier(Modifier::BOLD)
@@ -378,7 +380,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let queue_height = if app.queue.is_empty() || app.dialog.is_some() {
         0
     } else {
-        app.queue.len().min(2) as u16 + 2
+        2
     };
     let notice_height = u16::from(!app.notice.is_empty() && app.dialog.is_none());
     let transcript = wrap_terminal(&app.pane_text(), content.width as usize);
@@ -387,12 +389,8 @@ pub fn render(frame: &mut Frame, app: &App) {
         .height
         .saturating_sub(3 + approval_height + queue_height + notice_height + input_height + 2)
         .max(1);
-    // Composer follows the content, rather than being separated by a full-screen void.
-    let transcript_height = if app.dialog.is_some() {
-        budget
-    } else {
-        line_count.saturating_add(1).min(budget)
-    };
+    // Stable composer anchored at the bottom, independently of transcript length.
+    let transcript_height = budget;
     let rows = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(transcript_height),
@@ -401,45 +399,43 @@ pub fn render(frame: &mut Frame, app: &App) {
         Constraint::Length(notice_height),
         Constraint::Length(input_height),
         Constraint::Length(2),
-        Constraint::Min(0),
     ])
     .split(content);
-    let header = if let Some(index) = app.active {
-        format!(
-            "carapanã  /  workspace de exemplo  /  Delivery 0 · mock\nExecutando: {} / {} / {}  — {}",
-            app.executing.name,
-            app.executing.model,
-            app.executing.variant,
-            match app.turns[index].status {
-                session::TurnStatus::Processing => "processando",
-                session::TurnStatus::Waiting => "precisa de você",
-                _ => "em pausa",
-            }
-        )
-    } else {
-        "carapanã  /  workspace de exemplo  /  Delivery 0 · mock\nNenhuma tarefa real será executada.".into()
-    };
-    frame.render_widget(Paragraph::new(header).style(accent), rows[0]);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("carapanã", Style::default().add_modifier(Modifier::BOLD)),
+            Line::styled("workspace de exemplo · Delivery 0 / simulado", accent),
+        ]),
+        rows[0],
+    );
     let max_scroll = line_count.saturating_sub(transcript_height);
-    let offset = max_scroll.saturating_sub(app.scroll);
+    let raw_offset = max_scroll.saturating_sub(app.scroll);
+    // Follow complete turns rather than starting in the tail of an old reply.
+    let offset = if app.scroll == 0 && raw_offset > 0 {
+        transcript
+            .lines()
+            .enumerate()
+            .skip(raw_offset as usize)
+            .find(|(_, line)| line.starts_with("> "))
+            .map_or(raw_offset, |(index, _)| index as u16)
+    } else {
+        raw_offset
+    };
     let styled_transcript: Vec<Line<'_>> = transcript
         .lines()
         .map(|line| {
-            let style = if line.starts_with("> ") || line == "Carapanã" {
+            let style = if line.starts_with("> ") || line.starts_with("● ") {
                 Style::default().add_modifier(Modifier::BOLD)
-            } else if !app.plain
-                && (line.trim_start().starts_with("Read ")
-                    || line.trim_start().starts_with("Edit ")
-                    || line.trim_start().starts_with("Test "))
-            {
-                Style::default().fg(Color::LightBlue)
+            } else if !app.plain && line.trim_start().starts_with("✓ ") {
+                Style::default().fg(Color::DarkGray)
             } else {
                 Style::default()
             };
             Line::styled(line, style)
         })
         .collect();
-    let current_heading = app.active.map(|index| {
+    let latest_turn = app.active.or_else(|| app.turns.len().checked_sub(1));
+    let current_heading = latest_turn.map(|index| {
         wrap_terminal(
             &format!("> {}", app.turns[index].message.text),
             content.width as usize,
@@ -458,7 +454,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     if offset > 0
         && app.scroll == 0
         && !request_is_visible
-        && let Some(index) = app.active
+        && let Some(index) = latest_turn
     {
         // Keep the current request recognizable even when an approval + queue
         // leaves only a few transcript rows at 80×24. Older context is scrollable.
@@ -488,25 +484,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         );
     }
     if queue_height > 0 {
-        let mut queue = format!(
-            "Na fila ({}) · /queue revisa texto e seleção\n",
-            app.queue.len()
+        let queue = format!(
+            "Na fila ({})  {}\n/queue revisa texto e seleção",
+            app.queue.len(),
+            app.queue
+                .first()
+                .map_or(String::new(), |message| message.text.replace('\n', " ↵ "))
         );
-        for (index, message) in app.queue.iter().enumerate().take(2) {
-            queue.push_str(&format!(
-                "{}. [{} / {} / {}] {}\n",
-                index + 1,
-                message.selection.name,
-                message.selection.model,
-                message.selection.variant,
-                message.text.replace('\n', " ↵ ")
-            ));
-        }
-        queue.push_str(if app.queue.len() > 2 {
-            "Mais mensagens na paleta → Fila"
-        } else {
-            "Aguardam sua vez; não interrompem o trabalho atual."
-        });
         frame.render_widget(Paragraph::new(queue).style(accent), rows[3]);
     }
     frame.render_widget(
@@ -528,19 +512,47 @@ pub fn render(frame: &mut Frame, app: &App) {
     );
     let selected = app.next_selection();
     frame.render_widget(
-        Paragraph::new(format!(
-            "Próxima: {} / {} / {}{}\nCtrl+P opções   Shift+Tab perfil   ? ajuda{}",
-            selected.name,
-            selected.model,
-            selected.variant,
-            if app.compatible() { "" } else { " !" },
-            if app.scroll > 0 {
-                "   PgDown volta ao fim"
-            } else {
-                ""
-            }
-        ))
-        .style(accent),
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Próxima: ", accent),
+                Span::styled(
+                    selected.name.as_str(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        " / {} / {}{}   Ctrl+P opções · ? ajuda{}",
+                        selected.model,
+                        selected.variant,
+                        if app.compatible() { "" } else { " !" },
+                        if app.scroll > 0 {
+                            "   PgDown volta ao fim"
+                        } else {
+                            ""
+                        }
+                    ),
+                    accent,
+                ),
+            ]),
+            Line::styled(
+                if let Some(index) = app.active {
+                    format!(
+                        "Executando: {} / {} / {} · {}",
+                        app.executing.name,
+                        app.executing.model,
+                        app.executing.variant,
+                        match app.turns[index].status {
+                            session::TurnStatus::Processing => "Em andamento · Esc interrompe",
+                            session::TurnStatus::Waiting => "aguardando decisão",
+                            _ => "em pausa · /resume",
+                        }
+                    )
+                } else {
+                    "Pronto · Shift+Tab muda o perfil · /demo inicia uma demonstração".into()
+                },
+                accent,
+            ),
+        ]),
         rows[6],
     );
     if app.dialog.is_some() {
@@ -873,6 +885,7 @@ mod tests {
                 .map(|_| Message {
                     text: "Carapanã 中文 token".into(),
                     selection: app.executing.clone(),
+                    demo: true,
                 })
                 .collect();
             terminal.draw(|frame| render(frame, &app)).unwrap();
