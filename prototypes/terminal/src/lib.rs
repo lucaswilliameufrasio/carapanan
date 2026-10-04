@@ -369,7 +369,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         && app.scenario().status == "waiting-for-approval"
         && app.pending.is_none()
     {
-        7
+        8
     } else {
         0
     };
@@ -463,12 +463,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         );
     }
     if approval_height > 0 {
-        frame.render_widget(
-            Paragraph::new(app.approval_text())
-                .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
-                .style(attention),
-            rows[2],
-        );
+        render_approval(frame, app, rows[2], &palette);
     }
     if queue_height > 0 {
         let queue = format!(
@@ -593,6 +588,54 @@ fn wrap_terminal(text: &str, width: usize) -> String {
 
 // Hard-wrap the editor and calculate the cursor using the same visual cells,
 // including double-width characters. Word wrapping would misplace the caret.
+fn render_approval(frame: &mut Frame, app: &App, area: Rect, palette: &palette::Palette) {
+    // A bounded decision control, not another full-width log paragraph.
+    let area = Rect::new(area.x, area.y, area.width.min(86), area.height);
+    let block = Block::default()
+        .title(Line::styled(" Permitir esta ação? ", palette.attention))
+        .borders(Borders::ALL)
+        .border_style(if app.approval_focus {
+            palette.attention
+        } else {
+            palette.muted
+        });
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(app.approval_action.as_str()),
+        Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1),
+    );
+    frame.render_widget(
+        Paragraph::new("Somente esta ação · demonstração de alteração protegida")
+            .style(palette.muted),
+        Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
+    );
+    for (index, label) in ["Permitir uma vez", "Negar e pausar"].iter().enumerate() {
+        let selected = app.approval_cursor == index;
+        let style = if selected && app.approval_focus {
+            palette.selected
+        } else if selected {
+            palette.muted.add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let marker = if selected { ">" } else { " " };
+        frame.render_widget(
+            Paragraph::new(format!(" {marker} {}. {label}", index + 1)).style(style),
+            Rect::new(inner.x, inner.y + 2 + index as u16, inner.width, 1),
+        );
+    }
+    let hints = if app.approval_focus {
+        " ↑/↓ escolhe · 1/2 seleciona · Enter confirma\n Tab escreve na fila · Esc interrompe"
+    } else {
+        " Escrevendo na fila · Enter só envia a mensagem\n Tab volta à decisão · Esc interrompe"
+    };
+    frame.render_widget(
+        Paragraph::new(hints).style(palette.muted),
+        Rect::new(inner.x, inner.y + 4, inner.width, 2),
+    );
+}
+
 fn project_input(app: &App, width: usize) -> (String, usize, usize) {
     let cursor = app.input_cursor.unwrap_or(app.input.len());
     let mut output = String::from("> ");
