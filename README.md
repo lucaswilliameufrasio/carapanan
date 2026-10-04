@@ -31,6 +31,32 @@ Web abre na sessão atual; mobile abre em **Precisa de você**. Use o seletor
 conflitos, segredos, recursos e demais fixtures. Tema acompanha o sistema com
 override. pt-BR completo; inglês ainda parcial, com fallback explícito.
 
+### Fluxo da TUI para revisar
+
+A TUI abre **vazia**, em Perguntar, sem tarefa/approval pré-carregados. Envie uma
+mensagem: seu texto aparece na conversa e o roteiro local progride automaticamente
+por leitura → plano → aprovação → ação simulada → validação → resultado.
+O editor acompanha a conversa; não fica isolado no fundo do terminal.
+
+- A aprovação aparece **no contexto da ação**, sem precisar descobrir `/approve`.
+  `←/→` ou `1/2` escolhe; `Enter` confirma. **Negar** é a opção inicialmente selecionada.
+- `Tab` alterna entre a decisão e o composer; enviar dali só enfileira, nunca autoriza.
+  Uma aprovação que chega enquanto você escreve não rouba o foco do rascunho.
+- Mensagens seguintes aparecem em **Na fila**, com texto e seleção capturada.
+  Após conclusão, a próxima começa automaticamente. Approval, negação, interrupção
+  e validação incompleta bloqueiam o avanço.
+- `Esc` interrompe; o histórico, o rascunho e a fila permanecem. `/resume` retoma
+  explicitamente e reapresenta uma aprovação ainda necessária.
+- Planejar demonstra apenas leitura/plano, sem alteração ou teste. Perfil/modelo
+  escolhidos depois do envio não mudam a execução atual nem a seleção da fila.
+- `/scenario` carrega explicitamente fixtures de revisão, preservando histórico,
+  rascunho e fila. Não é a experiência inicial.
+
+O roteiro usa um exemplo fixo de autenticação: **não interpreta pedidos arbitrários**,
+não chama modelo/tools nem toca arquivos. Menus e edição da fila pausam o relógio
+do mock para permitir inspeção; isso não representa bloqueio de um runtime real.
+Plano, diff e validação acompanham as etapas demonstradas, sem antecipar resultados.
+
 CLI headless não aguarda aprovação e não executa o prompt:
 
 ```sh
@@ -47,7 +73,7 @@ Códigos ilustrativos: `0` conclusão, `2` pausa/erro, `3` validação incomplet
   `Ctrl/⌘ Enter` envia. A paleta intercepta o atalho para não abrir impressão.
 - TUI: mínimo **80×24**, sem mouse/truecolor obrigatório; `--plain` sem cores.
   Input já focado: digite e envie com `Enter`; `Ctrl+J`, `Shift+Enter` (quando
-  encaminhado pelo terminal) ou `\\` seguido de `Enter` quebra linha.
+  encaminhado pelo terminal) ou `\` seguido de `Enter` quebra linha.
   Colagem delimitada pelo terminal preserva quebras de linha e nunca envia sozinha.
   `↑/↓` recupera mensagens enviadas e restaura o rascunho ao voltar ao fim do histórico.
   `Ctrl+P` abre a paleta de opções (`Ctrl+K` e `/` também); `?` abre ajuda.
@@ -58,7 +84,8 @@ Códigos ilustrativos: `0` conclusão, `2` pausa/erro, `3` validação incomplet
   `-/+` reordena. Ao editar, `Enter` salva e `Esc` cancela, restaurando o rascunho.
   `/config`, `/sessions`, `/mcp`, `/plan`, `/diff` e `/scenario` abrem opções sob demanda.
   Para intervir com um rascunho, `Ctrl+P`, busque `intervene` e confirme.
-  `/safe` simula etapa segura; `/approve` abre a decisão; `/finish` simula conclusão.
+  `/safe` simula etapa segura; `/approve` reabre uma decisão pendente;
+  `/finish` avança manualmente o roteiro, sem contornar aprovações.
   `Ctrl+O` expande/recolhe detalhes mock de tools (ou retorna à conversa);
   `Ctrl+T` alterna plano/conversa; `PageUp/Down` rola; `Ctrl+Q` sai.
   Na conversa, `Esc` ou `Ctrl+C` interrompe a execução simulada sem perder fila,
@@ -86,6 +113,10 @@ oficial de modo interativo/configuração do terminal, não com execução real 
 Não se copia o default persistente do picker, envio que altera o turno atual,
 nem atalhos de shell/rewind que impliquem runtime ou descarte de alterações.
 O protótipo continua sem runtime. Mac e SSH remoto ainda exigem revisão própria.
+Na reconstrução do fluxo, as telas locais do Claude e do binário Carapanã foram
+capturadas em PTY e inspecionadas visualmente, incluindo sessão vazia, aprovação,
+fila e resultado. Capturas reconstruídas de células de terminal não equivalem a
+screenshot nativo do Mac nem a aprovação humana de UX.
 
 ### Revisão do Delivery 0
 
@@ -122,6 +153,18 @@ Unix (requer Python 3 para esse teste). O launcher tem regressão para o contrat
 de template do `mktemp` BSD e encerramento da web na saída da TUI. A simulação do
 contrato BSD no Linux não substitui execução no macOS. Não há infraestrutura real
 para subir no Delivery 0. Títulos dos testes começam com `Should` / `should_`.
+
+Para registrar frames do fluxo real do binário (JSON com células do terminal),
+após `cargo build --manifest-path prototypes/terminal/Cargo.toml`:
+
+```sh
+CARAPANA_REVIEW_DIR=/tmp/opencode/carapana-review \
+  python3 prototypes/terminal/tests/pty_smoke.py \
+  "$PWD/prototypes/terminal/target/debug/carapana-prototype"
+```
+
+O teste PTY atravessa envio → atividade → decisão inline → resultado → avanço
+da fila, além de menus, colagem, resize, interrupção e saída. Não apenas abre telas.
 
 Licença definida para o projeto: **Apache-2.0**. Integração com a assinatura ChatGPT e
 demais capacidades dependem de comprovação técnica; não há fallback pago automático.

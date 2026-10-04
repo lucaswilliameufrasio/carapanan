@@ -2,7 +2,7 @@ use std::process::Command;
 
 #[cfg(unix)]
 #[test]
-fn should_open_pickers_and_resize_in_a_real_controlling_terminal() {
+fn should_process_messages_approvals_results_and_queue_in_a_real_controlling_terminal() {
     let output = Command::new("python3")
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pty_smoke.py"))
         .arg(env!("CARGO_BIN_EXE_carapana-prototype"))

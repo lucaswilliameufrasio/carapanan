@@ -42,7 +42,7 @@ fn should_interrupt_running_work_with_escape_or_ctrl_c_without_discarding_anythi
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     ] {
-        let mut app = App::default();
+        let mut app = App::review();
         app.set_scene("running");
         type_text(&mut app, "rascunho");
         let queued = app.queue[0].text.clone();
@@ -80,7 +80,7 @@ fn should_insert_newlines_with_shift_enter_or_backslash_enter_without_sending() 
     type_text(&mut app, "linha 2\\");
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.input, "linha 1\nlinha 2\n");
-    assert_eq!(app.queue.len(), 1);
+    assert_eq!(app.queue.len(), 0);
 }
 
 #[test]
@@ -89,8 +89,8 @@ fn should_paste_multiline_commands_as_draft_data_and_not_execute_them() {
     app.paste("/finish\r\n/model\rtexto\u{1b}[31m");
     assert_eq!(app.input, "/finish\n/model\ntexto[31m");
     assert!(app.dialog.is_none());
-    assert_eq!(app.queue.len(), 1);
-    assert_eq!(app.scenario().id, "approval");
+    assert_eq!(app.queue.len(), 0);
+    assert_eq!(app.scenario().id, "empty");
 }
 
 #[test]
@@ -108,12 +108,16 @@ fn should_recall_submitted_messages_and_restore_unsent_draft_without_touching_th
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Down);
     assert_eq!(app.input, "rascunho");
-    assert_eq!(app.queue.len(), 3);
+    assert_eq!(app.queue.len(), 1);
+    assert_eq!(app.turns.len(), 1);
 }
 
 #[test]
 fn should_toggle_tool_details_and_complete_commands_without_applying_them() {
-    let mut app = App::default();
+    let mut app = App::review();
+    app.approve(true);
+    app.step_demo();
+    app.step_demo();
     let details = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
     app.key(details);
     assert!(app.pane_text().contains("exit: 0"));
@@ -127,12 +131,12 @@ fn should_toggle_tool_details_and_complete_commands_without_applying_them() {
 
 #[test]
 fn should_preserve_pending_intervention_on_interrupt_and_never_treat_command_c_as_interrupt() {
-    let mut app = App::default();
+    let mut app = App::review();
     type_text(&mut app, "intervenção");
     app.send(true);
     type_text(&mut app, "rascunho");
     app.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER));
-    assert_eq!(app.scenario().id, "approval");
+    assert_eq!(app.scenario().id, "running");
     assert_eq!(app.input, "rascunho");
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.scenario().id, "recovery");
@@ -178,7 +182,7 @@ fn should_type_immediately_and_filter_slash_commands_without_sending_them() {
     assert_eq!(app.menu_items().len(), 1);
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.dialog.as_ref().unwrap().menu, Menu::Model);
-    assert_eq!(app.queue.len(), 1);
+    assert_eq!(app.queue.len(), 0);
 }
 
 #[test]
@@ -201,7 +205,7 @@ fn should_cancel_model_browsing_without_mutating_draft_selection_or_execution() 
 fn should_require_explicit_compatible_effort_and_only_apply_to_next_message() {
     let mut app = App {
         selected: 2,
-        ..App::default()
+        ..App::review()
     };
     let executing = app.executing.clone();
     let queued = app.queue[0].selection.clone();
@@ -221,7 +225,7 @@ fn should_require_explicit_compatible_effort_and_only_apply_to_next_message() {
 #[test]
 fn should_edit_any_queued_message_and_restore_composer_draft_after_cancel_or_save() {
     for save in [false, true] {
-        let mut app = App::default();
+        let mut app = App::review();
         app.queue.push(Message {
             text: "segunda".into(),
             selection: app.profiles[2].clone(),
@@ -252,7 +256,7 @@ fn should_edit_any_queued_message_and_restore_composer_draft_after_cancel_or_sav
 
 #[test]
 fn should_reorder_and_remove_highlighted_messages_but_never_mutate_offline_queue() {
-    let mut app = App::default();
+    let mut app = App::review();
     app.queue.push(Message {
         text: "segunda".into(),
         selection: app.executing.clone(),
@@ -272,7 +276,7 @@ fn should_reorder_and_remove_highlighted_messages_but_never_mutate_offline_queue
 
 #[test]
 fn should_preserve_edit_identity_by_blocking_progression_and_nested_queue_edits() {
-    let mut app = App::default();
+    let mut app = App::review();
     app.set_scene("running");
     app.open_menu(Menu::Queue);
     press(&mut app, KeyCode::Enter);
@@ -285,7 +289,7 @@ fn should_preserve_edit_identity_by_blocking_progression_and_nested_queue_edits(
 
 #[test]
 fn should_intervene_from_command_menu_without_special_terminal_keys() {
-    let mut app = App::default();
+    let mut app = App::review();
     type_text(&mut app, "pare e esclareça");
     app.key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
     type_text(&mut app, "intervene");
@@ -294,7 +298,7 @@ fn should_intervene_from_command_menu_without_special_terminal_keys() {
     assert_eq!(app.executing.name, "Auto");
     app.command("/approve");
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.scenario().id, "approval");
+    assert_eq!(app.scenario().id, "running");
     app.command("/safe");
     assert_eq!(app.executing.name, "Perguntar");
 }
@@ -374,15 +378,15 @@ fn should_scroll_long_unicode_drafts_without_hiding_the_caret_or_footer() {
 
 #[test]
 fn should_cycle_only_the_staged_queue_profile_and_scroll_in_standard_directions() {
-    let mut app = App::default();
+    let mut app = App::review();
     app.open_menu(Menu::Queue);
     press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::BackTab);
     assert_eq!(app.next_selection().name, "Yolo");
     assert_eq!(app.profiles[app.selected].name, "Perguntar");
     press(&mut app, KeyCode::Esc);
-    press(&mut app, KeyCode::PageDown);
-    assert_eq!(app.scroll, 5);
     press(&mut app, KeyCode::PageUp);
+    assert_eq!(app.scroll, 5);
+    press(&mut app, KeyCode::PageDown);
     assert_eq!(app.scroll, 0);
 }
