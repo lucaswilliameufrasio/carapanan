@@ -23,7 +23,8 @@ pub struct Dialog {
     pub variant: String,
 }
 
-pub const COMMANDS: [(&str, &str); 24] = [
+pub const COMMANDS: [(&str, &str); 25] = [
+    ("/demo", "Iniciar exemplo de execução com aprovação"),
     ("/model", "Escolher modelo e raciocínio"),
     ("/profile", "Escolher perfil da próxima mensagem"),
     ("/effort", "Escolher variante de raciocínio"),
@@ -190,6 +191,7 @@ impl App {
     pub fn command(&mut self, command: &str) {
         self.dialog = None;
         match command {
+            "/demo" => self.enqueue_demo("Demonstração: corrigir a rotação dos tokens."),
             "/model" => self.open_menu(Menu::Model),
             "/profile" => self.open_menu(Menu::Profile),
             "/effort" => self.open_menu(Menu::Effort),

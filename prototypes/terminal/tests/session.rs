@@ -4,9 +4,7 @@ use ratatui::{Terminal, backend::TestBackend};
 use std::time::Duration;
 
 fn send(app: &mut App, text: &str) {
-    app.input = text.into();
-    app.input_cursor = None;
-    app.send(false);
+    app.enqueue_demo(text);
 }
 
 fn tick(app: &mut App, count: usize) {
@@ -39,10 +37,7 @@ fn should_start_empty_without_fabricated_work_messages_or_approvals() {
     let (text, caret) = screen(&app, 160, 48);
     assert!(!text.contains("183"));
     assert!(!text.contains("Permitir esta ação"));
-    assert!(
-        caret.1 < 20,
-        "editor should follow the welcome, not sit 30 blank rows away"
-    );
+    assert_eq!(caret.1, 43, "editor stays at the bottom in a tall terminal");
 }
 
 #[test]
@@ -79,7 +74,13 @@ fn should_complete_approved_work_then_automatically_start_the_captured_next_sele
     app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     tick(&mut app, 3);
     assert_eq!(app.turns[0].status, TurnStatus::Completed);
-    assert!(app.turns[0].result.as_ref().unwrap().contains("primeira"));
+    assert!(
+        app.turns[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .contains("Rotação demonstrada")
+    );
     assert_eq!(app.turns[1].message.text, "segunda em Planejar");
     assert_eq!(app.executing.name, "Planejar");
     assert_eq!(app.next_selection().name, "Yolo");
@@ -118,7 +119,7 @@ fn should_keep_seven_submitted_messages_visible_and_process_each_once_in_order()
     }
     let (text, _) = screen(&app, 80, 24);
     assert!(text.contains("pedido 7"));
-    assert!(text.contains("Roteiro concluído"));
+    assert!(text.contains("Rotação demonstrada"));
 }
 
 #[test]
@@ -289,4 +290,70 @@ fn should_not_skip_approval_with_manual_finish_or_advance_blocked_review_scenari
         assert_eq!(app.turns[index].events, events);
         assert!(app.turns[index].result.is_none());
     }
+}
+
+#[test]
+fn should_never_treat_arbitrary_chat_text_as_a_request_for_the_authentication_demo() {
+    let mut app = App::default();
+    for text in ["asdas", "oi", "corrige meu código"] {
+        app.input = text.into();
+        app.send(false);
+    }
+    tick(&mut app, 10);
+    assert_eq!(app.turns.len(), 3);
+    assert!(
+        app.turns
+            .iter()
+            .all(|turn| turn.events.is_empty() && !turn.message.demo)
+    );
+    assert!(!app.transcript().contains("auth/service.rs"));
+    assert!(!app.transcript().contains("183"));
+    assert!(!app.approval_focus);
+    app.command("/demo");
+    tick(&mut app, 3);
+    assert!(app.turns.last().unwrap().message.demo);
+    assert_eq!(app.scenario().id, "approval");
+}
+
+#[test]
+fn should_keep_the_full_width_composer_stable_between_empty_running_and_waiting_states() {
+    let mut app = App::default();
+    for (width, height) in [(80, 24), (160, 48)] {
+        let (_, empty_caret) = screen(&app, width, height);
+        send(&mut app, "démonstration");
+        let (_, running_caret) = screen(&app, width, height);
+        assert_eq!(empty_caret, running_caret);
+        tick(&mut app, 3);
+        app.approval_focus = false;
+        let (_, waiting_caret) = screen(&app, width, height);
+        assert_eq!(empty_caret, waiting_caret);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        // Top editor rule reaches the right edge, even beyond the old 110-column cap.
+        assert_eq!(
+            terminal.backend().buffer()[(width - 3, height - 6)].symbol(),
+            "─"
+        );
+        app.approve(true);
+        tick(&mut app, 3);
+    }
+}
+
+#[test]
+fn should_collapse_completed_activity_and_keep_diagnostic_metadata_out_of_the_conversation() {
+    let mut app = App {
+        selected: 2,
+        ..App::default()
+    };
+    send(&mut app, "Exemple de démonstration");
+    tick(&mut app, 6);
+    let compact = app.transcript();
+    assert!(compact.contains("✓ Read · Edit · Test · 3 ações"));
+    assert!(!compact.contains("Policy"));
+    assert!(!compact.contains("GPT mock"));
+    assert!(!compact.contains("Nenhum arquivo alterado"));
+    assert!(compact.contains("● Rotação demonstrada"));
+    app.verbose = true;
+    assert!(app.transcript().contains("GPT mock"));
+    assert!(app.transcript().contains("exit: 0"));
 }
