@@ -2,12 +2,14 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::Line,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
 
 pub mod interaction;
+pub mod session;
 use interaction::Dialog;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -61,6 +63,12 @@ pub struct App {
     pub history: Vec<String>,
     pub history_index: Option<usize>,
     pub history_draft: Option<String>,
+    pub turns: Vec<session::Turn>,
+    pub active: Option<usize>,
+    pub elapsed: std::time::Duration,
+    pub approval_focus: bool,
+    pub approval_cursor: usize,
+    pub approval_action: String,
 }
 
 pub const PANES: [&str; 15] = [
@@ -105,22 +113,24 @@ impl Default for App {
                 variant: "default".into(),
             },
         ];
-        let executing = profiles[2].clone();
+        let executing = profiles[1].clone();
+        let scenes = scenarios();
+        let scene = scenes
+            .iter()
+            .position(|scenario| scenario.id == "empty")
+            .expect("empty startup fixture");
         Self {
-            scenes: scenarios(),
-            scene: 0,
+            scenes,
+            scene,
             selected: 1,
             executing: executing.clone(),
-            queue: vec![Message {
-                text: "Verifica a reutilização de tokens.".into(),
-                selection: executing,
-            }],
+            queue: vec![],
             profiles,
             pending: None,
             input: String::new(),
             pane: 0,
             scroll: 0,
-            notice: "Protótipo. Nenhum arquivo/comando/provider real.".into(),
+            notice: String::new(),
             plain: false,
             dialog: None,
             queue_edit: None,
@@ -132,6 +142,12 @@ impl Default for App {
             history: Vec::new(),
             history_index: None,
             history_draft: None,
+            turns: Vec::new(),
+            active: None,
+            elapsed: std::time::Duration::ZERO,
+            approval_focus: false,
+            approval_cursor: 1,
+            approval_action: "Edit auth/service.rs (simulado) · +12 −3".into(),
         }
     }
 }
@@ -212,6 +228,17 @@ impl App {
             self.notice = "Mensagem da fila atualizada com sua seleção explícita.".into();
         } else if intervene {
             self.pending = Some(message);
+            self.approval_focus = false;
+            if self.scenario().status == "waiting-for-approval" {
+                self.set_scene("running");
+                if let Some(index) = self.active {
+                    self.turns[index].status = session::TurnStatus::Processing;
+                }
+            }
+            if self.active.is_none() && matches!(self.scenario().id.as_str(), "empty" | "completed")
+            {
+                self.set_scene("running");
+            }
             self.notice =
                 "Intervenção pendente. Approval invalidado. /safe aplica na etapa segura.".into();
         } else {
@@ -222,15 +249,18 @@ impl App {
         self.input_cursor = None;
         self.queue_edit = None;
         self.edit_selection = None;
+        self.start_next();
     }
     pub fn safe_step(&mut self) {
         if self.scenario().id == "offline" {
             return;
         }
         if let Some(message) = self.pending.take() {
-            self.executing = message.selection;
-            self.set_scene("running");
-            self.notice = format!("Etapa segura simulada: {}", message.text);
+            if let Some(index) = self.active.take() {
+                self.turns[index].status = session::TurnStatus::Superseded;
+                self.turns[index].result = Some("Trabalho redirecionado por intervenção na etapa segura; alterações preservadas.".into());
+            }
+            self.start_message(message);
         }
     }
     pub fn approve(&mut self, allow: bool) {
@@ -248,8 +278,29 @@ impl App {
         ) {
             return;
         }
-        self.set_scene(if allow { "running" } else { "recovery" });
-        self.notice = "Decisão simulada; nenhum comando executado.".into();
+        self.approval_focus = false;
+        if let Some(index) = self.active {
+            self.turns[index].events.push(
+                if allow {
+                    "Autorização: permitir uma vez (simulado)"
+                } else {
+                    "Autorização negada; fila preservada"
+                }
+                .into(),
+            );
+            if allow {
+                self.turns[index].step = 3;
+                self.turns[index].status = session::TurnStatus::Processing;
+                self.turns[index].needs_approval = false;
+            }
+        }
+        if allow {
+            self.set_scene("running");
+            self.elapsed = std::time::Duration::ZERO;
+        } else {
+            self.pause_demo();
+        }
+        self.notice.clear();
     }
     pub fn finish(&mut self) {
         if self.queue_edit.is_some() {
@@ -260,20 +311,28 @@ impl App {
             self.notice = "Resolva o bloqueio; a fila permanece intacta.".into();
             return;
         }
-        if self.queue.is_empty() {
-            self.set_scene("completed");
-        } else {
-            self.executing = self.queue.remove(0).selection;
-            self.set_scene("running");
+        if self.pending.is_some() {
+            self.safe_step();
+            return;
         }
-        self.notice = "Conclusão/avanço simulado. Nenhum trabalho real.".into();
+        if let Some(index) = self.active {
+            if self.turns[index].step < 5 {
+                self.step_demo();
+                return;
+            }
+            self.turns[index].result = Some(format!(
+                "Roteiro concluído para: {}\nFluxo de atividade e decisão demonstrado com fixtures.\nNenhum arquivo alterado; nenhum teste ou comando executado.",
+                self.turns[index].message.text
+            ));
+        }
+        self.complete_turn();
     }
     pub fn pane_text(&self) -> String {
         match self.pane {
-            0 => format!("Você\nCorrige a rotação dos tokens. Preserva minhas alterações.\n\nCarapanã\n✓ Inspecionar autenticação\n✓ Atualizar auth/service.rs\n✓ cargo test: 183 passaram · 4,8s (mock)\n{}\n{}\n\n{}", if self.verbose { "\nDetalhes simulados · cargo test\nexit: 0 · duração: 4,8s · 183 passed; 0 failed\nSaída fixture; nenhum processo executado.\nCtrl+O recolhe detalhes.\n" } else { "" }, self.scenario().summary, if self.pending.is_some() { "Intervenção pendente; aprovação anterior invalidada.\n/safe simula a próxima etapa segura." } else if self.scenario().id == "approval" { "git push origin feature/refresh-token\nRemote: github.com/acme/quintal-api\nRisco: escrita remota. Motivo: publicar a PR.\n/approve abre as opções de aprovação." } else { "Evidências e estados são simulados." }),
-            1 => "✓ Inspecionar implementação\n✓ Reproduzir bug\n✓ Corrigir rotação\n✓ Adicionar testes\n○ Revisar publicação\n\nPlanejar não implementa sozinho.".into(),
-            2 => "Alterações +124 −38 · mock\nauth/service.rs +48 −12\nauth/repository.rs +21 −4\nauth/service_test.rs +55 −22\nMiddleware: alterações anteriores preservadas\n\n- self.tokens.insert(token).await?;\n+ let mut tx = self.db.begin().await?;\n+ self.tokens.invalidate_previous(&mut tx).await?;\n+ tx.commit().await?;\n\nCheckpoint: prévia + confirmação; nunca descartar trabalho alheio.".into(),
-            3 => "Validação · mock\n✓ cargo fmt --check\n✓ cargo clippy\n✓ cargo test --workspace: 183 passed\n✓ API smoke test\nNão validado: Google OAuth callback\n\nValidação incompleta pausa fila. Nenhum teste real do projeto foi executado.".into(),
+            0 => self.transcript(),
+            1 => self.plan_text(),
+            2 => self.diff_text(),
+            3 => self.validation_text(),
             4 => "Precisa de você\n! quintal-api · Corrigir login · aprovação\n\nEm andamento\n• tixnow-web · Testes\n\nEm pausa\n• carapana · Atalhos TUI\n\nSessão ativa: Anexar / Nova / Voltar. Sem duplicação silenciosa.\nWorktrees são escolha do operador.".into(),
             5 => "MCP · mock\nai-memory   pinned/usuário     saudável\nplaywright  sob demanda       desativado\npostgres    projeto           saudável\n\nPermissões ai-memory: ler/permitir; gravar/projeto; excluir/perguntar\nNova tool/acesso ampliado exige approval. Sem processo MCP real.\nWeb: revisar import diff, ativar/desativar e reiniciar.".into(),
             6 => "Skills · mock\nsecurity          obrigatória\nmaintainability   ativa\ntesting           ativa\nlocal-development ativa\nfrontend-design   opcional\ngit               opcional\nrust              opcional\n\nHooks não contornam permissões. Web: ativar skills opcionais.".into(),
@@ -295,17 +354,9 @@ pub fn render(frame: &mut Frame, app: &App) {
         frame.render_widget(Paragraph::new("Carapanã · Delivery 0\nAmplie o terminal para pelo menos 80×24.\nCtrl+Q para sair. Nenhuma execução real.").wrap(Wrap { trim: false }), area);
         return;
     }
-    let (input, cursor_row, cursor_col) = project_input(app, area.width as usize);
+    let content = Rect::new(2, 1, area.width.saturating_sub(4).min(110), area.height - 2);
+    let (input, cursor_row, cursor_col) = project_input(app, content.width as usize);
     let input_height = (input.lines().count() as u16 + 2).clamp(3, 6);
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(6),
-        Constraint::Length(1),
-        Constraint::Length(input_height),
-        Constraint::Length(1),
-    ])
-    .split(area);
     let accent = if app.plain {
         Style::default()
     } else {
@@ -316,37 +367,151 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         Style::default().fg(Color::Yellow)
     };
-    frame.render_widget(
-        Paragraph::new("carapanã   quintal-api / feature/refresh-token   Delivery 0 · mock")
-            .style(accent),
-        rows[0],
-    );
-    frame.render_widget(
-        Paragraph::new(format!(
-            "{} {}\nExecutando: {} / {} / {}",
-            if app.scenario().attention { "!" } else { "•" },
-            app.scenario().label,
+    let approval_height = if app.dialog.is_none()
+        && app.scenario().status == "waiting-for-approval"
+        && app.pending.is_none()
+    {
+        7
+    } else {
+        0
+    };
+    let queue_height = if app.queue.is_empty() || app.dialog.is_some() {
+        0
+    } else {
+        app.queue.len().min(2) as u16 + 2
+    };
+    let notice_height = u16::from(!app.notice.is_empty() && app.dialog.is_none());
+    let transcript = wrap_terminal(&app.pane_text(), content.width as usize);
+    let line_count = transcript.lines().count() as u16;
+    let budget = content
+        .height
+        .saturating_sub(3 + approval_height + queue_height + notice_height + input_height + 2)
+        .max(1);
+    // Composer follows the content, rather than being separated by a full-screen void.
+    let transcript_height = if app.dialog.is_some() {
+        budget
+    } else {
+        line_count.saturating_add(1).min(budget)
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(transcript_height),
+        Constraint::Length(approval_height),
+        Constraint::Length(queue_height),
+        Constraint::Length(notice_height),
+        Constraint::Length(input_height),
+        Constraint::Length(2),
+        Constraint::Min(0),
+    ])
+    .split(content);
+    let header = if let Some(index) = app.active {
+        format!(
+            "carapanã  /  workspace de exemplo  /  Delivery 0 · mock\nExecutando: {} / {} / {}  — {}",
             app.executing.name,
             app.executing.model,
             app.executing.variant,
-        ))
-        .style(attention),
-        rows[1],
-    );
-    frame.render_widget(
-        Paragraph::new(app.pane_text())
-            .wrap(Wrap { trim: false })
-            .scroll((app.scroll, 0))
-            .block(
-                Block::default()
-                    .title(format!(" {} ", PANES[app.pane]))
-                    .borders(Borders::TOP),
-            ),
-        rows[2],
-    );
+            match app.turns[index].status {
+                session::TurnStatus::Processing => "processando",
+                session::TurnStatus::Waiting => "precisa de você",
+                _ => "em pausa",
+            }
+        )
+    } else {
+        "carapanã  /  workspace de exemplo  /  Delivery 0 · mock\nNenhuma tarefa real será executada.".into()
+    };
+    frame.render_widget(Paragraph::new(header).style(accent), rows[0]);
+    let max_scroll = line_count.saturating_sub(transcript_height);
+    let offset = max_scroll.saturating_sub(app.scroll);
+    let styled_transcript: Vec<Line<'_>> = transcript
+        .lines()
+        .map(|line| {
+            let style = if line.starts_with("> ") || line == "Carapanã" {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else if !app.plain
+                && (line.trim_start().starts_with("Read ")
+                    || line.trim_start().starts_with("Edit ")
+                    || line.trim_start().starts_with("Test "))
+            {
+                Style::default().fg(Color::LightBlue)
+            } else {
+                Style::default()
+            };
+            Line::styled(line, style)
+        })
+        .collect();
+    let current_heading = app.active.map(|index| {
+        wrap_terminal(
+            &format!("> {}", app.turns[index].message.text),
+            content.width as usize,
+        )
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+    });
+    let request_is_visible = current_heading.as_ref().is_some_and(|heading| {
+        transcript
+            .lines()
+            .skip(offset as usize)
+            .any(|line| line == heading)
+    });
+    if offset > 0
+        && app.scroll == 0
+        && !request_is_visible
+        && let Some(index) = app.active
+    {
+        // Keep the current request recognizable even when an approval + queue
+        // leaves only a few transcript rows at 80×24. Older context is scrollable.
+        let request = format!("> {}", app.turns[index].message.text.replace('\n', " ↵ "));
+        frame.render_widget(
+            Paragraph::new(request).style(Style::default().add_modifier(Modifier::BOLD)),
+            Rect::new(rows[1].x, rows[1].y, rows[1].width, 1),
+        );
+        if rows[1].height > 1 {
+            frame.render_widget(
+                Paragraph::new(styled_transcript).scroll((offset + 1, 0)),
+                Rect::new(rows[1].x, rows[1].y + 1, rows[1].width, rows[1].height - 1),
+            );
+        }
+    } else {
+        frame.render_widget(
+            Paragraph::new(styled_transcript).scroll((offset, 0)),
+            rows[1],
+        );
+    }
+    if approval_height > 0 {
+        frame.render_widget(
+            Paragraph::new(app.approval_text())
+                .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
+                .style(attention),
+            rows[2],
+        );
+    }
+    if queue_height > 0 {
+        let mut queue = format!(
+            "Na fila ({}) · /queue revisa texto e seleção\n",
+            app.queue.len()
+        );
+        for (index, message) in app.queue.iter().enumerate().take(2) {
+            queue.push_str(&format!(
+                "{}. [{} / {} / {}] {}\n",
+                index + 1,
+                message.selection.name,
+                message.selection.model,
+                message.selection.variant,
+                message.text.replace('\n', " ↵ ")
+            ));
+        }
+        queue.push_str(if app.queue.len() > 2 {
+            "Mais mensagens na paleta → Fila"
+        } else {
+            "Aguardam sua vez; não interrompem o trabalho atual."
+        });
+        frame.render_widget(Paragraph::new(queue).style(accent), rows[3]);
+    }
     frame.render_widget(
         Paragraph::new(app.notice.as_str()).style(attention),
-        rows[3],
+        rows[4],
     );
     let input_scroll = cursor_row.saturating_sub(input_height as usize - 3);
     frame.render_widget(
@@ -354,34 +519,57 @@ pub fn render(frame: &mut Frame, app: &App) {
             .scroll((input_scroll as u16, 0))
             .block(
                 Block::default()
-                    .title(app.queue_edit.map_or(" Mensagem ".into(), |i| {
+                    .title(app.queue_edit.map_or(String::new(), |i| {
                         format!(" Editando mensagem {} da fila · Esc cancela ", i + 1)
                     }))
                     .borders(Borders::TOP | Borders::BOTTOM),
             ),
-        rows[4],
+        rows[5],
     );
     let selected = app.next_selection();
     frame.render_widget(
         Paragraph::new(format!(
-            "Próxima: {} / {} / {}{}   Fila: {}   Ctrl+P opções · ? ajuda",
+            "Próxima: {} / {} / {}{}\nCtrl+P opções   Shift+Tab perfil   ? ajuda{}",
             selected.name,
             selected.model,
             selected.variant,
             if app.compatible() { "" } else { " !" },
-            app.queue.len()
+            if app.scroll > 0 {
+                "   PgDown volta ao fim"
+            } else {
+                ""
+            }
         ))
         .style(accent),
-        rows[5],
+        rows[6],
     );
     if app.dialog.is_some() {
-        render_dialog(frame, app, rows[4].y);
-    } else {
+        render_dialog(frame, app, rows[5].y);
+    } else if !app.approval_focus {
         frame.set_cursor_position((
-            rows[4].x + cursor_col as u16,
-            rows[4].y + 1 + (cursor_row - input_scroll) as u16,
+            rows[5].x + cursor_col as u16,
+            rows[5].y + 1 + (cursor_row - input_scroll) as u16,
         ));
     }
+}
+
+fn wrap_terminal(text: &str, width: usize) -> String {
+    let mut result = String::new();
+    let mut col = 0;
+    for c in text.chars() {
+        let cells = c.width().unwrap_or(0);
+        if c != '\n' && col + cells > width {
+            result.push('\n');
+            col = 0;
+        }
+        result.push(c);
+        if c == '\n' {
+            col = 0;
+        } else {
+            col += cells;
+        }
+    }
+    result
 }
 
 // Hard-wrap the editor and calculate the cursor using the same visual cells,
@@ -436,14 +624,14 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
         Menu::Help => "Ajuda",
     };
     let items = app.menu_items();
-    let width = frame.area().width.min(86);
+    let width = frame.area().width.saturating_sub(4).min(86);
     let desired_height = if dialog.menu == Menu::Help {
         14
     } else {
         (items.len().clamp(1, 6) * 2 + 6) as u16
     };
-    let height = input_y.saturating_sub(1).min(17).min(desired_height);
-    let area = Rect::new(0, input_y - height, width, height);
+    let height = input_y.saturating_sub(4).min(17).min(desired_height);
+    let area = Rect::new(2, input_y.saturating_sub(height).max(4), width, height);
     // Clear the whole horizontal band so fragments of the transcript do not leak
     // around a compact dialog on wide terminals.
     frame.render_widget(Clear, Rect::new(0, area.y, frame.area().width, height));
@@ -471,6 +659,8 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
         )
     } else if dialog.menu == Menu::Queue {
         "Selecione a mensagem; a seleção acompanha cada envio.\nAlterações são simuladas; Enter abre edição.".into()
+    } else if dialog.menu == Menu::Approval {
+        app.approval_action.clone()
     } else {
         format!(
             "Buscar: {}\nEsc cancela sem alterar rascunho ou seleção.",
@@ -595,7 +785,7 @@ mod tests {
     }
     #[test]
     fn should_keep_execution_and_queue_unchanged_when_switching_profiles() {
-        let mut app = App::default();
+        let mut app = App::review();
         let original = app.executing.clone();
         app.cycle_profile();
         app.cycle_model();
@@ -606,7 +796,7 @@ mod tests {
     fn should_snapshot_selection_when_sending() {
         let mut app = App {
             input: "Teste".into(),
-            ..App::default()
+            ..App::review()
         };
         let selection = app.profiles[app.selected].clone();
         app.send(false);
@@ -615,20 +805,20 @@ mod tests {
     }
     #[test]
     fn should_wait_for_safe_step_and_invalidate_approval() {
-        let mut app = App::default();
+        let mut app = App::review();
         let original = app.executing.clone();
         app.input = "Intervenção".into();
         app.send(true);
         app.approve(true);
         assert_eq!(app.executing, original);
-        assert_eq!(app.scenario().id, "approval");
+        assert_eq!(app.scenario().id, "running");
         app.safe_step();
         assert_eq!(app.executing.name, "Perguntar");
         assert_eq!(app.scenario().id, "running");
     }
     #[test]
     fn should_block_offline_send_without_losing_draft() {
-        let mut app = App::default();
+        let mut app = App::review();
         app.set_scene("offline");
         app.input = "Preservar".into();
         app.send(false);
@@ -638,7 +828,7 @@ mod tests {
     #[test]
     fn should_block_advancement_on_validation_and_recovery() {
         for scene in ["incomplete", "quota", "recovery", "loop"] {
-            let mut app = App::default();
+            let mut app = App::review();
             app.set_scene(scene);
             app.finish();
             assert_eq!(app.queue.len(), 1);
@@ -655,7 +845,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut app = App {
             plain: true,
-            ..App::default()
+            ..App::review()
         };
         for scene in 0..app.scenes.len() {
             app.scene = scene;
@@ -678,7 +868,7 @@ mod tests {
     fn should_render_narrow_wide_unicode_and_large_queues() {
         for (width, height) in [(60, 20), (80, 24), (160, 48)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            let mut app = App::default();
+            let mut app = App::review();
             app.queue = (0..30)
                 .map(|_| Message {
                     text: "Carapanã 中文 token".into(),

@@ -98,6 +98,7 @@ impl App {
                 .position(|v| *v == self.next_selection().variant)
                 .unwrap_or(0),
             Menu::Scenario => self.scene,
+            Menu::Approval => 1,
             _ => 0,
         };
         self.dialog = Some(Dialog {
@@ -198,16 +199,21 @@ impl App {
             "/queue" => self.open_menu(Menu::Queue),
             "/scenario" => self.open_menu(Menu::Scenario),
             "/config" => self.open_menu(Menu::Config),
-            "/approve" => self.open_menu(Menu::Approval),
+            "/approve"
+                if self.scenario().status == "waiting-for-approval" && self.pending.is_none() =>
+            {
+                self.open_menu(Menu::Approval)
+            }
+            "/approve" => self.notice = "Nenhuma aprovação válida pendente.".into(),
             "/help" => self.open_menu(Menu::Help),
             "/intervene" => self.send(true),
             "/safe" => self.safe_step(),
             "/finish" => self.finish(),
             "/pause" | "/stop" if self.scenario().id != "offline" => {
-                self.set_scene("recovery");
+                self.pause_demo();
                 self.notice = "Pausado (mock): fila e alterações preservadas.".into();
             }
-            "/resume" if self.scenario().id == "recovery" => self.set_scene("running"),
+            "/resume" => self.resume(),
             _ => {
                 if let Some(pane) = [
                     "/conversation",
@@ -273,12 +279,12 @@ impl App {
                 self.dialog = None;
             }
             Menu::Scenario => {
-                self.set_scene(name);
-                self.pending = None;
+                self.load_scenario(name);
                 self.dialog = None;
                 self.pane = 0;
                 self.scroll = 0;
-                self.notice = "Cenário reiniciado (mock); rascunho e fila preservados.".into();
+                self.notice =
+                    "Cenário carregado explicitamente; rascunho e fila preservados.".into();
             }
             Menu::Queue => {
                 if self.scenario().id == "offline" {
@@ -401,14 +407,33 @@ impl App {
             }
             return false;
         }
+        if self.scenario().status == "waiting-for-approval" && self.pending.is_none() {
+            if key.code == KeyCode::Tab {
+                self.approval_focus = !self.approval_focus;
+                return false;
+            }
+            if self.approval_focus {
+                match key.code {
+                    KeyCode::Left | KeyCode::Up | KeyCode::Char('1') => self.approval_cursor = 0,
+                    KeyCode::Right | KeyCode::Down | KeyCode::Char('2') => self.approval_cursor = 1,
+                    KeyCode::Enter => self.approve(self.approval_cursor == 0),
+                    KeyCode::Esc => {
+                        self.interrupt();
+                    }
+                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.approval_focus = false;
+                        self.insert_char(c);
+                    }
+                    _ => {}
+                }
+                return false;
+            }
+        }
         match key.code {
             KeyCode::BackTab => self.cycle_profile(),
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(5),
+            KeyCode::PageUp => self.scroll = self.scroll.saturating_add(5),
             KeyCode::PageDown => {
-                self.scroll = self
-                    .scroll
-                    .saturating_add(5)
-                    .min(self.pane_text().lines().count().saturating_sub(1) as u16);
+                self.scroll = self.scroll.saturating_sub(5);
             }
             KeyCode::F(2) => self.safe_step(),
             KeyCode::F(3) => self.finish(),
@@ -516,7 +541,7 @@ impl App {
                 "running" | "approval" | "sandbox" | "trust" | "shared" | "secret"
             )
         {
-            self.set_scene("recovery");
+            self.pause_demo();
             self.notice = "Interrompido (mock); fila, rascunho e alterações preservados. /resume retoma explicitamente.".into();
             // A pending intervention remains visible, but a second interrupt is idle.
             return true;

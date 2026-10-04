@@ -47,13 +47,19 @@ fn tui(plain: bool) -> io::Result<()> {
             plain,
             ..App::default()
         };
+        let mut last_tick = std::time::Instant::now();
         loop {
             terminal.draw(|frame| render(frame, &app))?;
-            match event::read()? {
-                Event::Key(key) if app.key(key) => break,
-                Event::Paste(text) => app.paste(&text),
-                _ => {}
+            if event::poll(std::time::Duration::from_millis(50))? {
+                match event::read()? {
+                    Event::Key(key) if app.key(key) => break,
+                    Event::Paste(text) => app.paste(&text),
+                    _ => {}
+                }
             }
+            let now = std::time::Instant::now();
+            app.advance(now.duration_since(last_tick));
+            last_tick = now;
         }
         Ok(())
     })();

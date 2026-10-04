@@ -15,6 +15,8 @@ import sys
 import termios
 import time
 import unicodedata
+import json
+from pathlib import Path
 
 
 class Screen:
@@ -74,7 +76,8 @@ class Screen:
 pid, fd = pty.fork()
 if pid == 0:
     os.environ["TERM"] = "xterm-256color"
-    os.execv(sys.argv[1], [sys.argv[1], "--plain"])
+    flags = [] if os.environ.get("CARAPANA_REVIEW_COLOR") == "1" else ["--plain"]
+    os.execv(sys.argv[1], [sys.argv[1], *flags])
 
 screen = Screen()
 decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -111,9 +114,30 @@ def expect_output(expected, keys=b"", resize_to=None):
     raise AssertionError(f"Missing {expected!r} in real PTY output: {output!r}")
 
 
+def capture(name):
+    directory = os.environ.get("CARAPANA_REVIEW_DIR")
+    if directory:
+        # A redraw can arrive in multiple writes. Capture only after draining
+        # the full frame, not as soon as its first heading happens to match.
+        deadline = time.monotonic() + 0.25
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.05)
+            if ready:
+                data = os.read(fd, 65536)
+                if b"\x1b[6n" in data:
+                    os.write(fd, b"\x1b[1;1R")
+                screen.feed(decoder.decode(data))
+        path = Path(directory)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / f"{name}.json").write_text(json.dumps({"name":name,"width":screen.width,"height":screen.height,"lines":["".join(row) for row in screen.cells]}, ensure_ascii=False))
+
+
 try:
     resize(80, 24)
     expect_output("Próxima:")
+    assert "Permitir esta ação?" not in screen.text()
+    assert "183" not in screen.text()
+    capture("empty-80x24")
     expect_output("Modelo da próxima mensagem", b"/model\r")
     os.write(fd, b"\x1b")
     time.sleep(0.12)  # Bare Escape must not be decoded as an Alt-prefixed next key.
@@ -127,14 +151,36 @@ try:
     expect_output("Menu cancelado", b"\x03")
     expect_output("linha 2", b"\x1b[200~linha 1\nlinha 2\x1b[201~")
     assert "linha 1" in screen.text()
-    assert "Fila: 1" in screen.text(), screen.text()
-    expect_output("Interrompido (mock)", b"\x1b")
-    assert "linha 2" in screen.text(), screen.text()
+    assert "Na fila" not in screen.text(), screen.text()
+    expect_output("Roteiro local iniciado", b"\r")
+    capture("submitted-80x24")
+    expect_output("Read auth/service.rs")
+    expect_output("Permitir esta ação?")
+    assert "linha 2" in screen.text()
+    capture("approval-80x24")
+    expect_output("Permitir esta ação?", resize_to=(160, 48))
+    capture("approval-160x48")
+    expect_output("Permitir esta ação?", resize_to=(80, 24))
+    # Tab moves to the composer; Enter queues a message, never authorizes.
+    expect_output("Tab volta", b"\t")
+    expect_output("Na fila (1)", b"pedido seguinte\r")
+    assert "Permitir esta ação?" in screen.text()
+    capture("approval-with-queue-80x24")
+    expect_output("Negar e pausar", b"\t")
+    expect_output("Em pausa", b"\r")  # Deny is selected by default.
+    assert "Na fila (1)" in screen.text()
     expect_output("Opções", b"\x10")
     expect_output("/resume", b"resume")
-    expect_output("Executando", b"\r")
-    expect_output("Interrompido (mock)", b"\x03")
+    expect_output("Permitir esta ação?", b"\r")
+    expect_output("Autorização: permitir uma vez", b"1\r")
+    expect_output("Test cargo test")
     expect_output("exit: 0", b"\x0f")
+    expect_output("Roteiro concluído")
+    expect_output("> pedido seguinte")
+    capture("queue-advanced-80x24")
+    expect_output("Interrompido (mock)", b"\x1b")
+    assert "Em pausa" in screen.text()
+    capture("interrupted-80x24")
     expect_output("Input limpo", b"\x03")
     os.write(fd, b"\x03")
     deadline = time.monotonic() + 5
@@ -146,7 +192,7 @@ try:
         time.sleep(0.02)
     else:
         raise AssertionError("Second idle Ctrl+C did not terminate the TUI")
-    print("Should decode real PTY pickers, resize, multiline paste, interruption, details and clean exit: passed")
+    print("Should validate real PTY message → activity → approval → result → queue advancement, resize and interruption: passed")
 finally:
     try:
         os.kill(pid, signal.SIGTERM)
