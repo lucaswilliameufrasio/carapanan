@@ -1,0 +1,10 @@
+{
+  "name": "Carapanã — protótipo Delivery 0",
+  "short_name": "Carapanã",
+  "description": "Protótipo local com dados simulados. Sem agente ou execução real.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#191e24",
+  "theme_color": "#191e24",
+  "icons": [{ "src": "/mark.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
