@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use unicode_width::UnicodeWidthChar;
 
 pub mod interaction;
+pub mod palette;
 pub mod session;
 use interaction::Dialog;
 
@@ -54,6 +55,7 @@ pub struct App {
     pub scroll: u16,
     pub notice: String,
     pub plain: bool,
+    pub ansi256: bool,
     pub dialog: Option<Dialog>,
     pub queue_edit: Option<usize>,
     pub edit_selection: Option<Selection>,
@@ -133,6 +135,7 @@ impl Default for App {
             scroll: 0,
             notice: String::new(),
             plain: false,
+            ansi256: true,
             dialog: None,
             queue_edit: None,
             edit_selection: None,
@@ -359,16 +362,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     let content = Rect::new(2, 1, area.width.saturating_sub(4), area.height - 2);
     let (input, cursor_row, cursor_col) = project_input(app, content.width as usize);
     let input_height = (input.lines().count() as u16 + 2).clamp(3, 6);
-    let accent = if app.plain {
-        Style::default()
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let attention = if app.plain {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Yellow)
-    };
+    let palette = palette::Palette::new(app.plain, app.ansi256);
+    let accent = palette.muted;
+    let attention = palette.attention;
     let approval_height = if app.dialog.is_none()
         && app.scenario().status == "waiting-for-approval"
         && app.pending.is_none()
@@ -423,16 +419,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     };
     let styled_transcript: Vec<Line<'_>> = transcript
         .lines()
-        .map(|line| {
-            let style = if line.starts_with("> ") || line.starts_with("● ") {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else if !app.plain && line.trim_start().starts_with("✓ ") {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-            Line::styled(line, style)
-        })
+        .map(|line| palette.transcript_line(line))
         .collect();
     let latest_turn = app.active.or_else(|| app.turns.len().checked_sub(1));
     let current_heading = latest_turn.map(|index| {
@@ -460,7 +447,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         // leaves only a few transcript rows at 80×24. Older context is scrollable.
         let request = format!("> {}", app.turns[index].message.text.replace('\n', " ↵ "));
         frame.render_widget(
-            Paragraph::new(request).style(Style::default().add_modifier(Modifier::BOLD)),
+            Paragraph::new(palette.transcript_line(&request)),
             Rect::new(rows[1].x, rows[1].y, rows[1].width, 1),
         );
         if rows[1].height > 1 {
@@ -491,7 +478,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .first()
                 .map_or(String::new(), |message| message.text.replace('\n', " ↵ "))
         );
-        frame.render_widget(Paragraph::new(queue).style(accent), rows[3]);
+        frame.render_widget(Paragraph::new(queue).style(palette.assistant), rows[3]);
     }
     frame.render_widget(
         Paragraph::new(app.notice.as_str()).style(attention),
@@ -500,12 +487,22 @@ pub fn render(frame: &mut Frame, app: &App) {
     let input_scroll = cursor_row.saturating_sub(input_height as usize - 3);
     frame.render_widget(
         Paragraph::new(input)
+            .style(if app.input.is_empty() {
+                palette.muted
+            } else {
+                Style::default()
+            })
             .scroll((input_scroll as u16, 0))
             .block(
                 Block::default()
                     .title(app.queue_edit.map_or(String::new(), |i| {
                         format!(" Editando mensagem {} da fila · Esc cancela ", i + 1)
                     }))
+                    .border_style(if app.approval_focus || app.dialog.is_some() {
+                        palette.muted
+                    } else {
+                        palette.interaction
+                    })
                     .borders(Borders::TOP | Borders::BOTTOM),
             ),
         rows[5],
@@ -517,7 +514,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 Span::styled("Próxima: ", accent),
                 Span::styled(
                     selected.name.as_str(),
-                    Style::default().add_modifier(Modifier::BOLD),
+                    palette.interaction.add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(
@@ -550,7 +547,17 @@ pub fn render(frame: &mut Frame, app: &App) {
                 } else {
                     "Pronto · Shift+Tab muda o perfil · /demo inicia uma demonstração".into()
                 },
-                accent,
+                if let Some(index) = app.active {
+                    match app.turns[index].status {
+                        session::TurnStatus::Processing => palette.assistant,
+                        session::TurnStatus::Waiting | session::TurnStatus::Paused => {
+                            palette.attention
+                        }
+                        _ => palette.muted,
+                    }
+                } else {
+                    palette.success
+                },
             ),
         ]),
         rows[6],
@@ -624,6 +631,7 @@ fn project_input(app: &App, width: usize) -> (String, usize, usize) {
 fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
     use interaction::Menu;
     let dialog = app.dialog.as_ref().unwrap();
+    let palette = palette::Palette::new(app.plain, app.ansi256);
     let title = match dialog.menu {
         Menu::Commands => "Opções",
         Menu::Model => "Modelo da próxima mensagem",
@@ -648,7 +656,11 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
     // around a compact dialog on wide terminals.
     frame.render_widget(Clear, Rect::new(0, area.y, frame.area().width, height));
     let block = Block::default()
-        .title(format!(" {title} "))
+        .title(Line::styled(
+            format!(" {title} "),
+            palette.interaction.add_modifier(Modifier::BOLD),
+        ))
+        .border_style(palette.interaction)
         .borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -679,7 +691,7 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
             dialog.query
         )
     };
-    frame.render_widget(Paragraph::new(heading), rows[0]);
+    frame.render_widget(Paragraph::new(heading).style(palette.muted), rows[0]);
     let capacity = (rows[1].height / 2).max(1) as usize;
     let start = dialog.cursor.saturating_sub(capacity - 1);
     if items.is_empty() {
@@ -712,17 +724,44 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
         } else {
             format!("  [{binding}]")
         };
-        let text = format!(
-            "{mark} {name}{}{binding_label}\n  {detail}",
-            if is_current { " [atual]" } else { "" }
-        );
-        let style = if selected {
-            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        let label_style = if selected {
+            palette.selected
         } else {
-            Style::default()
+            palette.interaction
         };
+        let detail_style = if selected {
+            palette.selected
+        } else {
+            palette.muted
+        };
+        let text = vec![
+            Line::from(vec![
+                Span::styled(format!("{mark} {name}"), label_style),
+                Span::styled(
+                    if is_current { " [atual]" } else { "" },
+                    if selected {
+                        palette.selected
+                    } else {
+                        palette.success
+                    },
+                ),
+                Span::styled(
+                    binding_label,
+                    if selected {
+                        palette.selected
+                    } else {
+                        palette.assistant
+                    },
+                ),
+            ]),
+            Line::styled(format!("  {detail}"), detail_style),
+        ];
         frame.render_widget(
-            Paragraph::new(text).style(style),
+            Paragraph::new(text).style(if selected {
+                palette.selected
+            } else {
+                Style::default()
+            }),
             Rect::new(
                 rows[1].x,
                 rows[1].y + ((index - start) * 2) as u16,
@@ -756,7 +795,7 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
             items.len()
         ),
     };
-    frame.render_widget(Paragraph::new(footer), rows[2]);
+    frame.render_widget(Paragraph::new(footer).style(palette.muted), rows[2]);
 }
 
 #[derive(Serialize)]
