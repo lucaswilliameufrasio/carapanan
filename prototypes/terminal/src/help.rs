@@ -52,6 +52,6 @@ pub const PAGES: [HelpPage; 4] = [
             ("PgUp / PgDown", "Rolar conversa"),
             ("/resume", "Retomar trabalho pausado"),
         ],
-        note: "Ctrl+C ocioso 2× sai. Cmd+C copia. Interromper preserva fila e rascunho.",
+        note: "Ctrl+C 2× sai ocioso; Cmd+C copia. /update: mock. Fila/rascunho intactos.",
     },
 ];

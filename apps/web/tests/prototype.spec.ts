@@ -2,8 +2,9 @@ import { expect, type Page, test } from '@playwright/test';
 
 async function detail(page: Page) {
   await page.goto('/');
-  if (await page.locator('.attention-session').isVisible())
-    await page.locator('.attention-session').click();
+  // Mobile home is selected on mount. Wait for the target rather than checking
+  // its visibility once while hydration may still be completing.
+  if ((page.viewportSize()?.width ?? 1280) <= 740) await page.locator('.attention-session').click();
   await expect(page.locator('#composer')).toBeVisible();
 }
 async function scenario(page: Page, id: string) {

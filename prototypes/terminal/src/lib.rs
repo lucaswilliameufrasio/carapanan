@@ -12,6 +12,7 @@ pub mod help;
 pub mod interaction;
 pub mod palette;
 pub mod session;
+pub mod updates;
 use interaction::Dialog;
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -44,6 +45,7 @@ pub struct Message {
 }
 
 pub struct App {
+    pub update: updates::Update,
     pub scenes: Vec<Scenario>,
     pub scene: usize,
     pub profiles: Vec<Selection>,
@@ -126,6 +128,7 @@ impl Default for App {
             .position(|scenario| scenario.id == "empty")
             .expect("empty startup fixture");
         Self {
+            update: updates::Update::default(),
             scenes,
             scene,
             selected: 1,
@@ -437,6 +440,14 @@ pub fn render(frame: &mut Frame, app: &App) {
         Paragraph::new(vec![
             Line::styled("carapanã", Style::default().add_modifier(Modifier::BOLD)),
             Line::styled("workspace de exemplo · Delivery 0 / simulado", accent),
+            Line::styled(
+                if app.update.hidden {
+                    String::new()
+                } else {
+                    format!("{} · /update · mock", app.update.status.label())
+                },
+                palette.interaction,
+            ),
         ]),
         Rect::new(
             rows[0].x + 14,
@@ -776,6 +787,10 @@ fn render_help(frame: &mut Frame, page: usize, area: Rect, palette: &palette::Pa
 fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
     use interaction::Menu;
     let dialog = app.dialog.as_ref().unwrap();
+    if dialog.menu == Menu::Updates {
+        updates::render(frame, app);
+        return;
+    }
     let palette = palette::Palette::new(app.plain, app.ansi256);
     let title = match dialog.menu {
         Menu::Commands => "Opções",
@@ -787,6 +802,9 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
         Menu::Approval => "Aprovação simulada",
         Menu::Config => "Configurações",
         Menu::Help => "Ajuda",
+        Menu::Updates => "Atualizações · mock",
+        Menu::UpdatePackage => "Pacote de demonstração",
+        Menu::UpdateChannel => "Canal de atualização",
     };
     let items = app.menu_items();
     let width = frame.area().width.saturating_sub(4).min(86);
