@@ -24,6 +24,41 @@ async function nav(page: Page, name: string) {
   await page.locator('.navigation').getByRole('button', { name, exact: true }).click();
 }
 
+test('Should hide and restore the desktop sidebar without losing the draft or mobile navigation', async ({
+  page,
+}) => {
+  await detail(page);
+  await page.setViewportSize({ width: 1440, height: 956 });
+  await page.locator('#composer').fill('Rascunho intacto');
+  const sidebar = page.locator('#session-sidebar');
+  const toggle = page.getByRole('button', { name: 'Esconder barra lateral', exact: true });
+  await expect(sidebar).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  const width = (await page.locator('main').boundingBox())!.width;
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(sidebar).not.toBeVisible();
+  const show = page.getByRole('button', { name: 'Mostrar barra lateral', exact: true });
+  await expect(show).toHaveAttribute('aria-expanded', 'false');
+  await expect(show).toBeFocused();
+  expect((await page.locator('main').boundingBox())!.width).toBeGreaterThan(width);
+  await expect(page.locator('#composer')).toHaveValue('Rascunho intacto');
+  await page.keyboard.press('Space');
+  await expect(sidebar).toBeVisible();
+  await toggle.click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(sidebar).not.toBeVisible();
+  await page.locator('.app-header').getByRole('button', { name: 'Sessões', exact: true }).click();
+  await expect(sidebar).toBeVisible();
+  await page.locator('.app-header').getByRole('button', { name: 'Sessões', exact: true }).click();
+  await expect(sidebar).not.toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 956 });
+  await expect(sidebar).not.toBeVisible();
+  await show.click();
+  await expect(sidebar).toBeVisible();
+  await expect(page.locator('#composer')).toHaveValue('Rascunho intacto');
+});
+
 test('Should use touch sized theme and scenario pickers instead of native mobile popups', async ({
   page,
   isMobile,

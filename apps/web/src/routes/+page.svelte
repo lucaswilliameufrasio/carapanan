@@ -17,6 +17,8 @@
     MessageSquare,
     Monitor,
     Pause,
+    PanelLeftClose,
+    PanelLeftOpen,
     Plus,
     Search,
     Settings,
@@ -67,6 +69,7 @@
   let draft = $state('');
   let mobileHome = $state(false);
   let menuOpen = $state(false);
+  let sidebarCollapsed = $state(false);
   let search = $state('');
   let paletteCursor = $state(0);
   const normalize = (text: string) =>
@@ -333,10 +336,25 @@
     <button
       class="icon-button mobile-only"
       aria-label={t('sessions')}
+      aria-controls="session-sidebar"
+      aria-expanded={menuOpen}
       onclick={() => {
         menuOpen = !menuOpen;
       }}><Menu size={20} /></button
     >
+    <button
+      class="icon-button desktop-only"
+      aria-label={t(sidebarCollapsed ? 'showSidebar' : 'hideSidebar')}
+      title={t(sidebarCollapsed ? 'showSidebar' : 'hideSidebar')}
+      aria-controls="session-sidebar"
+      aria-expanded={!sidebarCollapsed}
+      onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
+    >
+      {#if sidebarCollapsed}<PanelLeftOpen size={20} aria-hidden="true" />{:else}<PanelLeftClose
+          size={20}
+          aria-hidden="true"
+        />{/if}
+    </button>
     <a class="brand" href="/" aria-label="Carapanã"
       ><img src="/mosquito.svg" alt="" width="38" height="38" aria-hidden="true" /><strong
         >carapanã</strong
@@ -369,7 +387,12 @@
   </header>
 
   <div class="app-body">
-    <aside class:open={menuOpen} class="sidebar">
+    <aside
+      id="session-sidebar"
+      class:open={menuOpen}
+      class:collapsed={sidebarCollapsed}
+      class="sidebar"
+    >
       <div class="sidebar-heading">
         <button class="plain-button" onclick={() => openView('sessions')}
           ><FolderOpen size={16} />{t('sessions')}</button

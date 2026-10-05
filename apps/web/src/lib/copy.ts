@@ -1,6 +1,8 @@
 // UI text registry. English can be completed without changing components.
 export const pt = {
   sessions: 'Sessões',
+  hideSidebar: 'Esconder barra lateral',
+  showSidebar: 'Mostrar barra lateral',
   attention: 'Precisa de você',
   running: 'Em andamento',
   recent: 'Recentes',
@@ -44,6 +46,8 @@ export const pt = {
 export type CopyKey = keyof typeof pt;
 export const english: Partial<Record<CopyKey, string>> = {
   sessions: 'Sessions',
+  hideSidebar: 'Hide sidebar',
+  showSidebar: 'Show sidebar',
   attention: 'Needs attention',
   running: 'Running',
   recent: 'Recent',
