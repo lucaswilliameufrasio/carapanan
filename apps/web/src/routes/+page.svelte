@@ -354,12 +354,17 @@
         onclick={() => {
           openPalette();
         }}><Search size={15} />{t('command')}<kbd>Ctrl/⌘ P</kbd></button
-      ><label class="theme-control"
-        ><span class="sr-only">{t('theme')}</span><select aria-label={t('theme')} bind:value={theme}
-          ><option value="system">{t('system')}</option><option value="dark">{t('dark')}</option
-          ><option value="light">{t('light')}</option></select
-        ></label
-      >
+      ><Picker
+        class="theme-control"
+        label={t('theme')}
+        value={theme}
+        options={[
+          { value: 'system', label: t('system') },
+          { value: 'dark', label: t('dark') },
+          { value: 'light', label: t('light') },
+        ]}
+        onchange={(value) => (theme = value)}
+      />
     </div>
   </header>
 
@@ -417,19 +422,19 @@
 
     <main id="main" class:mobile-dashboard={mobileHome && view === 'session'}>
       <div class="review-bar">
-        <label
-          ><span>{t('scenario')}</span><select
-            aria-label={t('scenario')}
+        <div class="scenario-control">
+          <span>{t('scenario')}</span><Picker
+            label={t('scenario')}
             value={ui.scenario}
-            onchange={(event) => {
-              dispatch({ type: 'scenario', id: event.currentTarget.value });
-              if (event.currentTarget.value === 'empty') openView('sessions');
+            options={scenarios.map((s) => ({ value: s.id, label: s.label }))}
+            onchange={(value) => {
+              dispatch({ type: 'scenario', id: value });
+              if (value === 'empty') openView('sessions');
             }}
-            >{#each scenarios as s (s.id)}<option value={s.id}>{s.label}</option>{/each}</select
-          ></label
-        ><button
-          class="plain-button"
-          onclick={() => dispatch({ type: 'scenario', id: ui.scenario })}>{l.reset}</button
+          />
+        </div>
+        <button class="plain-button" onclick={() => dispatch({ type: 'scenario', id: ui.scenario })}
+          >{l.reset}</button
         ><span class="desktop-only">{l.noExecution}</span>
       </div>
 
@@ -977,31 +982,48 @@
                 <p>{l.savedMock}</p>
               </div>
             </div>
-            <label class="setting-row"
-              ><span>{t('theme')}</span><select bind:value={theme}
-                ><option value="system">{t('system')}</option><option value="dark"
-                  >{t('dark')}</option
-                ><option value="light">{t('light')}</option></select
-              ></label
-            ><label class="setting-row"
-              ><span>{l.language}</span><select bind:value={locale}
-                ><option value="pt-BR">Português brasileiro</option><option value="en"
-                  >English · partial</option
-                ></select
-              ></label
-            >{#if locale === 'en'}<p>{l.englishPartial}</p>{/if}<label class="setting-row"
+            <div class="setting-row">
+              <span>{t('theme')}</span><Picker
+                label={t('theme')}
+                value={theme}
+                options={[
+                  { value: 'system', label: t('system') },
+                  { value: 'dark', label: t('dark') },
+                  { value: 'light', label: t('light') },
+                ]}
+                onchange={(value) => (theme = value)}
+              />
+            </div>
+            <div class="setting-row">
+              <span>{l.language}</span><Picker
+                label={l.language}
+                value={locale}
+                options={[
+                  { value: 'pt-BR', label: 'Português brasileiro' },
+                  { value: 'en', label: 'English · partial' },
+                ]}
+                onchange={(value) => (locale = value as 'pt-BR' | 'en')}
+              />
+            </div>
+            {#if locale === 'en'}<p>{l.englishPartial}</p>{/if}<label class="setting-row"
               ><span>{l.globalProvider}</span><input
                 type="checkbox"
                 disabled={!online}
                 bind:checked={providerWarningsOff}
               /></label
-            ><label class="setting-row"
-              ><span>{l.scope}</span><select bind:value={settingsScope}
-                ><option value="session">{l.sessionScope}</option><option value="project"
-                  >{l.projectScope}</option
-                ><option value="user">{l.userScope}</option></select
-              ></label
             >
+            <div class="setting-row">
+              <span>{l.scope}</span><Picker
+                label={l.scope}
+                value={settingsScope}
+                options={[
+                  { value: 'session', label: l.sessionScope },
+                  { value: 'project', label: l.projectScope },
+                  { value: 'user', label: l.userScope },
+                ]}
+                onchange={(value) => (settingsScope = value)}
+              />
+            </div>
             <div class="actions">
               <button
                 disabled={!online}
@@ -1107,21 +1129,30 @@
     {:else if modal === 'queue'}<textarea aria-label={t('next')} bind:value={editText} rows="4"
       ></textarea>
       <div class="edit-selects">
-        <label
-          >{l.profile}<select aria-label={l.profile} bind:value={editSelection.profile}
-            >{#each ui.profiles as p (p.profile)}<option value={p.profile}>{p.name}</option
-              >{/each}</select
-          ></label
-        ><label
-          >{l.model}<select aria-label={l.model} bind:value={editSelection.model}
-            >{#each models as model (model.id)}<option value={model.id}>{model.name}</option
-              >{/each}</select
-          ></label
-        ><label
-          >{l.variant}<select aria-label={l.variant} bind:value={editSelection.variant}
-            >{#each ['default', 'low', 'high'] as v (v)}<option>{v}</option>{/each}</select
-          ></label
-        >
+        <div>
+          <span>{l.profile}</span><Picker
+            label={l.profile}
+            value={editSelection.profile}
+            options={ui.profiles.map((p) => ({ value: p.profile, label: p.name }))}
+            onchange={(value) => (editSelection.profile = value)}
+          />
+        </div>
+        <div>
+          <span>{l.model}</span><Picker
+            label={l.model}
+            value={editSelection.model}
+            options={models.map((m) => ({ value: m.id, label: m.name }))}
+            onchange={(value) => (editSelection.model = value)}
+          />
+        </div>
+        <div>
+          <span>{l.variant}</span><Picker
+            label={l.variant}
+            value={editSelection.variant}
+            options={['default', 'low', 'high'].map((v) => ({ value: v, label: v }))}
+            onchange={(value) => (editSelection.variant = value)}
+          />
+        </div>
       </div>
       <button
         class="primary"
@@ -1137,16 +1168,24 @@
       >
     {:else if modal === 'profiles'}<div class="profiles-editor">
         {#each draftProfiles as p, index (p.profile)}<div class="profile-editor">
-            <label>{l.profileName}<input bind:value={p.name} /></label><label
-              >{l.model}<select bind:value={p.model}
-                >{#each models as model (model.id)}<option value={model.id}>{model.name}</option
-                  >{/each}</select
-              ></label
-            ><label
-              >{l.variant}<select bind:value={p.variant}
-                >{#each ['default', 'low', 'high'] as v (v)}<option>{v}</option>{/each}</select
-              ></label
-            ><button
+            <label>{l.profileName}<input bind:value={p.name} /></label>
+            <div>
+              <span>{l.model}</span><Picker
+                label={`${l.model} · ${p.name}`}
+                value={p.model}
+                options={models.map((m) => ({ value: m.id, label: m.name }))}
+                onchange={(value) => (p.model = value)}
+              />
+            </div>
+            <div>
+              <span>{l.variant}</span><Picker
+                label={`${l.variant} · ${p.name}`}
+                value={p.variant}
+                options={['default', 'low', 'high'].map((v) => ({ value: v, label: v }))}
+                onchange={(value) => (p.variant = value)}
+              />
+            </div>
+            <button
               class="icon-button"
               aria-label={`${l.up} ${p.name}`}
               disabled={index === 0}

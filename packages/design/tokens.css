@@ -17,6 +17,9 @@
   --border: #d8e0e6;
   --border-strong: #9eafb9;
   --accent-surface: #e3f0f5;
+  --scroll-track: #edf1f4;
+  --scroll-thumb: #7896a5;
+  --scroll-thumb-hover: #146480;
   --attention-surface: #fff5df;
   --danger-surface: #fcecea;
   --success-surface: #eaf5ed;
@@ -49,6 +52,9 @@
   --border: #343f48;
   --border-strong: #617582;
   --accent-surface: #213541;
+  --scroll-track: #14191e;
+  --scroll-thumb: #526f7e;
+  --scroll-thumb-hover: #91c6df;
   --attention-surface: #332c20;
   --danger-surface: #3a282b;
   --success-surface: #23362b;

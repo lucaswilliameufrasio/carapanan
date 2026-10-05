@@ -53,10 +53,13 @@ override. pt-BR completo; inglês ainda parcial, com fallback explícito.
 
 Web/mobile: a busca encontra sessões, telas e abas, ignora acentos e oferece
 ↑/↓ + Enter, estado sem resultados e acesso por toque no cabeçalho.
-Os pickers de perfil/modelo/esforço abrem uma lista legível em dialog centralizado,
+Todos os seletores (incluindo tema, cenários, configurações e edição da fila/perfis)
+abrem uma lista legível em dialog centralizado,
 com seleção marcada, navegação por teclado e foco devolvido ao fechar.
 As telas de gestão usam a largura disponível; em telas estreitas, ações quebram
 para a próxima linha sem comprimir os nomes. Avisos não cobrem o composer.
+Scrollbars seguem o tema com trilho neutro e puxador azul-acinzentado; rolagem
+nativa por toque, teclado e mouse permanece. Alto contraste usa as cores do sistema.
 
 Modos têm cores próprias: Planejar violeta, Perguntar azul, Auto verde-água e
 Yolo coral. Low/default/high mudam a intensidade, mantendo o nome visível.

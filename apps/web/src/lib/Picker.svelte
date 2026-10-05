@@ -6,11 +6,15 @@
     value,
     options,
     onchange,
+    disabled = false,
+    class: className = '',
   }: {
     label: string;
     value: string;
     options: { value: string; label: string; detail?: string }[];
     onchange: (value: string) => void;
+    disabled?: boolean;
+    class?: string;
   } = $props();
   let open = $state(false);
   let cursor = $state(0);
@@ -37,7 +41,8 @@
 </script>
 
 <button
-  class="picker-trigger"
+  class={`picker-trigger ${className}`}
+  {disabled}
   role="combobox"
   aria-label={label}
   aria-haspopup="dialog"
@@ -69,6 +74,7 @@
     {#each options as item, index (item.value)}
       <button
         role="option"
+        data-value={item.value}
         aria-label={item.label}
         aria-selected={item.value === value}
         data-dialog-focus={index === cursor ? '' : undefined}
