@@ -22,7 +22,14 @@ export type PrototypeState = {
   notice: string;
   events: string[];
 };
-export const models = [
+export type Model = {
+  id: string;
+  name: string;
+  provider: string;
+  variants: string[];
+  enabled?: boolean;
+};
+export const models: Model[] = [
   {
     id: 'gpt-mock',
     name: 'GPT · mock',
@@ -37,15 +44,20 @@ export const models = [
   },
   { id: 'local-mock', name: 'Local · mock', provider: 'Local · mock', variants: ['default'] },
 ];
-export const modelName = (id: string) => models.find((m) => m.id === id)?.name ?? id;
-export const provider = (id: string) => models.find((m) => m.id === id)?.provider ?? 'Indisponível';
+export const modelName = (id: string, catalog = models) =>
+  catalog.find((m) => m.id === id)?.name ?? id;
+export const provider = (id: string, catalog = models) =>
+  catalog.find((m) => m.id === id)?.provider ?? 'Indisponível';
 export const profileName = (state: PrototypeState, id: string) =>
   state.profiles.find((p) => p.profile === id)?.name ?? id;
 export const getScenario = (state: PrototypeState) =>
   scenarios.find((s) => s.id === state.scenario) ?? scenarios[0];
 export const connected = (state: PrototypeState) => state.scenario !== 'offline';
-export const compatible = (selection: Selection) =>
-  models.some((m) => m.id === selection.model && m.variants.includes(selection.variant));
+export const compatible = (selection: Selection, catalog = models) =>
+  catalog.some(
+    (m) =>
+      m.id === selection.model && m.enabled !== false && m.variants.includes(selection.variant),
+  );
 
 export function initialState(scenario = 'approval'): PrototypeState {
   return {
@@ -104,7 +116,7 @@ export type Action =
   | { type: 'notice'; text: string };
 
 // An in-memory UI reducer only. No timers, filesystem, processes, network or persistence.
-export function reduce(state: PrototypeState, action: Action): PrototypeState {
+export function reduce(state: PrototypeState, action: Action, catalog = models): PrototypeState {
   const event = (next: PrototypeState, text: string) => ({
     ...next,
     notice: text,
@@ -127,14 +139,18 @@ export function reduce(state: PrototypeState, action: Action): PrototypeState {
   if (action.type === 'cycle') {
     const index = state.profiles.findIndex((p) => p.profile === state.selected.profile);
     const p = state.profiles[(index + 1) % state.profiles.length];
-    return reduce(state, {
-      type: 'select',
-      selection: { profile: p.profile, model: p.model, variant: p.variant },
-    });
+    return reduce(
+      state,
+      {
+        type: 'select',
+        selection: { profile: p.profile, model: p.model, variant: p.variant },
+      },
+      catalog,
+    );
   }
   if (!connected(state)) return { ...state, notice: 'Desconectado: nenhuma ação foi enviada.' };
   if (action.type === 'send') {
-    if (!action.text.trim() || !compatible(state.selected))
+    if (!action.text.trim() || !compatible(state.selected, catalog))
       return { ...state, notice: 'Selecione um modelo e uma variante compatíveis.' };
     const message = {
       ...state.selected,
@@ -142,7 +158,8 @@ export function reduce(state: PrototypeState, action: Action): PrototypeState {
       text: action.text.trim(),
       origin: 'Web · este dispositivo',
       providerApproved:
-        action.approved ?? provider(state.selected.model) === provider(state.executing.model),
+        action.approved ??
+        provider(state.selected.model, catalog) === provider(state.executing.model, catalog),
     };
     if (action.intervene)
       return event(
@@ -160,7 +177,7 @@ export function reduce(state: PrototypeState, action: Action): PrototypeState {
         ...state,
         notice: 'A mensagem já começou. Seu texto foi preservado para novo envio.',
       };
-    if (!action.text.trim() || !compatible(action.selection))
+    if (!action.text.trim() || !compatible(action.selection, catalog))
       return { ...state, notice: 'Texto e seleção compatível são necessários.' };
     return event(
       {
@@ -200,7 +217,17 @@ export function reduce(state: PrototypeState, action: Action): PrototypeState {
     if (getScenario(state).blocking)
       return { ...state, notice: 'A fila espera a resolução do bloqueio atual.' };
     const [next, ...queue] = state.queue;
-    if (next && !next.providerApproved && provider(next.model) !== provider(state.executing.model))
+    if (next && !compatible(next, catalog))
+      return {
+        ...state,
+        notice:
+          'Modelo ou variante da próxima mensagem indisponível. Edite a fila ou reative o provider.',
+      };
+    if (
+      next &&
+      !next.providerApproved &&
+      provider(next.model, catalog) !== provider(state.executing.model, catalog)
+    )
       return {
         ...state,
         notice:

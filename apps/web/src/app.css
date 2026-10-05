@@ -1200,6 +1200,216 @@ dialog textarea {
 .picker-trigger > svg {
   flex-shrink: 0;
 }
+.configuration-badge {
+  font-size: 12px;
+  color: var(--interactive);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 9px;
+}
+.configuration-form,
+.resource-form {
+  display: grid;
+  gap: 18px;
+}
+.configuration-form label,
+.resource-form .field-grid label,
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+}
+.configuration-form input:not([type='checkbox']),
+.resource-form input[type='number'] {
+  width: 100%;
+  min-width: 0;
+}
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.form-field .picker-trigger {
+  width: 100%;
+}
+.choice-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.choice-group button {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 12px;
+  text-align: left;
+  white-space: normal;
+}
+.choice-group button[aria-pressed='true'] {
+  background: var(--accent-surface);
+  border-color: var(--interactive);
+  color: var(--interactive);
+}
+.choice-group small {
+  font-weight: 400;
+}
+.integration-summary {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  background: var(--surface-muted);
+  border-left: 2px solid var(--interactive);
+}
+.integration-summary code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.model-editor {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.model-editor legend {
+  font-size: 13px;
+  padding-inline: 6px;
+  color: var(--text-secondary);
+}
+.check-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 13px;
+}
+.configuration-form .check-group label {
+  flex-direction: row;
+  align-items: center;
+  min-height: 36px;
+}
+.form-errors {
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--danger-surface);
+  color: var(--danger);
+  padding: 12px 16px;
+}
+.form-errors ul {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.configuration-form .section-heading {
+  margin-bottom: 0;
+  flex-wrap: wrap;
+}
+.configuration-form .section-heading h3,
+.provider-card h3 {
+  margin: 0;
+}
+.provider-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+.provider-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.provider-card .management-row {
+  padding: 16px;
+}
+.provider-models {
+  padding: 0 16px 16px;
+  display: grid;
+  gap: 8px;
+}
+.provider-model {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  border-left: 2px solid var(--border-strong);
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.provider-model > div {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.provider-model code {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.resource-budget h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+}
+.resource-budget h3:first-child {
+  margin-top: 0;
+}
+.resource-preview {
+  align-self: start;
+}
+.preview-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 20px 0;
+}
+.preview-metrics > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.preview-metrics strong {
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--interactive);
+}
+.preview-metrics span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.resource-form .actions {
+  flex-wrap: wrap;
+}
+.configuration-form > .actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background: var(--surface-raised);
+  border-top: 1px solid var(--border);
+  padding: 12px 0;
+}
+.configuration-form > .actions {
+  bottom: -24px;
+}
+.resource-form .detail-block {
+  margin: 0;
+}
+@media (max-width: 740px) {
+  .field-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .configuration-form .check-group label {
+    min-height: 44px;
+  }
+  .configuration-form input:not([type='checkbox']),
+  .resource-form input[type='number'] {
+    min-height: 44px;
+  }
+  .provider-card .management-row .grow {
+    flex-basis: 70%;
+  }
+}
 .picker-options button {
   white-space: normal;
 }

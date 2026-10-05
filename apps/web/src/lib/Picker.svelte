@@ -41,6 +41,7 @@
 </script>
 
 <button
+  type="button"
   class={`picker-trigger ${className}`}
   {disabled}
   role="combobox"
@@ -73,6 +74,7 @@
   >
     {#each options as item, index (item.value)}
       <button
+        type="button"
         role="option"
         data-value={item.value}
         aria-label={item.label}

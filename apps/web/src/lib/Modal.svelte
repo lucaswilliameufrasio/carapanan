@@ -23,7 +23,7 @@
 <dialog bind:this={dialog} oncancel={onclose} aria-labelledby={titleId}>
   <div class="dialog-heading">
     <h2 id={titleId}>{title}</h2>
-    <button class="icon-button" aria-label={closeLabel} onclick={onclose}>×</button>
+    <button type="button" class="icon-button" aria-label={closeLabel} onclick={onclose}>×</button>
   </div>
   {@render children()}
 </dialog>

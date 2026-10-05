@@ -61,6 +61,15 @@ para a próxima linha sem comprimir os nomes. Avisos não cobrem o composer.
 Scrollbars seguem o tema com trilho neutro e puxador azul-acinzentado; rolagem
 nativa por toque, teclado e mouse permanece. Alto contraste usa as cores do sistema.
 
+Em **Recursos**, experimente políticas adaptativa/manual, limites livres de memória
+e paralelismo, e prévias de máquinas/pressão simuladas. Os tetos nunca aumentam sozinhos;
+a fórmula é ilustrativa, não um scheduler nem benchmark.
+Em **Providers → Adicionar provider**, escolha uma integração mapeada ou um endpoint
+custom com protocolo, referência fictícia (`cred:demo`), modelos, capacidades e variantes.
+Os modelos entram nos pickers e na fila com confirmação de compartilhamento entre providers.
+Cadastros e limites permanecem ao navegar, mas recarregar a página restaura os exemplos.
+Nenhum login, cofre de credenciais, chamada de inferência ou processo real é acionado.
+
 Modos têm cores próprias: Planejar violeta, Perguntar azul, Auto verde-água e
 Yolo coral. Low/default/high mudam a intensidade, mantendo o nome visível.
 A cor da execução e das mensagens na fila segue a seleção capturada, não a

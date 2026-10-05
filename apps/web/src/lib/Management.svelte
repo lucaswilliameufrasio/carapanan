@@ -10,7 +10,9 @@
     ExternalLink,
   } from '@lucide/svelte';
   import { labels as l, demo } from './content';
-  import { models } from './prototype';
+  import Providers from './Providers.svelte';
+  import Resources from './Resources.svelte';
+  import type { Configuration } from './configuration';
   import Picker from './Picker.svelte';
   let {
     view,
@@ -18,12 +20,16 @@
     offline,
     onmodal,
     onnotice,
+    configuration,
+    onconfigure,
   }: {
     view: string;
     degraded: boolean;
     offline: boolean;
     onmodal: (id: string) => void;
     onnotice: (text: string) => void;
+    configuration: Configuration;
+    onconfigure: (configuration: Configuration) => void;
   } = $props();
   let mcpStates = $state<Record<string, string>>({
     'ai-memory': 'healthy',
@@ -34,8 +40,6 @@
   let paired = $state(false);
   let deviceAdmin = $state(false);
   let keep = $state(true);
-  let connectedProviders = $state(['OpenAI · mock']);
-  let memoryLimit = $state('2 GiB');
   let configKey = $state('model.primary');
   let permissions = $state(false);
   const update = (text: string) => {
@@ -133,37 +137,12 @@
       >{/each}
   </div>
 {:else if view === 'providers'}
-  <div class="section-heading">
-    <div>
-      <h2>{l.provider}s</h2>
-      <p>{l.noProvider}</p>
-    </div>
-  </div>
-  <div class="list-table">
-    {#each models as model (model.id)}<div class="management-row">
-        <Server size={19} />
-        <div class="grow">
-          <strong>{model.provider}</strong><small>{model.name} · {model.variants.join(', ')}</small>
-        </div>
-        <span class:success={connectedProviders.includes(model.provider)}
-          >{connectedProviders.includes(model.provider) ? l.healthy : l.disabled}</span
-        ><button
-          disabled={offline}
-          onclick={() => {
-            connectedProviders = connectedProviders.includes(model.provider)
-              ? connectedProviders.filter((p) => p !== model.provider)
-              : [...connectedProviders, model.provider];
-            update(l.savedMock);
-          }}>{connectedProviders.includes(model.provider) ? l.disable : l.connect}</button
-        >
-      </div>{/each}
-  </div>
-  <section class="detail-block">
-    <h3>ChatGPT · Pro · mock</h3>
-    <p>{l.noFallback}</p>
-    <div class="meter"><span style="width: 24%"></span></div>
-    <small>24% · fixture</small>
-  </section>
+  <Providers
+    providers={configuration.providers}
+    {offline}
+    {onnotice}
+    onchange={(providers) => onconfigure({ ...configuration, providers })}
+  />
 {:else if view === 'devices'}
   <div class="section-heading">
     <div>
@@ -208,42 +187,20 @@
     >
   </section>
 {:else if view === 'resources'}
-  <div class="section-heading">
-    <div>
-      <h2>{l.limits}</h2>
-      <p>{l.budgets}</p>
-    </div>
-  </div>
-  <div class="resource-grid">
-    <section class="detail-block">
-      <h3>{l.memory}</h3>
-      <div class="large-metric">742 <small>MiB</small></div>
-      <p>/ {memoryLimit} · mock</p>
-      <div class="meter"><span style="width: 36%"></span></div>
-      <div class="setting-row">
-        <span>{l.limits}</span><Picker
-          label={l.limits}
-          value={memoryLimit}
-          disabled={offline}
-          options={['1 GiB', '2 GiB', '4 GiB'].map((v) => ({ value: v, label: v }))}
-          onchange={(value) => (memoryLimit = value)}
-        />
-      </div>
-    </section>
-    <section class="detail-block">
-      <h3>{l.cpu}</h3>
-      <div class="large-metric">1 <small>/ 2</small></div>
-      <p>3 active · 7 hibernated · mock</p>
-      <p>{l.budgets}</p>
-    </section>
-  </div>
+  <Resources
+    settings={configuration.resources}
+    {offline}
+    {onnotice}
+    onchange={(resources) => onconfigure({ ...configuration, resources })}
+  />
   <section class="detail-block">
     <h3><HardDrive size={18} />{l.disk}</h3>
     {#each [['Sessions', '1,8 GB'], ['Artifacts', '3,2 GB'], ['Logs', '280 MB'], ['Cache', '640 MB']] as row (row[0])}<div
         class="metric-row"
       >
         <span>{row[0]}</span><code>{row[1]}</code>
-      </div>{/each}<button disabled={offline} onclick={() => onmodal('clean')}>{l.clean}</button>
+      </div>{/each}
+    <button disabled={offline} onclick={() => onmodal('clean')}>{l.clean}</button>
   </section>
   <section class="detail-block">
     <h3>{l.processes}</h3>
@@ -306,7 +263,7 @@
           ? 'gpt-mock'
           : configKey === 'agent.mode'
             ? 'ask'
-            : '2'}</code
+            : configuration.resources.agents}</code
       >
     </div>
     <div class="metric-row"><span>{l.source}</span><code>user · mock</code></div>

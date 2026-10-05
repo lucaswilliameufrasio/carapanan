@@ -40,17 +40,17 @@
   import Modal from '#lib/Modal.svelte';
   import Management from '#lib/Management.svelte';
   import Picker from '#lib/Picker.svelte';
+  import { initialConfiguration, providerModels } from '#lib/configuration.ts';
   import { translate, type CopyKey } from '#lib/copy.ts';
   import { labels as l, demo } from '#lib/content.ts';
   import {
-    compatible,
+    compatible as catalogCompatible,
     connected,
     getScenario,
     initialState,
-    modelName,
-    models,
+    modelName as catalogModelName,
     profileName,
-    provider,
+    provider as catalogProvider,
     reduce,
     scenarios,
     type Action,
@@ -60,6 +60,11 @@
   } from '#lib/prototype.ts';
 
   let ui: PrototypeState = $state(initialState());
+  let configuration = $state(initialConfiguration());
+  const models = $derived(providerModels(configuration.providers));
+  const compatible = (selection: Selection) => catalogCompatible(selection, models);
+  const modelName = (id: string) => catalogModelName(id, models);
+  const provider = (id: string) => catalogProvider(id, models);
   let view = $state('session');
   let tab = $state('conversation');
   let modal = $state('');
@@ -220,7 +225,7 @@
   }
 
   function dispatch(action: Action) {
-    ui = reduce(ui, action);
+    ui = reduce(ui, action, models);
   }
   function selectProfile(id: string) {
     const p = ui.profiles.find((p) => p.profile === id);
@@ -959,7 +964,11 @@
                 <Picker
                   label={l.model}
                   value={ui.selected.model}
-                  options={models.map((m) => ({ value: m.id, label: m.name, detail: m.provider }))}
+                  options={models.map((m) => ({
+                    value: m.id,
+                    label: m.name,
+                    detail: `${m.provider}${m.enabled === false ? ' · desabilitado' : ''}`,
+                  }))}
                   onchange={(value) => changeSelection('model', value)}
                 />
                 <Picker
@@ -1078,6 +1087,8 @@
               >
             </section>{:else}<Management
               {view}
+              {configuration}
+              onconfigure={(value) => (configuration = value)}
               degraded={ui.scenario === 'mcp'}
               offline={!online}
               onmodal={(id) => {
