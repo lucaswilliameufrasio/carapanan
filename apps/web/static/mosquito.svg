@@ -1,6 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
-  <title>Carapanã</title>
-  <rect width="64" height="64" rx="12" fill="#191e24"/>
+  <title>Carapanã — mosquito amazônico</title>
   <g stroke="#91c6df" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
     <path d="M39 29C33 7 17 7 20 16C23 23 31 26 39 29Z" fill="#91c6df" fill-opacity=".16"/>
     <path d="M39 29C40 10 51 6 51 14C51 21 45 26 39 29Z" fill="#91c6df" fill-opacity=".16"/>

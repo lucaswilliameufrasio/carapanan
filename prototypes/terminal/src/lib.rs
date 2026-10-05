@@ -57,6 +57,8 @@ pub struct App {
     pub notice: String,
     pub plain: bool,
     pub ansi256: bool,
+    pub animated: bool,
+    pub visual_elapsed: std::time::Duration,
     pub dialog: Option<Dialog>,
     pub queue_edit: Option<usize>,
     pub edit_selection: Option<Selection>,
@@ -137,6 +139,8 @@ impl Default for App {
             notice: String::new(),
             plain: false,
             ansi256: true,
+            animated: true,
+            visual_elapsed: std::time::Duration::ZERO,
             dialog: None,
             queue_edit: None,
             edit_selection: None,
@@ -364,6 +368,18 @@ pub fn render(frame: &mut Frame, app: &App) {
     let (input, cursor_row, cursor_col) = project_input(app, content.width as usize);
     let input_height = (input.lines().count() as u16 + 2).clamp(3, 6);
     let palette = palette::Palette::new(app.plain, app.ansi256);
+    let next_mode = palette::Palette::mode(
+        app.plain,
+        app.ansi256,
+        &app.next_selection().name,
+        &app.next_selection().variant,
+    );
+    let executing_mode = palette::Palette::mode(
+        app.plain,
+        app.ansi256,
+        &app.executing.name,
+        &app.executing.variant,
+    );
     let accent = palette.muted;
     let attention = palette.attention;
     let approval_height = if app.dialog.is_none()
@@ -398,12 +414,36 @@ pub fn render(frame: &mut Frame, app: &App) {
         Constraint::Length(2),
     ])
     .split(content);
+    let flying = !app.plain
+        && app.animated
+        && (app.visual_elapsed.as_secs() < 4
+            || app
+                .active
+                .is_some_and(|i| app.turns[i].status == session::TurnStatus::Processing));
+    let wings = if flying && (app.visual_elapsed.as_millis() / 220) % 2 == 1 {
+        "   (/ \\)     "
+    } else {
+        "   (\\ /)     "
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(wings, next_mode),
+            Line::styled(" <==o-o---->  ", next_mode),
+            Line::styled("  /|\\ /|\\    ", next_mode),
+        ]),
+        Rect::new(rows[0].x, rows[0].y, 13, 3),
+    );
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled("carapanã", Style::default().add_modifier(Modifier::BOLD)),
             Line::styled("workspace de exemplo · Delivery 0 / simulado", accent),
         ]),
-        rows[0],
+        Rect::new(
+            rows[0].x + 14,
+            rows[0].y,
+            rows[0].width.saturating_sub(14),
+            rows[0].height,
+        ),
     );
     let max_scroll = line_count.saturating_sub(transcript_height);
     let raw_offset = max_scroll.saturating_sub(app.scroll);
@@ -474,7 +514,15 @@ pub fn render(frame: &mut Frame, app: &App) {
                 .first()
                 .map_or(String::new(), |message| message.text.replace('\n', " ↵ "))
         );
-        frame.render_widget(Paragraph::new(queue).style(palette.assistant), rows[3]);
+        let queue_mode = app.queue.first().map_or(palette.muted, |message| {
+            palette::Palette::mode(
+                app.plain,
+                app.ansi256,
+                &message.selection.name,
+                &message.selection.variant,
+            )
+        });
+        frame.render_widget(Paragraph::new(queue).style(queue_mode), rows[3]);
     }
     frame.render_widget(
         Paragraph::new(app.notice.as_str()).style(attention),
@@ -497,7 +545,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                     .border_style(if app.approval_focus || app.dialog.is_some() {
                         palette.muted
                     } else {
-                        palette.interaction
+                        next_mode
                     })
                     .borders(Borders::TOP | Borders::BOTTOM),
             ),
@@ -510,7 +558,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 Span::styled("Próxima: ", accent),
                 Span::styled(
                     selected.name.as_str(),
-                    palette.interaction.add_modifier(Modifier::BOLD),
+                    next_mode.add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(
@@ -545,7 +593,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 },
                 if let Some(index) = app.active {
                     match app.turns[index].status {
-                        session::TurnStatus::Processing => palette.assistant,
+                        session::TurnStatus::Processing => executing_mode,
                         session::TurnStatus::Waiting | session::TurnStatus::Paused => {
                             palette.attention
                         }
