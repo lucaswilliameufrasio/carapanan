@@ -250,6 +250,11 @@ kbd {
   justify-content: space-between;
   padding: 0 4px 12px;
 }
+@media (min-width: 741px) {
+  .sidebar.collapsed {
+    display: none;
+  }
+}
 .plain-button {
   background: transparent;
   border-color: transparent;
