@@ -13,6 +13,9 @@ pub enum Menu {
     Approval,
     Config,
     Help,
+    Updates,
+    UpdatePackage,
+    UpdateChannel,
 }
 
 #[derive(Clone)]
@@ -23,7 +26,7 @@ pub struct Dialog {
     pub variant: String,
 }
 
-pub const COMMANDS: [(&str, &str); 25] = [
+pub const COMMANDS: [(&str, &str); 26] = [
     ("/demo", "Iniciar exemplo de execução com aprovação"),
     ("/model", "Escolher modelo e raciocínio"),
     ("/profile", "Escolher perfil da próxima mensagem"),
@@ -48,6 +51,10 @@ pub const COMMANDS: [(&str, &str); 25] = [
     ("/pause", "Pausar sem perder a fila"),
     ("/resume", "Retomar após confirmação"),
     ("/stop", "Parar preservando alterações"),
+    (
+        "/update",
+        "Atualizações: versão, reinício e rollback simulados",
+    ),
     ("/help", "Teclado e comandos"),
 ];
 
@@ -174,11 +181,36 @@ impl App {
                 ("/resources".into(), "Limites e consumo".into()),
                 ("/providers".into(), "Providers".into()),
                 ("/devices".into(), "Dispositivos".into()),
+                ("/update".into(), "Atualizações simuladas".into()),
                 ("/help".into(), "Ajuda".into()),
             ],
             Menu::Help => vec![],
+            Menu::Updates => self
+                .update
+                .actions()
+                .iter()
+                .map(|a| (a.label().into(), String::new()))
+                .collect(),
+            Menu::UpdatePackage => crate::updates::Package::ALL
+                .iter()
+                .map(|p| {
+                    (
+                        p.label().into(),
+                        "Trocar reinicia apenas a prévia de atualização".into(),
+                    )
+                })
+                .collect(),
+            Menu::UpdateChannel => crate::updates::Channel::ALL
+                .iter()
+                .map(|c| {
+                    (
+                        c.label().into(),
+                        "Canal fictício; nenhuma consulta remota".into(),
+                    )
+                })
+                .collect(),
         };
-        if dialog.menu == Menu::Queue {
+        if matches!(dialog.menu, Menu::Queue | Menu::Updates) {
             return items;
         }
         let query = dialog.query.trim_start_matches('/').to_lowercase();
@@ -201,6 +233,7 @@ impl App {
             "/queue" => self.open_menu(Menu::Queue),
             "/scenario" => self.open_menu(Menu::Scenario),
             "/config" => self.open_menu(Menu::Config),
+            "/update" => self.open_menu(Menu::Updates),
             "/approve"
                 if self.scenario().status == "waiting-for-approval" && self.pending.is_none() =>
             {
@@ -307,6 +340,39 @@ impl App {
                 self.dialog = None;
             }
             Menu::Help => {}
+            Menu::Updates => {
+                if let Some(action) = self.update.actions().get(dialog.cursor) {
+                    self.update_action(*action);
+                }
+            }
+            Menu::UpdatePackage => {
+                if self.scenario().id == "offline" {
+                    self.update.feedback = "Desconectado: ações de atualização bloqueadas.".into();
+                    self.open_menu(Menu::Updates);
+                    return;
+                }
+                if let Some(package) = crate::updates::Package::ALL
+                    .iter()
+                    .find(|p| p.label() == name)
+                {
+                    self.update.select_package(*package);
+                    self.open_menu(Menu::Updates);
+                }
+            }
+            Menu::UpdateChannel => {
+                if self.scenario().id == "offline" {
+                    self.update.feedback = "Desconectado: ações de atualização bloqueadas.".into();
+                    self.open_menu(Menu::Updates);
+                    return;
+                }
+                if let Some(channel) = crate::updates::Channel::ALL
+                    .iter()
+                    .find(|c| c.label() == name)
+                {
+                    self.update.select_channel(*channel);
+                    self.open_menu(Menu::Updates);
+                }
+            }
         }
     }
 
@@ -596,7 +662,11 @@ impl App {
         let menu = self.dialog.as_ref().unwrap().menu;
         let count = self.menu_items().len();
         if key.code == KeyCode::Esc {
-            self.dialog = None;
+            if matches!(menu, Menu::UpdatePackage | Menu::UpdateChannel) {
+                self.open_menu(Menu::Updates);
+            } else {
+                self.dialog = None;
+            }
             return;
         }
         if menu == Menu::Help {
@@ -689,7 +759,10 @@ impl App {
             }
             KeyCode::Char(c)
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !matches!(menu, Menu::Help | Menu::Queue | Menu::Approval) =>
+                    && !matches!(
+                        menu,
+                        Menu::Help | Menu::Queue | Menu::Approval | Menu::Updates
+                    ) =>
             {
                 dialog.query.push(c);
                 dialog.cursor = 0;
