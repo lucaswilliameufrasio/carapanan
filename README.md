@@ -26,6 +26,24 @@ make dev
 logs web é exibido antes da TUI abrir. Para iniciar somente uma interface, use
 `pnpm dev` ou `cargo run --manifest-path prototypes/terminal/Cargo.toml -- --plain`.
 
+Para testar no celular, exponha a web na rede explicitamente:
+
+```sh
+HOST=0.0.0.0 PORT=5180 make dev
+# Ou somente a web:
+HOST=0.0.0.0 PORT=5180 pnpm dev
+```
+
+Abra `http://IP-DO-MAC:5180` no celular, no mesmo Wi-Fi; no Mac,
+`ipconfig getifaddr en0` mostra o IP dessa interface. Via SSH, use o IP da máquina
+remota ou o endereço Tailscale, com os dois dispositivos conectados.
+`0.0.0.0` é o endereço de escuta, não o endereço para navegar. Libere a porta no
+firewall se necessário; use apenas redes confiáveis, pois o protótipo não tem autenticação.
+Sem variáveis (ou com valores vazios), dev usa `127.0.0.1:5173`; preview usa
+`127.0.0.1:4173`. `HOST` e `PORT` também valem para
+`pnpm --filter @carapana/web preview`. A porta deve estar entre 1 e 65535;
+se estiver ocupada, o servidor falha em vez de mudar de porta silenciosamente.
+
 Web abre na sessão atual; mobile abre em **Precisa de você**. Use o seletor
 **Cenário de revisão** para explorar approvals, recuperação, offline, cota,
 conflitos, segredos, recursos e demais fixtures. Tema acompanha o sistema com
