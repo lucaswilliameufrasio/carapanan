@@ -23,8 +23,8 @@
   --attention-surface: #fff5df;
   --danger-surface: #fcecea;
   --success-surface: #eaf5ed;
-  --font-ui: 'IBM Plex Sans', sans-serif;
-  --font-code: 'IBM Plex Mono', monospace;
+  --font-ui: "IBM Plex Sans", sans-serif;
+  --font-code: "IBM Plex Mono", monospace;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -34,7 +34,7 @@
   --radius: 5px;
   --motion: 120ms;
 }
-[data-theme='dark'] {
+[data-theme="dark"] {
   color-scheme: dark;
   --surface: #191e24;
   --surface-muted: #14191e;

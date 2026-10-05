@@ -11,32 +11,34 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "lint": "eslint .",
+    "lint": "eslint 'src/**/*.svelte' --max-warnings 0",
+    "lint:fix": "eslint 'src/**/*.svelte' --fix --max-warnings 0",
     "test": "vitest run",
     "test:e2e": "playwright test"
   },
   "dependencies": {
     "@carapana/design": "workspace:*",
-    "@fontsource/ibm-plex-sans": "5.3.0",
     "@fontsource/ibm-plex-mono": "5.3.0",
-    "@opentelemetry/api": "1.9.1",
-    "@lucide/svelte": "1.52.0"
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "@lucide/svelte": "1.52.0",
+    "@opentelemetry/api": "1.9.1"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.63.0",
     "@sveltejs/adapter-static": "4.0.0",
     "@sveltejs/kit": "3.0.0",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tailwindcss/vite": "4.3.3",
-    "tailwindcss": "4.3.3",
-    "@playwright/test": "1.63.0",
-    "@eslint/js": "10.0.1",
     "eslint": "10.12.0",
+    "eslint-plugin-better-tailwindcss": "4.7.0",
     "eslint-plugin-svelte": "3.23.0",
-    "typescript-eslint": "8.71.0",
     "globals": "17.13.0",
     "svelte": "5.57.1",
     "svelte-check": "4.7.6",
+    "tailwindcss": "4.3.3",
     "typescript": "6.0.3",
+    "typescript-eslint": "8.71.0",
     "vite": "8.3.2",
     "vitest": "5.0.3"
   }

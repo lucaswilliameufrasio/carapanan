@@ -6,14 +6,17 @@
     "dev": "pnpm --filter @carapana/web dev",
     "build": "pnpm --filter @carapana/web build",
     "check": "pnpm --filter @carapana/web check",
-    "lint": "pnpm --filter @carapana/web lint",
+    "lint": "biome lint --error-on-warnings . && pnpm --filter @carapana/web lint",
+    "lint:fix": "biome check --write . && pnpm --filter @carapana/web lint:fix",
     "test": "pnpm --filter @carapana/web test",
     "test:e2e": "pnpm --filter @carapana/web test:e2e",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format": "biome format --write . && prettier --write .",
+    "format:check": "biome ci --error-on-warnings . && prettier --check ."
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "prettier": "3.9.9",
-    "prettier-plugin-svelte": "4.1.1"
+    "prettier-plugin-svelte": "4.1.1",
+    "prettier-plugin-tailwindcss": "0.8.1"
   }
 }
