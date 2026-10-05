@@ -146,15 +146,16 @@ test('Should select settings resources config and nested profile fields with the
   await page.getByRole('dialog').getByRole('button', { name: 'Salvar', exact: true }).click();
   await nav(page, 'Recursos');
   await expect(page.locator('select')).toHaveCount(0);
-  await pick(page, 'Limites', '4 GiB');
-  await expect(page.locator('.resource-grid')).toContainText('/ 4 GiB');
+  await page.getByRole('spinbutton', { name: 'Teto de memória (GiB)' }).fill('6');
+  await page.getByRole('button', { name: 'Aplicar no mock', exact: true }).click();
+  await expect(page.getByRole('spinbutton', { name: 'Teto de memória (GiB)' })).toHaveValue('6');
   await nav(page, 'Configuração efetiva');
   await expect(page.locator('select')).toHaveCount(0);
   await pick(page, 'Explicar precedência', 'agent.mode');
   await expect(page.locator('.detail-block h3')).toHaveText('agent.mode');
   await scenario(page, 'offline');
   await nav(page, 'Recursos');
-  await expect(page.getByRole('combobox', { name: 'Limites', exact: true })).toBeDisabled();
+  await expect(page.getByRole('spinbutton', { name: 'Teto de memória (GiB)' })).toBeDisabled();
 });
 
 test('Should open mobile in attention and desktop in the active session without console errors', async ({
@@ -169,6 +170,139 @@ test('Should open mobile in attention and desktop in the active session without 
     await expect(page.getByRole('heading', { name: 'Precisa de você', exact: true })).toBeVisible();
   else await expect(page.locator('.execution-strip')).toContainText('Executando Auto');
   expect(errors).toEqual([]);
+});
+
+test('Should edit arbitrary resource caps validate them and preview adaptation without runtime changes', async ({
+  page,
+}) => {
+  await detail(page);
+  await nav(page, 'Recursos');
+  await page.getByRole('spinbutton', { name: 'Limite suave (GiB)' }).fill('7');
+  await page.getByRole('button', { name: 'Aplicar no mock', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('limite suave não pode superar');
+  await page.getByRole('spinbutton', { name: 'Teto de memória (GiB)' }).fill('12');
+  await page.getByRole('spinbutton', { name: 'Agentes simultâneos' }).fill('6');
+  await page.getByRole('button', { name: /^Manual/ }).click();
+  await expect(page.locator('.preview-metrics')).toContainText('6');
+  await page.getByRole('button', { name: 'Aplicar no mock', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await nav(page, 'Diagnóstico');
+  await nav(page, 'Recursos');
+  await expect(page.getByRole('spinbutton', { name: 'Limite suave (GiB)' })).toHaveValue('7');
+  await expect(page.getByRole('spinbutton', { name: 'Agentes simultâneos' })).toHaveValue('6');
+  await page.getByRole('button', { name: /^Adaptativo/ }).click();
+  await pick(page, 'Máquina de referência', 'tirion');
+  await page.getByRole('checkbox', { name: 'Simular pressão de memória' }).check();
+  await expect(page.locator('.preview-metrics strong').first()).toHaveText('1');
+  await expect(page.getByRole('spinbutton', { name: 'Agentes simultâneos' })).toHaveValue('6');
+  await page.getByRole('button', { name: 'Descartar ajustes', exact: true }).click();
+  await expect(page.getByRole('button', { name: /^Manual/ })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await page.reload();
+  await nav(page, 'Recursos');
+  await expect(page.getByRole('spinbutton', { name: 'Limite suave (GiB)' })).toHaveValue('2');
+  await expect(page.getByRole('spinbutton', { name: 'Agentes simultâneos' })).toHaveValue('4');
+});
+
+test('Should add a custom provider and queue its model with explicit sharing confirmation without network', async ({
+  page,
+}) => {
+  await detail(page);
+  const external: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).hostname === 'gateway.example.invalid') external.push(request.url());
+  });
+  const executing = await page.locator('.execution-strip').getAttribute('data-profile');
+  await nav(page, 'Providers');
+  await page.getByRole('button', { name: 'Adicionar provider', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Adicionar provider', exact: true });
+  await dialog.getByRole('button', { name: /^Custom/ }).click();
+  await dialog.getByLabel('Nome do provider', { exact: true }).fill('Meu gateway');
+  await dialog.getByLabel('URL base', { exact: true }).fill('https://gateway.example.invalid/v1');
+  await dialog.getByLabel('Referência da credencial', { exact: true }).fill('cred:gateway-demo');
+  await dialog.getByLabel('Nome do modelo 1', { exact: true }).fill('Modelo da casa');
+  await dialog.getByLabel('Identificador do modelo 1', { exact: true }).fill('org/modelo-casa');
+  await dialog
+    .getByRole('group', { name: 'Capacidades do modelo 1' })
+    .getByRole('checkbox', { name: 'Reasoning' })
+    .check();
+  await dialog
+    .getByRole('group', { name: 'Variantes do modelo 1' })
+    .getByRole('checkbox', { name: 'high' })
+    .check();
+  await dialog.getByRole('button', { name: 'Adicionar modelo', exact: true }).click();
+  await dialog.getByLabel('Nome do modelo 2', { exact: true }).fill('Modelo rápido');
+  await dialog.getByLabel('Identificador do modelo 2', { exact: true }).fill('org/rapido');
+  await dialog.getByRole('button', { name: 'Salvar provider no mock', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('.provider-list')).toContainText('Modelo rápido');
+  await page.keyboard.press('Control+p');
+  await page.getByRole('dialog').getByRole('textbox').fill('Conversa');
+  await page.getByRole('dialog').getByRole('textbox').press('Enter');
+  await expect(page.locator('.execution-strip')).toHaveAttribute('data-profile', executing!);
+  await pick(page, 'Modelo', 'provider-4-model-1');
+  await pick(page, 'Variante', 'high');
+  await page.locator('#composer').fill('Testar a seleção, sem execução real');
+  await page.getByRole('button', { name: 'Enviar para a fila', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText('Meu gateway');
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: 'Confirmar no protótipo', exact: true })
+    .click();
+  await page.locator('.queue summary').click();
+  await expect(page.locator('.queue-item').last()).toContainText('Modelo da casa');
+  await expect(page.locator('.queue-item').last()).toContainText('high');
+  await nav(page, 'Providers');
+  await page.getByRole('button', { name: 'Desabilitar Meu gateway', exact: true }).click();
+  await page.keyboard.press('Control+p');
+  await page.getByRole('dialog').getByRole('textbox').fill('Conversa');
+  await page.getByRole('dialog').getByRole('textbox').press('Enter');
+  await expect(page.getByRole('combobox', { name: 'Modelo', exact: true })).toHaveAttribute(
+    'data-value',
+    'provider-4-model-1',
+  );
+  await page.locator('#composer').fill('Não trocar silenciosamente');
+  await expect(
+    page.getByRole('button', { name: 'Enviar para a fila', exact: true }),
+  ).toBeDisabled();
+  await expect(page.locator('.execution-strip')).toHaveAttribute('data-profile', executing!);
+  expect(external).toEqual([]);
+});
+
+test('Should validate cancel and edit a mapped provider without accepting raw credentials', async ({
+  page,
+}) => {
+  await detail(page);
+  await nav(page, 'Providers');
+  await page.getByRole('button', { name: 'Adicionar provider', exact: true }).click();
+  let dialog = page.getByRole('dialog', { name: 'Adicionar provider', exact: true });
+  await pick(page, 'Integração', 'openrouter');
+  await dialog.getByLabel('Nome do provider', { exact: true }).fill('Router pessoal');
+  await dialog
+    .getByLabel('Referência da credencial', { exact: true })
+    .fill('chave-nao-e-referencia');
+  await dialog.getByRole('button', { name: 'Salvar provider no mock', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('nunca uma chave ou token');
+  await dialog.getByLabel('Referência da credencial', { exact: true }).fill('cred:router');
+  await dialog.getByRole('button', { name: 'Salvar provider no mock', exact: true }).click();
+  const card = page
+    .locator('.provider-card')
+    .filter({ has: page.getByRole('heading', { name: 'Router pessoal', exact: true }) });
+  await card.getByRole('button', { name: 'Editar Router pessoal', exact: true }).click();
+  dialog = page.getByRole('dialog', { name: 'Editar provider', exact: true });
+  await expect(dialog.getByRole('combobox', { name: 'Integração', exact: true })).toHaveAttribute(
+    'data-value',
+    'openrouter',
+  );
+  await dialog.getByLabel('Nome do provider', { exact: true }).fill('Não salvar');
+  await dialog.getByRole('button', { name: 'Cancelar', exact: true }).click();
+  await expect(card).toContainText('Router pessoal');
+  await scenario(page, 'offline');
+  await expect(
+    page.getByRole('button', { name: 'Adicionar provider', exact: true }),
+  ).toBeDisabled();
 });
 
 test('Should keep the execution unchanged and snapshot the queued profile', async ({ page }) => {
@@ -371,6 +505,18 @@ for (const theme of ['light', 'dark']) {
       fullPage: true,
       animations: 'disabled',
     });
+    await nav(page, 'Recursos');
+    await expect(page).toHaveScreenshot(`resources-${theme}.png`, { animations: 'disabled' });
+    await nav(page, 'Providers');
+    await page.locator('.management-content').evaluate((el) => (el.scrollTop = 0));
+    await expect(page).toHaveScreenshot(`providers-${theme}.png`, { animations: 'disabled' });
+    await page.getByRole('button', { name: 'Adicionar provider', exact: true }).click();
+    await expect(page).toHaveScreenshot(`provider-mapped-${theme}.png`, { animations: 'disabled' });
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: /^Custom/ })
+      .click();
+    await expect(page).toHaveScreenshot(`provider-custom-${theme}.png`, { animations: 'disabled' });
   });
 }
 
