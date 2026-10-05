@@ -7,9 +7,9 @@
     "#lib/*": "./src/lib/*"
   },
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1",
+    "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",

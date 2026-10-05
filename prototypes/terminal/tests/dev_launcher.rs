@@ -19,14 +19,19 @@ fn should_launch_dev_with_a_bsd_compatible_template_and_stop_web_on_exit() {
     );
     script(
         "pnpm",
-        "#!/bin/bash\ntrap 'echo stopped > \"$TEST_DIRECTORY/stopped\"; exit 0' TERM\necho ready > \"$TEST_DIRECTORY/ready\"\nsleep 30 &\nwait\n",
+        "#!/bin/bash\ntrap 'echo stopped > \"$TEST_DIRECTORY/stopped\"; exit 0' TERM\nprintf '%s:%s' \"$HOST\" \"$PORT\" > \"$TEST_DIRECTORY/network\"\necho ready > \"$TEST_DIRECTORY/ready\"\nsleep 30 &\nwait\n",
     );
     script(
         "cargo",
         "#!/bin/bash\nfor i in {1..100}; do [ -f \"$TEST_DIRECTORY/ready\" ] && exit \"$TEST_EXIT_CODE\"; sleep .02; done\nexit 99\n",
     );
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for code in [0, 7] {
+    for (code, host, port, expected) in [
+        (0, "", "", "127.0.0.1:5173"),
+        (7, "", "", "127.0.0.1:5173"),
+        (0, "0.0.0.0", "5180", "0.0.0.0:5180"),
+        (7, "0.0.0.0", "5180", "0.0.0.0:5180"),
+    ] {
         let _ = fs::remove_file(directory.join("ready"));
         let _ = fs::remove_file(directory.join("stopped"));
         let output = Command::new("make")
@@ -39,6 +44,8 @@ fn should_launch_dev_with_a_bsd_compatible_template_and_stop_web_on_exit() {
             .env("TMPDIR", &directory)
             .env("TEST_DIRECTORY", &directory)
             .env("TEST_EXIT_CODE", code.to_string())
+            .env("HOST", host)
+            .env("PORT", port)
             .output()
             .unwrap();
         assert_eq!(
@@ -48,9 +55,13 @@ fn should_launch_dev_with_a_bsd_compatible_template_and_stop_web_on_exit() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains("Web: http://127.0.0.1:5173"),
+            String::from_utf8_lossy(&output.stdout).contains(&format!("Web: http://{expected}")),
             "{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("network")).unwrap(),
+            expected
         );
         assert!(
             directory.join("stopped").exists(),
