@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   initialConfiguration,
-  resourcePreview,
-  resourceErrors,
+  newProvider,
   providerErrors,
   providerModels,
-  newProvider,
+  resourceErrors,
+  resourcePreview,
 } from './configuration';
 import { initialState, reduce } from './prototype';
 

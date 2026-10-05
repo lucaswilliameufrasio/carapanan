@@ -8,6 +8,7 @@
     ChevronDown,
     ChevronRight,
     Clock,
+    Download,
     Cpu,
     FileDiff,
     FolderOpen,
@@ -40,6 +41,8 @@
   import Modal from '#lib/Modal.svelte';
   import Management from '#lib/Management.svelte';
   import Picker from '#lib/Picker.svelte';
+  import Updates from '#lib/Updates.svelte';
+  import { initialUpdate, updateLabels, reduceUpdate } from '#lib/updates.ts';
   import { initialConfiguration, providerModels } from '#lib/configuration.ts';
   import { translate, type CopyKey } from '#lib/copy.ts';
   import { labels as l, demo } from '#lib/content.ts';
@@ -61,6 +64,7 @@
 
   let ui: PrototypeState = $state(initialState());
   let configuration = $state(initialConfiguration());
+  let update = $state(initialUpdate());
   const models = $derived(providerModels(configuration.providers));
   const compatible = (selection: Selection) => catalogCompatible(selection, models);
   const modelName = (id: string) => catalogModelName(id, models);
@@ -118,6 +122,7 @@
     { id: 'doctor', key: 'doctor' as const, icon: Terminal },
     { id: 'config', key: 'config' as const, icon: ListChecks },
     { id: 'settings', key: 'settings' as const, icon: Settings },
+    { id: 'updates', key: 'updates' as const, icon: Download },
   ];
   const modalTitles: Record<string, string> = {
     provider: l.providerTitle,
@@ -132,6 +137,7 @@
     skill: 'Skills',
     active: l.activeSession,
     keyboard: l.keyboard,
+    updates: 'Atualizações · prévia',
   };
   const paletteResults = $derived(
     [
@@ -277,6 +283,11 @@
     modal = 'profiles';
   }
   function openView(id: string) {
+    if (id === 'updates') {
+      modal = 'updates';
+      menuOpen = false;
+      return;
+    }
     view = id;
     mobileHome = id === 'sessions';
     menuOpen = false;
@@ -391,6 +402,19 @@
     </div>
   </header>
 
+  {#if !update.hidden}<div class="update-banner">
+      <button class="plain-button" onclick={() => (modal = 'updates')}
+        ><Download size={15} /><span>{updateLabels[update.status]}</span><small>mock</small
+        ><ChevronRight size={15} /></button
+      >
+      <button
+        class="icon-button"
+        aria-label="Lembrar atualização depois"
+        title="Lembrar depois"
+        onclick={() => (update = reduceUpdate(update, { type: 'later' }))}><X size={15} /></button
+      >
+    </div>{/if}
+
   <div class="app-body">
     <aside
       id="session-sidebar"
@@ -448,7 +472,7 @@
       </div>
     </aside>
 
-    <main id="main" class:mobile-dashboard={mobileHome && view === 'session'}>
+    <main id="main">
       <div class="review-bar">
         <div class="scenario-control">
           <span>{t('scenario')}</span><Picker
@@ -895,7 +919,7 @@
               >
               <div class="queue-items">
                 {#each ui.queue as message, index (message.id)}<div class="queue-item">
-                    <span class="queue-index">{index + 1}</span>
+                    <span>{index + 1}</span>
                     <div class="grow">
                       <p>{message.text}</p>
                       <small
@@ -1137,6 +1161,11 @@
           </p>{/if}
       </div>
       <p class="palette-hint">↑/↓ navegar · Enter abrir · Esc fechar</p>
+    {:else if modal === 'updates'}<Updates
+        state={update}
+        offline={!online}
+        onchange={(value) => (update = value)}
+      />
     {:else if modal === 'provider'}<p>{l.providerBody}</p>
       <code>{provider(ui.executing.model)} → {provider(ui.selected.model)}</code><label
         class="setting-row"
@@ -1200,7 +1229,7 @@
           modal = '';
         }}>{t('save')}</button
       >
-    {:else if modal === 'profiles'}<div class="profiles-editor">
+    {:else if modal === 'profiles'}<div>
         {#each draftProfiles as p, index (p.profile)}<div class="profile-editor">
             <label>{l.profileName}<input bind:value={p.name} /></label>
             <div>
@@ -1265,7 +1294,7 @@
           >{l.saveDefault}</button
         >
       </div>
-    {:else if modal === 'output'}<pre class="full-output">{demo.output}</pre>
+    {:else if modal === 'output'}<pre>{demo.output}</pre>
     {:else if modal === 'checkpoint'}<p>{l.originalChanges}</p>
       <pre class="diff-code">{#each demo.diff as line (line)}<span
             class:added={line.startsWith('+')}

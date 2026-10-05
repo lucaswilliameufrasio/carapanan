@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 
 async function detail(page: Page) {
   await page.goto('/');
@@ -23,6 +23,96 @@ async function nav(page: Page, name: string) {
     await page.locator('.app-header').getByRole('button', { name: 'Sessões', exact: true }).click();
   await page.locator('.navigation').getByRole('button', { name, exact: true }).click();
 }
+
+test('Should preview an interface update and rollback without changing the conversation queue draft or approval', async ({
+  page,
+}) => {
+  await detail(page);
+  await page.locator('#composer').fill('Preserve minha revisão');
+  await page.locator('.queue summary').click();
+  const queue = await page.locator('.queue-items').innerText();
+  const executing = await page.locator('.execution-strip').innerText();
+  await page
+    .locator('.update-banner')
+    .getByRole('button', { name: /Nova versão disponível/ })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Atualizações · prévia', exact: true });
+  await expect(dialog).toContainText('Nenhum pacote será consultado, baixado ou instalado');
+  await dialog.getByRole('button', { name: 'Atualizar agora · mock', exact: true }).click();
+  await expect(dialog.locator('.update-status')).toContainText('Verificação pendente');
+  await dialog.getByRole('button', { name: 'Simular verificação', exact: true }).click();
+  await expect(dialog.locator('.update-status')).toContainText('sem reiniciar o agente');
+  await dialog.getByRole('button', { name: 'Simular rollback', exact: true }).click();
+  await expect(dialog.locator('.update-status')).toContainText('Rollback simulado concluído');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#composer')).toHaveValue('Preserve minha revisão');
+  expect(await page.locator('.execution-strip').innerText()).toBe(executing);
+  expect(await page.locator('.queue-items').innerText()).toBe(queue);
+  await expect(
+    page.getByRole('combobox', { name: 'Cenário de revisão', exact: true }),
+  ).toHaveAttribute('data-value', 'approval');
+  await expect(page.locator('.approval-panel')).toBeAttached();
+});
+
+test('Should schedule runtime updates and require an idle preview before explicit restart', async ({
+  page,
+}) => {
+  await detail(page);
+  await nav(page, 'Atualizações');
+  const dialog = page.getByRole('dialog', { name: 'Atualizações · prévia', exact: true });
+  await dialog.getByText('Explorar cenários de atualização', { exact: true }).click();
+  await pick(page, 'Pacote de demonstração', 'runtime');
+  await pick(page, 'Canal de atualização', 'beta');
+  await dialog.getByRole('button', { name: 'Ao terminar a tarefa', exact: true }).click();
+  await expect(dialog.locator('.update-status')).toContainText('Atualização agendada');
+  await dialog.getByRole('button', { name: 'Preparar agora · mock', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Simular verificação', exact: true }).click();
+  const restart = dialog.getByRole('button', { name: 'Simular reinício e retomada', exact: true });
+  await expect(restart).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Simular ponto seguro', exact: true }).click();
+  await expect(restart).toBeEnabled();
+  await expect(dialog.locator('.update-status')).toContainText('Reinício pendente');
+  await restart.click();
+  await expect(dialog.locator('.update-release')).toContainText('0.0.1-beta-demo');
+  await expect(dialog.locator('.update-status')).toContainText(
+    'Nenhum processo real foi reiniciado',
+  );
+});
+
+test('Should keep deferred updates discoverable block invalid packages and refuse incompatible rollback', async ({
+  page,
+}) => {
+  await detail(page);
+  await page.getByRole('button', { name: 'Lembrar atualização depois', exact: true }).click();
+  await expect(page.locator('.update-banner')).toHaveCount(0);
+  await page.keyboard.press('Control+p');
+  await page.getByRole('dialog').getByRole('textbox').fill('atualizacoes');
+  await page.getByRole('dialog').getByRole('textbox').press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Atualizações · prévia', exact: true });
+  await dialog.getByText('Explorar cenários de atualização', { exact: true }).click();
+  await pick(page, 'Pacote de demonstração', 'invalid');
+  await dialog.getByRole('button', { name: 'Atualizar agora · mock', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Simular verificação', exact: true }).click();
+  await expect(dialog.locator('.update-status')).toContainText('Instalação bloqueada');
+  await expect(
+    dialog.getByRole('button', { name: 'Simular reinício e retomada', exact: true }),
+  ).toHaveCount(0);
+  await pick(page, 'Pacote de demonstração', 'migration');
+  await dialog.getByRole('button', { name: 'Ao terminar a tarefa', exact: true }).click();
+  await dialog
+    .getByRole('button', { name: 'Simular término da tarefa e fila', exact: true })
+    .click();
+  await dialog.getByRole('button', { name: 'Simular verificação', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Simular reinício e retomada', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Simular rollback', exact: true })).toHaveCount(
+    0,
+  );
+  await expect(dialog).toContainText('não permite rollback automático');
+  await page.keyboard.press('Escape');
+  await scenario(page, 'offline');
+  await nav(page, 'Atualizações');
+  await expect(dialog).toContainText('Desconectado: ações de atualização bloqueadas');
+});
 
 test('Should hide and restore the desktop sidebar without losing the draft or mobile navigation', async ({
   page,
@@ -517,6 +607,22 @@ for (const theme of ['light', 'dark']) {
       .getByRole('button', { name: /^Custom/ })
       .click();
     await expect(page).toHaveScreenshot(`provider-custom-${theme}.png`, { animations: 'disabled' });
+    await page.keyboard.press('Escape');
+    await nav(page, 'Atualizações');
+    await expect(page).toHaveScreenshot(`updates-available-${theme}.png`, {
+      animations: 'disabled',
+    });
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Atualizar agora · mock', exact: true })
+      .click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Simular verificação', exact: true })
+      .click();
+    await expect(page).toHaveScreenshot(`updates-installed-${theme}.png`, {
+      animations: 'disabled',
+    });
   });
 }
 

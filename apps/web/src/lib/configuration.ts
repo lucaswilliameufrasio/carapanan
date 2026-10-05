@@ -1,4 +1,4 @@
-import { models, type Model } from './prototype';
+import { type Model, models } from './prototype';
 
 export type ResourceSettings = {
   policy: 'adaptive' | 'manual';
@@ -106,26 +106,31 @@ export function newProvider(id: string): ProviderConfig {
 export function initialConfiguration(): Configuration {
   return {
     resources: { policy: 'adaptive', soft: 2, hard: 4, agents: 4, sessions: 8, processes: 8 },
-    providers: models.map((model, index) => ({
-      ...newProvider(`builtin-${index}`),
-      name: model.provider,
-      integration: ['openai', 'anthropic', 'local'][index],
-      protocol: index === 1 ? 'anthropic' : 'openai',
-      endpoint: integrations.find((p) => p.id === ['openai', 'anthropic', 'local'][index])!
-        .endpoint,
-      auth: index === 2 ? 'none' : 'reference',
-      models: [
-        {
-          id: model.id,
-          upstreamId: model.id,
-          name: model.name,
-          variants: [...model.variants],
-          streaming: true,
-          tools: true,
-          reasoning: model.variants.length > 1,
-        },
-      ],
-    })),
+    providers: models.map((model, index) => {
+      const integration = integrations.find(
+        (p) => p.id === ['openai', 'anthropic', 'local'][index],
+      );
+      if (!integration) throw new RangeError('Integração de referência desconhecida.');
+      return {
+        ...newProvider(`builtin-${index}`),
+        name: model.provider,
+        integration: ['openai', 'anthropic', 'local'][index],
+        protocol: index === 1 ? 'anthropic' : 'openai',
+        endpoint: integration.endpoint,
+        auth: index === 2 ? 'none' : 'reference',
+        models: [
+          {
+            id: model.id,
+            upstreamId: model.id,
+            name: model.name,
+            variants: [...model.variants],
+            streaming: true,
+            tools: true,
+            reasoning: model.variants.length > 1,
+          },
+        ],
+      };
+    }),
   };
 }
 export function providerModels(providers: ProviderConfig[]): Model[] {
@@ -154,7 +159,8 @@ export function resourceErrors(settings: ResourceSettings): string[] {
   return errors;
 }
 export function resourcePreview(settings: ResourceSettings, machine: Machine, pressure: boolean) {
-  const fixture = machines.find((m) => m.id === machine)!;
+  const fixture = machines.find((m) => m.id === machine);
+  if (!fixture) throw new RangeError('Máquina de referência desconhecida.');
   const hard =
     settings.policy === 'manual'
       ? settings.hard
