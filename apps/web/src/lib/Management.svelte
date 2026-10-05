@@ -11,6 +11,7 @@
   } from '@lucide/svelte';
   import { labels as l, demo } from './content';
   import { models } from './prototype';
+  import Picker from './Picker.svelte';
   let {
     view,
     degraded,
@@ -219,11 +220,15 @@
       <div class="large-metric">742 <small>MiB</small></div>
       <p>/ {memoryLimit} · mock</p>
       <div class="meter"><span style="width: 36%"></span></div>
-      <label class="setting-row"
-        ><span>{l.limits}</span><select bind:value={memoryLimit} disabled={offline}
-          ><option>1 GiB</option><option>2 GiB</option><option>4 GiB</option></select
-        ></label
-      >
+      <div class="setting-row">
+        <span>{l.limits}</span><Picker
+          label={l.limits}
+          value={memoryLimit}
+          disabled={offline}
+          options={['1 GiB', '2 GiB', '4 GiB'].map((v) => ({ value: v, label: v }))}
+          onchange={(value) => (memoryLimit = value)}
+        />
+      </div>
     </section>
     <section class="detail-block">
       <h3>{l.cpu}</h3>
@@ -282,13 +287,17 @@
       <p>{l.noSecretConfig}</p>
     </div>
   </div>
-  <label class="setting-row"
-    ><span>{l.explain}</span><select bind:value={configKey}
-      ><option>model.primary</option><option>agent.mode</option><option
-        >resources.max_concurrent_agents</option
-      ></select
-    ></label
-  >
+  <div class="setting-row">
+    <span>{l.explain}</span><Picker
+      label={l.explain}
+      value={configKey}
+      options={['model.primary', 'agent.mode', 'resources.max_concurrent_agents'].map((v) => ({
+        value: v,
+        label: v,
+      }))}
+      onchange={(value) => (configKey = value)}
+    />
+  </div>
   <section class="detail-block">
     <h3><code>{configKey}</code></h3>
     <div class="metric-row">

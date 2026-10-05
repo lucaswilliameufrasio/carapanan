@@ -223,7 +223,7 @@ kbd {
   border-radius: 3px;
   margin-left: auto;
 }
-.theme-control select {
+.theme-control {
   background: transparent;
   border-color: var(--border);
   font-size: 12px;
@@ -383,15 +383,15 @@ main {
   background: var(--surface-muted);
   color: var(--text-muted);
 }
-.review-bar label {
+.scenario-control {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.review-bar select {
+.scenario-control .picker-trigger {
   font-size: 11px;
   min-height: 28px;
-  padding: 3px 25px 3px 7px;
+  padding: 3px 7px;
   width: 228px;
   border-color: var(--border);
 }
@@ -399,7 +399,7 @@ main {
   margin-left: auto;
   font-size: 10px;
 }
-.review-bar button {
+.review-bar > button {
   min-height: 26px;
   font-size: 11px;
 }
@@ -935,7 +935,7 @@ main {
   border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
-.setting-row select {
+.setting-row .picker-trigger {
   max-width: 45%;
 }
 .setting-row > span:first-child {
@@ -1121,11 +1121,11 @@ dialog textarea {
   gap: 12px;
   margin-bottom: 20px;
 }
-.edit-selects label {
+.edit-selects > div {
   flex: 1;
   font-size: 12px;
 }
-.edit-selects select {
+.edit-selects .picker-trigger {
   width: 100%;
   display: block;
   margin-top: 5px;
@@ -1154,13 +1154,14 @@ dialog textarea {
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
 }
-.profile-editor label {
+.profile-editor label,
+.profile-editor > div {
   font-size: 11px;
   flex: 1;
   min-width: 95px;
 }
 .profile-editor input,
-.profile-editor select {
+.profile-editor .picker-trigger {
   width: 100%;
   display: block;
   margin-top: 5px;
@@ -1188,6 +1189,56 @@ dialog textarea {
   min-height: 40px;
   padding: 6px 9px;
   white-space: nowrap;
+  justify-content: space-between;
+  max-width: 100%;
+}
+.picker-trigger > svg {
+  flex-shrink: 0;
+}
+.picker-options button {
+  white-space: normal;
+}
+.picker-options strong {
+  overflow-wrap: anywhere;
+}
+
+/* Native scrolling stays intact; only its visual chrome follows the brand. */
+.app,
+.app * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+}
+.app ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.app ::-webkit-scrollbar-track,
+.app ::-webkit-scrollbar-corner {
+  background: var(--scroll-track);
+}
+.app ::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border: 2px solid var(--scroll-track);
+  border-radius: 10px;
+  min-height: 32px;
+}
+.app ::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+@media (forced-colors: active) {
+  .app,
+  .app * {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+  }
+  .app ::-webkit-scrollbar-thumb {
+    background: ButtonText;
+    border-color: Canvas;
+  }
+  .app ::-webkit-scrollbar-track,
+  .app ::-webkit-scrollbar-corner {
+    background: Canvas;
+  }
 }
 .picker-trigger span {
   min-width: 0;
@@ -1197,6 +1248,10 @@ dialog textarea {
 .picker-options {
   display: grid;
   gap: 6px;
+  max-height: calc(100dvh - 200px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3px;
 }
 .picker-options button {
   min-height: 56px;
@@ -1410,10 +1465,9 @@ dialog textarea {
   .header-right {
     gap: 0;
   }
-  .theme-control select {
-    max-width: 75px;
-    padding-left: 5px;
-    font-size: 10px;
+  .theme-control {
+    max-width: 100px;
+    padding-inline: 7px;
   }
   .desktop-only {
     display: none !important;
@@ -1438,21 +1492,21 @@ dialog textarea {
     padding: 6px 12px;
     gap: 4px;
   }
-  .review-bar label {
+  .scenario-control {
     gap: 7px;
     flex: 1;
     min-width: 0;
   }
-  .review-bar label > span {
+  .scenario-control > span {
     display: none;
   }
-  .review-bar select {
+  .scenario-control .picker-trigger {
     width: 100%;
-    min-height: 34px;
-    font-size: 11px;
+    min-height: 44px;
+    font-size: 13px;
   }
-  .review-bar button {
-    min-height: 34px;
+  .review-bar > button {
+    min-height: 44px;
   }
   .session-header {
     padding: 12px 12px 6px;
@@ -1569,14 +1623,14 @@ dialog textarea {
   textarea {
     font-size: 16px;
   }
-  .theme-control select {
+  .theme-control {
     font-size: 13px;
     min-height: 44px;
   }
   .composer textarea {
     font-size: 16px;
   }
-  .setting-row select {
+  .setting-row .picker-trigger {
     max-width: 100%;
     width: 100%;
   }

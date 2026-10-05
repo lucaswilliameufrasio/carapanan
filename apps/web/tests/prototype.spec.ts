@@ -7,22 +7,15 @@ async function detail(page: Page) {
   await expect(page.locator('#composer')).toBeVisible();
 }
 async function scenario(page: Page, id: string) {
-  await page.getByLabel('Cenário de revisão').selectOption(id);
+  await pick(page, 'Cenário de revisão', id);
 }
 async function pick(page: Page, label: string, value: string) {
-  await page.getByRole('combobox', { name: label, exact: true }).click();
-  const names: Record<string, string> = {
-    plan: 'Planejar',
-    ask: 'Perguntar',
-    auto: 'Auto',
-    yolo: 'Yolo',
-    'gpt-mock': 'GPT · mock',
-    'claude-mock': 'Claude · mock',
-    'local-mock': 'Local · mock',
-  };
+  const dialogs = page.getByRole('dialog');
+  const scope = (await dialogs.count()) ? dialogs.last() : page;
+  await scope.getByRole('combobox', { name: label, exact: true }).last().click();
   await page
     .getByRole('dialog', { name: label, exact: true })
-    .getByRole('option', { name: names[value] ?? value, exact: true })
+    .locator(`[role="option"][data-value="${value}"]`)
     .click();
 }
 async function nav(page: Page, name: string) {
@@ -30,6 +23,104 @@ async function nav(page: Page, name: string) {
     await page.locator('.app-header').getByRole('button', { name: 'Sessões', exact: true }).click();
   await page.locator('.navigation').getByRole('button', { name, exact: true }).click();
 }
+
+test('Should use touch sized theme and scenario pickers instead of native mobile popups', async ({
+  page,
+  isMobile,
+}) => {
+  await detail(page);
+  await expect(page.locator('select')).toHaveCount(0);
+  if (isMobile)
+    await page.locator('.app-header').getByRole('button', { name: 'Sessões', exact: true }).tap();
+  for (const theme of ['dark', 'light', 'system']) {
+    if (isMobile) {
+      await page.getByRole('combobox', { name: 'Tema', exact: true }).tap();
+      const dialog = page.getByRole('dialog', { name: 'Tema', exact: true });
+      const box = await dialog.boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+      await dialog.locator(`[role="option"][data-value="${theme}"]`).tap();
+    } else await pick(page, 'Tema', theme);
+    await expect(page.locator('.theme-control')).toHaveAttribute('data-value', theme);
+    if (theme !== 'system') await expect(page.locator('.app')).toHaveAttribute('data-theme', theme);
+  }
+  if (isMobile)
+    await page.locator('.app-header').getByRole('button', { name: 'Sessões', exact: true }).tap();
+  await page.getByRole('combobox', { name: 'Cenário de revisão' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Cenário de revisão', exact: true });
+  const last = dialog.getByRole('option').last();
+  await last.scrollIntoViewIfNeeded();
+  expect((await last.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await last.click();
+  await expect(dialog).not.toBeVisible();
+});
+
+test('Should keep nested queue pickers cancelable without losing the edit dialog or draft', async ({
+  page,
+}) => {
+  await detail(page);
+  await page.locator('.queue summary').click();
+  await page
+    .locator('.queue-items')
+    .getByRole('button', { name: 'Editar', exact: true })
+    .first()
+    .click();
+  const editor = page.getByRole('dialog');
+  await editor.getByRole('textbox').fill('Rascunho preservado');
+  const trigger = editor.getByRole('combobox', { name: 'Modelo', exact: true });
+  await trigger.click();
+  await expect(page.getByRole('dialog', { name: 'Modelo', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(editor.getByRole('textbox')).toHaveValue('Rascunho preservado');
+  await expect(trigger).toBeFocused();
+});
+
+test('Should theme scrollbars and preserve accessible forced color defaults', async ({ page }) => {
+  await detail(page);
+  const colors = [];
+  for (const theme of ['light', 'dark']) {
+    await pick(page, 'Tema', theme);
+    const scroll = page.locator('.session-content');
+    colors.push(await scroll.evaluate((el) => getComputedStyle(el).scrollbarColor));
+    await expect(scroll).toHaveCSS('scrollbar-width', 'thin');
+  }
+  expect(colors[0]).not.toBe(colors[1]);
+  expect(colors).not.toContain('auto');
+  await page.emulateMedia({ forcedColors: 'active' });
+  await expect(page.locator('.session-content')).toHaveCSS('scrollbar-color', 'auto');
+});
+
+test('Should select settings resources config and nested profile fields with the same picker', async ({
+  page,
+}) => {
+  await detail(page);
+  await nav(page, 'Configurações');
+  await expect(page.locator('select')).toHaveCount(0);
+  await pick(page, 'Tema', 'dark');
+  await expect(page.locator('.app')).toHaveAttribute('data-theme', 'dark');
+  await pick(page, 'Idioma', 'pt-BR');
+  await pick(page, 'Escopo', 'project');
+  await expect(page.getByRole('combobox', { name: 'Escopo', exact: true })).toHaveAttribute(
+    'data-value',
+    'project',
+  );
+  await page.getByRole('button', { name: 'Editar perfis', exact: true }).click();
+  await expect(page.locator('select')).toHaveCount(0);
+  await pick(page, 'Modelo · Perguntar', 'claude-mock');
+  await pick(page, 'Variante · Perguntar', 'low');
+  await page.getByRole('dialog').getByRole('button', { name: 'Salvar', exact: true }).click();
+  await nav(page, 'Recursos');
+  await expect(page.locator('select')).toHaveCount(0);
+  await pick(page, 'Limites', '4 GiB');
+  await expect(page.locator('.resource-grid')).toContainText('/ 4 GiB');
+  await nav(page, 'Configuração efetiva');
+  await expect(page.locator('select')).toHaveCount(0);
+  await pick(page, 'Explicar precedência', 'agent.mode');
+  await expect(page.locator('.detail-block h3')).toHaveText('agent.mode');
+  await scenario(page, 'offline');
+  await nav(page, 'Recursos');
+  await expect(page.getByRole('combobox', { name: 'Limites', exact: true })).toBeDisabled();
+});
 
 test('Should open mobile in attention and desktop in the active session without console errors', async ({
   page,
@@ -68,9 +159,9 @@ test('Should edit text and model selection on a queued message explicitly', asyn
     .click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('textbox').fill('Só planeja a migração.');
-  await dialog.getByLabel('Perfil', { exact: true }).selectOption('plan');
-  await dialog.getByLabel('Modelo', { exact: true }).selectOption('claude-mock');
-  await dialog.getByLabel('Variante', { exact: true }).selectOption('low');
+  await pick(page, 'Perfil', 'plan');
+  await pick(page, 'Modelo', 'claude-mock');
+  await pick(page, 'Variante', 'low');
   await dialog.getByRole('button', { name: 'Salvar', exact: true }).click();
   await expect(page.locator('.queue-item').first()).toContainText('Só planeja a migração.');
   await expect(page.locator('.queue-item').first()).toContainText('Claude');
@@ -229,7 +320,7 @@ for (const shortcut of ['Control+p', 'Meta+p']) {
 for (const theme of ['light', 'dark']) {
   test(`Should render ${theme} review golden states without overflow`, async ({ page }) => {
     await page.goto('/');
-    await page.getByLabel('Tema', { exact: true }).selectOption(theme);
+    await pick(page, 'Tema', theme);
     await page.evaluate(() => document.fonts.ready);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
