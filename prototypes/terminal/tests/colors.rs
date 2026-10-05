@@ -130,6 +130,52 @@ fn should_fall_back_to_ansi_colors_without_requiring_256_colors_or_truecolor() {
 }
 
 #[test]
+fn should_use_a_distinct_mode_color_and_three_effort_intensities_without_changing_execution() {
+    use carapana_ui_prototype::palette::Palette;
+    let colors = ["Planejar", "Perguntar", "Auto", "Yolo"]
+        .map(|name| Palette::mode(false, true, name, "default").fg);
+    for (i, color) in colors.iter().enumerate() {
+        assert!(!colors[..i].contains(color));
+    }
+    for mode in ["Planejar", "Perguntar", "Auto", "Yolo"] {
+        let levels =
+            ["low", "default", "high"].map(|level| Palette::mode(false, true, mode, level).fg);
+        assert_ne!(levels[0], levels[1]);
+        assert_ne!(levels[1], levels[2]);
+        assert_eq!(Palette::mode(true, true, mode, "low").fg, None);
+    }
+    let mut app = App::default();
+    let executing = app.executing.name.clone();
+    for _ in 0..4 {
+        app.cycle_profile();
+        let _ = draw(&app);
+        assert_eq!(app.executing.name, executing);
+    }
+}
+
+#[test]
+fn should_animate_only_the_ascii_wings_and_keep_plain_and_disabled_animation_static() {
+    let mut app = App::default();
+    let first = draw(&app);
+    app.visual_elapsed = Duration::from_millis(250);
+    let next = draw(&app);
+    assert_ne!(first, next);
+    assert_eq!(
+        cell_at_text(&next, "carapanã").fg,
+        cell_at_text(&first, "carapanã").fg
+    );
+    app.animated = false;
+    let static_frame = draw(&app);
+    app.visual_elapsed = Duration::ZERO;
+    assert_eq!(static_frame, draw(&app));
+    app.plain = true;
+    app.animated = true;
+    let plain_frame = draw(&app);
+    app.visual_elapsed = Duration::from_millis(250);
+    assert_eq!(plain_frame, draw(&app));
+}
+
+#[test]
 fn should_render_approval_as_distinct_vertical_options_with_focus_only_on_the_selected_row() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut app = App::default();

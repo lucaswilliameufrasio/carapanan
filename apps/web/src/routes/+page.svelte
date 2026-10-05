@@ -37,6 +37,7 @@
   import '../app.css';
   import Modal from '#lib/Modal.svelte';
   import Management from '#lib/Management.svelte';
+  import Picker from '#lib/Picker.svelte';
   import { translate, type CopyKey } from '#lib/copy.ts';
   import { labels as l, demo } from '#lib/content.ts';
   import {
@@ -67,6 +68,13 @@
   let mobileHome = $state(false);
   let menuOpen = $state(false);
   let search = $state('');
+  let paletteCursor = $state(0);
+  const normalize = (text: string) =>
+    text
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
   let fileIndex = $state(0);
   let editId = $state<number | null>(null);
   let editText = $state('');
@@ -117,6 +125,96 @@
     active: l.activeSession,
     keyboard: l.keyboard,
   };
+  const paletteResults = $derived(
+    [
+      {
+        id: 'sessions',
+        label: t('sessions'),
+        detail: 'Ver todas as sessões',
+        icon: FolderOpen,
+        run: () => openView('sessions'),
+      },
+      ...demo.sessions.map((s) => ({
+        id: `session-${s.id}`,
+        label: s.name,
+        detail: `${s.title} · ${s.status}`,
+        icon: MessageSquare,
+        run: () => chooseSession(s.id),
+      })),
+      ...navigation.map((item) => ({
+        id: item.id,
+        label: t(item.key),
+        detail: 'Abrir gerenciamento',
+        icon: item.icon,
+        run: () => openView(item.id),
+      })),
+      ...tabs.map((item) => ({
+        id: `tab-${item.id}`,
+        label: t(item.key),
+        detail: 'Abrir na sessão atual',
+        icon: item.icon,
+        run: () => {
+          openView('session');
+          tab = item.id;
+        },
+      })),
+      {
+        id: 'pause',
+        label: t('pause'),
+        detail: 'Pausar a sessão simulada',
+        icon: Pause,
+        run: () => dispatch({ type: 'pause' }),
+      },
+      {
+        id: 'resume',
+        label: t('resume'),
+        detail: 'Retomar a sessão simulada',
+        icon: Activity,
+        run: () => dispatch({ type: 'resume' }),
+      },
+      {
+        id: 'profiles',
+        label: l.customProfiles,
+        detail: 'Editar modelos e esforços dos perfis',
+        icon: Settings,
+        run: openProfiles,
+      },
+      {
+        id: 'keyboard',
+        label: l.keyboard,
+        detail: 'Consultar atalhos',
+        icon: Terminal,
+        run: () => (modal = 'keyboard'),
+      },
+    ].filter((item) =>
+      normalize(`${item.label} ${item.detail} ${item.id}`).includes(normalize(search)),
+    ),
+  );
+  function openPalette() {
+    search = '';
+    paletteCursor = 0;
+    modal = 'palette';
+  }
+  function paletteKey(event: KeyboardEvent) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      paletteCursor =
+        (paletteCursor + (event.key === 'ArrowDown' ? 1 : -1) + paletteResults.length) %
+        Math.max(1, paletteResults.length);
+      document
+        .querySelector(`[data-palette-index="${paletteCursor}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      activatePalette(paletteCursor);
+    }
+  }
+  function activatePalette(index: number) {
+    const item = paletteResults[index];
+    if (!item) return;
+    modal = '';
+    item.run();
+  }
 
   function dispatch(action: Action) {
     ui = reduce(ui, action);
@@ -187,8 +285,8 @@
   function keydown(event: KeyboardEvent) {
     if ((event.ctrlKey || event.metaKey) && ['p', 'k'].includes(event.key.toLowerCase())) {
       event.preventDefault();
-      modal = modal === 'palette' ? '' : 'palette';
-      search = '';
+      if (modal === 'palette') modal = '';
+      else openPalette();
     }
     if (
       (event.altKey && event.key.toLowerCase() === 'p') ||
@@ -240,23 +338,21 @@
       }}><Menu size={20} /></button
     >
     <a class="brand" href="/" aria-label="Carapanã"
-      ><svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24"
-        ><path
-          d="M4 6l8 5 8-5M4 18l8-5 8 5M12 2v20"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-        /></svg
-      ><strong>carapanã</strong></a
+      ><img src="/mosquito.svg" alt="" width="38" height="38" aria-hidden="true" /><strong
+        >carapanã</strong
+      ></a
     >
     <span class="prototype-badge"
       >Delivery 0 <span class="desktop-only">/ {t('prototype')}</span></span
     >
     <div class="header-right">
+      <button class="icon-button mobile-only" aria-label={t('command')} onclick={openPalette}
+        ><Search size={18} /></button
+      >
       <button
         class="search-button desktop-only"
         onclick={() => {
-          modal = 'palette';
+          openPalette();
         }}><Search size={15} />{t('command')}<kbd>Ctrl/⌘ P</kbd></button
       ><label class="theme-control"
         ><span class="sr-only">{t('theme')}</span><select aria-label={t('theme')} bind:value={theme}
@@ -409,7 +505,11 @@
             >
           </div>
         </header>
-        <div class="execution-strip">
+        <div
+          class="execution-strip selection-theme"
+          data-profile={ui.executing.profile}
+          data-effort={ui.executing.variant}
+        >
           <span>{t('executing')} <strong>{profileName(ui, ui.executing.profile)}</strong></span
           ><span>{modelName(ui.executing.model)} <code>{ui.executing.variant}</code></span><span
             class="grow"
@@ -766,6 +866,9 @@
                     <div class="grow">
                       <p>{message.text}</p>
                       <small
+                        class="selection-theme queue-selection"
+                        data-profile={message.profile}
+                        data-effort={message.variant}
                         >{profileName(ui, message.profile)} · {modelName(message.model)} · {message.variant}
                         · {message.origin}</small
                       >
@@ -796,7 +899,11 @@
                   </div>{/each}
               </div>
             </details>{/if}
-          <div class="composer">
+          <div
+            class="composer selection-theme"
+            data-profile={ui.selected.profile}
+            data-effort={ui.selected.variant}
+          >
             <label class="sr-only" for="composer">{t('next')}</label><textarea
               id="composer"
               bind:value={draft}
@@ -804,36 +911,42 @@
               rows="2"></textarea>
             <div class="composer-toolbar">
               <div class="composer-selects">
-                <label
-                  ><span class="sr-only">{l.profile}</span><select
-                    aria-label={l.profile}
-                    value={ui.selected.profile}
-                    onchange={(event) => selectProfile(event.currentTarget.value)}
-                    >{#each ui.profiles as p (p.profile)}<option value={p.profile}>{p.name}</option
-                      >{/each}</select
-                  ></label
-                ><label
-                  ><span class="sr-only">{l.model}</span><select
-                    aria-label={l.model}
-                    value={ui.selected.model}
-                    onchange={(event) => changeSelection('model', event.currentTarget.value)}
-                    >{#each models as model (model.id)}<option value={model.id}>{model.name}</option
-                      >{/each}</select
-                  ></label
-                ><label
-                  ><span class="sr-only">{l.variant}</span><select
-                    aria-label={l.variant}
-                    value={ui.selected.variant}
-                    onchange={(event) => changeSelection('variant', event.currentTarget.value)}
-                    >{#each ['default', 'low', 'high'] as variant (variant)}<option value={variant}
-                        >{variant}{models
-                          .find((m) => m.id === ui.selected.model)
-                          ?.variants.includes(variant)
-                          ? ''
-                          : ' · incompatible'}</option
-                      >{/each}</select
-                  ></label
-                ><button class="icon-button" aria-label={l.customProfiles} onclick={openProfiles}
+                <Picker
+                  label={l.profile}
+                  value={ui.selected.profile}
+                  options={ui.profiles.map((p) => ({
+                    value: p.profile,
+                    label: p.name,
+                    detail:
+                      p.mode === 'plan'
+                        ? 'Planejar sem implementar'
+                        : p.profile === 'ask'
+                          ? 'Perguntar antes de agir'
+                          : p.profile === 'yolo'
+                            ? 'Maior autonomia; limites de segurança permanecem'
+                            : 'Executar conforme as permissões',
+                  }))}
+                  onchange={selectProfile}
+                />
+                <Picker
+                  label={l.model}
+                  value={ui.selected.model}
+                  options={models.map((m) => ({ value: m.id, label: m.name, detail: m.provider }))}
+                  onchange={(value) => changeSelection('model', value)}
+                />
+                <Picker
+                  label={l.variant}
+                  value={ui.selected.variant}
+                  options={['default', 'low', 'high'].map((v) => ({
+                    value: v,
+                    label: v,
+                    detail: models.find((m) => m.id === ui.selected.model)?.variants.includes(v)
+                      ? 'Compatível com o modelo selecionado'
+                      : 'Incompatível; escolha outro modelo ou esforço',
+                  }))}
+                  onchange={(value) => changeSelection('variant', value)}
+                />
+                <button class="icon-button" aria-label={l.customProfiles} onclick={openProfiles}
                   ><Settings size={15} /></button
                 >
               </div>
@@ -945,18 +1058,29 @@
         class="palette-search"
         aria-label={t('command')}
         bind:value={search}
-        placeholder={t('command')}
+        data-dialog-focus
+        name="command-search"
+        autocomplete="off"
+        placeholder="Buscar sessão ou ação…"
+        oninput={() => (paletteCursor = 0)}
+        onkeydown={paletteKey}
       />
       <div class="palette-results">
-        {#each [{ id: 'sessions', key: 'sessions' as const, icon: FolderOpen }, ...navigation].filter( (item) => t(item.key)
-              .toLowerCase()
-              .includes(search.toLowerCase()) ) as item (item.id)}<button
+        {#each paletteResults as item, index (item.id)}<button
+            class:palette-active={index === paletteCursor}
+            data-palette-index={index}
             onclick={() => {
-              openView(item.id);
-              modal = '';
-            }}><item.icon size={17} />{t(item.key)}<ChevronRight size={15} /></button
+              activatePalette(index);
+            }}
+            ><item.icon size={17} /><span class="grow"
+              ><strong>{item.label}</strong><small>{item.detail}</small></span
+            ><ChevronRight size={15} /></button
           >{/each}
+        {#if !paletteResults.length}<p class="palette-empty">
+            Nenhum resultado para “{search}”. Tente o nome da sessão ou da ação.
+          </p>{/if}
       </div>
+      <p class="palette-hint">↑/↓ navegar · Enter abrir · Esc fechar</p>
     {:else if modal === 'provider'}<p>{l.providerBody}</p>
       <code>{provider(ui.executing.model)} → {provider(ui.selected.model)}</code><label
         class="setting-row"

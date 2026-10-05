@@ -14,6 +14,9 @@ use std::{
 struct Cli {
     #[arg(long, global = true)]
     plain: bool,
+    /// Mantém o carapanã ASCII imóvel.
+    #[arg(long, global = true)]
+    no_animation: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -39,12 +42,13 @@ enum Commands {
     Sessions,
 }
 
-fn tui(plain: bool) -> io::Result<()> {
+fn tui(plain: bool, no_animation: bool) -> io::Result<()> {
     let mut terminal = ratatui::init();
     let result = (|| {
         crossterm::execute!(io::stdout(), crossterm::event::EnableBracketedPaste)?;
         let mut app = App {
             plain,
+            animated: !no_animation,
             ansi256: std::env::var("TERM").is_ok_and(|term| term.contains("256color"))
                 || std::env::var("COLORTERM")
                     .is_ok_and(|term| matches!(term.as_str(), "truecolor" | "24bit")),
@@ -61,7 +65,9 @@ fn tui(plain: bool) -> io::Result<()> {
                 }
             }
             let now = std::time::Instant::now();
-            app.advance(now.duration_since(last_tick));
+            let delta = now.duration_since(last_tick);
+            app.visual_elapsed += delta;
+            app.advance(delta);
             last_tick = now;
         }
         Ok(())
@@ -131,7 +137,7 @@ fn main() -> ExitCode {
                 );
                 return ExitCode::from(2);
             }
-            match tui(cli.plain) {
+            match tui(cli.plain, cli.no_animation) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("Erro do protótipo: {error}");

@@ -49,6 +49,26 @@ Web abre na sessão atual; mobile abre em **Precisa de você**. Use o seletor
 conflitos, segredos, recursos e demais fixtures. Tema acompanha o sistema com
 override. pt-BR completo; inglês ainda parcial, com fallback explícito.
 
+### Interface e identidade
+
+Web/mobile: a busca encontra sessões, telas e abas, ignora acentos e oferece
+↑/↓ + Enter, estado sem resultados e acesso por toque no cabeçalho.
+Os pickers de perfil/modelo/esforço abrem uma lista legível em dialog centralizado,
+com seleção marcada, navegação por teclado e foco devolvido ao fechar.
+As telas de gestão usam a largura disponível; em telas estreitas, ações quebram
+para a próxima linha sem comprimir os nomes. Avisos não cobrem o composer.
+
+Modos têm cores próprias: Planejar violeta, Perguntar azul, Auto verde-água e
+Yolo coral. Low/default/high mudam a intensidade, mantendo o nome visível.
+A cor da execução e das mensagens na fila segue a seleção capturada, não a
+seleção da próxima mensagem. Âmbar continua reservado a atenção/aprovação.
+
+Marca web e favicon são vetores originais de um mosquito/pernilongo, o inseto
+conhecido como carapanã na Amazônia ([referência](https://portalamazonia.com/amazonia/portal-amazonia-responde-quanto-tempo-vive-um-carapana/)).
+O ASCII fica **somente na TUI**, à esquerda do nome: anima as asas na entrada
+(até 4 segundos) e durante o processamento simulado. `--no-animation` ou
+`--plain` mantém a figura imóvel, sem alterar o fluxo da sessão.
+
 ### Fluxo da TUI para revisar
 
 A TUI abre **vazia**, em Perguntar, sem tarefa/approval pré-carregados. Mensagens

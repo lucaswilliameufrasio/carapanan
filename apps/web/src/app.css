@@ -174,6 +174,7 @@ svg {
   flex-direction: column;
 }
 .app-header {
+  position: relative;
   height: 60px;
   flex-shrink: 0;
   padding: 0 22px;
@@ -852,8 +853,9 @@ main {
   flex: 1;
 }
 .management-content {
-  max-width: 1100px;
   width: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 .management-row {
   display: flex;
@@ -901,7 +903,7 @@ main {
 }
 .resource-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
 }
 .large-metric {
@@ -1085,6 +1087,10 @@ main {
   display: none;
 }
 dialog {
+  margin: auto;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   width: min(680px, calc(100vw - 32px));
   max-height: calc(100dvh - 48px);
   border: 1px solid var(--border-strong);
@@ -1169,6 +1175,161 @@ dialog textarea {
 .mobile-only {
   display: none;
 }
+.brand img {
+  flex-shrink: 0;
+  filter: brightness(0.5);
+}
+[data-theme='dark'] .brand img {
+  filter: none;
+}
+.picker-trigger {
+  background: transparent;
+  font-size: 13px;
+  min-height: 40px;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+.picker-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.picker-options {
+  display: grid;
+  gap: 6px;
+}
+.picker-options button {
+  min-height: 56px;
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+  padding: 12px 14px;
+}
+.picker-options strong,
+.palette-results strong {
+  display: block;
+  font-weight: 500;
+}
+.picker-options small,
+.palette-results small {
+  display: block;
+  margin-top: 3px;
+}
+.picker-options button[aria-selected='true'],
+.palette-active {
+  background: var(--accent-surface);
+  border-color: var(--interactive);
+}
+.palette-results {
+  max-height: 55dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  gap: 4px;
+}
+.palette-results button {
+  text-align: left;
+  min-height: 56px;
+}
+.palette-empty {
+  padding: 16px;
+  color: var(--text-secondary);
+}
+.palette-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.selection-theme {
+  --mode-low: #4c6270;
+  --mode-default: #2a607e;
+  --mode-high: #005f99;
+  --mode-color: var(--mode-default);
+}
+.selection-theme[data-profile='plan'] {
+  --mode-low: #64566f;
+  --mode-default: #5d3c88;
+  --mode-high: #6d32b0;
+}
+.selection-theme[data-profile='auto'] {
+  --mode-low: #46665f;
+  --mode-default: #1c6c61;
+  --mode-high: #007d6a;
+}
+.selection-theme[data-profile='yolo'] {
+  --mode-low: #795c56;
+  --mode-default: #9b483a;
+  --mode-high: #aa3f28;
+}
+[data-theme='dark'] .selection-theme {
+  --mode-low: #9ab5d1;
+  --mode-default: #75bfff;
+  --mode-high: #3fafff;
+}
+[data-theme='dark'] .selection-theme[data-profile='plan'] {
+  --mode-low: #b4a4d6;
+  --mode-default: #c1a0ee;
+  --mode-high: #cc94ff;
+}
+[data-theme='dark'] .selection-theme[data-profile='auto'] {
+  --mode-low: #8cbbb3;
+  --mode-default: #75cdbd;
+  --mode-high: #4cdec3;
+}
+[data-theme='dark'] .selection-theme[data-profile='yolo'] {
+  --mode-low: #d8a599;
+  --mode-default: #efa188;
+  --mode-high: #ff976f;
+}
+.selection-theme[data-effort='low'] {
+  --mode-color: var(--mode-low);
+}
+.selection-theme[data-effort='high'] {
+  --mode-color: var(--mode-high);
+}
+.composer.selection-theme,
+.composer.selection-theme:focus-within {
+  border-color: var(--mode-color);
+}
+.composer .picker-trigger:first-child,
+.execution-strip strong:first-child,
+.queue-selection {
+  color: var(--mode-color);
+}
+.composer.selection-theme .send-button {
+  background: var(--mode-color);
+  border-color: var(--mode-color);
+}
+.management-content > *,
+.management-row > .grow,
+.setting-row > span,
+.user-message > div,
+.agent-message > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.management-content {
+  padding: clamp(20px, 3vw, 40px);
+}
+.management-row {
+  flex-wrap: wrap;
+}
+.management-row .grow {
+  flex-basis: 180px;
+}
+.setting-row {
+  flex-wrap: wrap;
+}
+.setting-row > span {
+  flex: 1 1 220px;
+}
+.notice {
+  position: static;
+  flex-shrink: 0;
+  max-width: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 8px 16px;
+  font-size: 12px;
+}
 @media (max-width: 1250px) {
   .task-rail {
     display: none;
@@ -1221,12 +1382,16 @@ dialog textarea {
     min-height: 0;
   }
   .app-header {
-    padding: 0 12px;
-    gap: 10px;
+    padding: 0 8px;
+    gap: 6px;
     height: 57px;
   }
   .brand strong {
-    font-size: 18px;
+    font-size: 16px;
+  }
+  .brand img {
+    width: 32px;
+    height: 32px;
   }
   .brand {
     gap: 7px;
@@ -1235,13 +1400,18 @@ dialog textarea {
     width: 20px;
   }
   .prototype-badge {
-    font-size: 10px;
+    display: block;
+    position: absolute;
+    left: 96px;
+    top: 38px;
+    font-size: 9px;
+    pointer-events: none;
   }
   .header-right {
     gap: 0;
   }
   .theme-control select {
-    max-width: 85px;
+    max-width: 75px;
     padding-left: 5px;
     font-size: 10px;
   }
@@ -1384,6 +1554,38 @@ dialog textarea {
   }
   .composer-selects {
     width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) minmax(0, 1fr) 44px;
+    gap: 4px;
+  }
+  .composer-selects .picker-trigger {
+    font-size: 12px;
+    min-height: 44px;
+    padding-inline: 5px;
+    gap: 3px;
+  }
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+  .theme-control select {
+    font-size: 13px;
+    min-height: 44px;
+  }
+  .composer textarea {
+    font-size: 16px;
+  }
+  .setting-row select {
+    max-width: 100%;
+    width: 100%;
+  }
+  .management-row .grow {
+    flex-basis: 65%;
+  }
+  dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
   }
   .composer-selects select {
     min-height: 40px;

@@ -14,6 +14,33 @@ pub struct Palette {
 }
 
 impl Palette {
+    pub fn mode(plain: bool, ansi256: bool, name: &str, effort: &str) -> Style {
+        let (indices, fallback) = match name {
+            "Planejar" => ([139, 141, 135], Color::Magenta),
+            "Auto" => ([109, 80, 44], Color::Cyan),
+            "Yolo" => ([138, 173, 209], Color::Red),
+            _ => ([109, 75, 39], Color::Blue),
+        };
+        let level = match effort {
+            "low" => 0,
+            "high" => 2,
+            _ => 1,
+        };
+        let style = if plain {
+            Style::default()
+        } else {
+            Style::default().fg(if ansi256 {
+                Color::Indexed(indices[level])
+            } else {
+                fallback
+            })
+        };
+        if effort == "high" {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    }
     pub fn new(plain: bool, ansi256: bool) -> Self {
         let color = |index, fallback| {
             if plain {
