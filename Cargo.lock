@@ -177,7 +177,10 @@ dependencies = [
 name = "carapana-storage"
 version = "0.0.0"
 dependencies = [
+ "carapana-protocol",
  "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
