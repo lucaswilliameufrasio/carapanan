@@ -17,6 +17,7 @@ fn should_round_trip_captured_messages_without_permissions_or_secret_fields() {
         selection,
     });
     let json = serde_json::to_string(&queued).unwrap();
+    assert_eq!(queued.protocol(), PROTOCOL_VERSION);
     assert_eq!(
         serde_json::from_str::<Envelope<QueuedMessage>>(&json).unwrap(),
         queued
