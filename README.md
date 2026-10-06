@@ -232,6 +232,12 @@ just verify
 e macOS (incluindo PTY). Toolchains vêm de `mise.toml` e `rust-toolchain.toml`;
 instalação JS e verificações Rust usam os lockfiles sem resolução nova.
 
+As referências visuais `*-linux.png` preservam as capturas locais; a CI usa
+`CARAPANA_SNAPSHOT_ENV=ubuntu` e as referências `*-ubuntu.png`, capturadas em
+Ubuntu 24.04 e revisadas separadamente devido às diferenças de rasterização
+e fallback de fontes entre distribuições. Não há atualização automática de
+snapshots no gate, máscaras adicionais ou tolerância ampliada.
+
 O workspace Rust usa `Cargo.toml` e `Cargo.lock` na raiz. Por enquanto contém
 somente `prototypes/terminal`; não foi criada uma engine de produção. Novos
 crates de domínio não devem depender de UI; adapters dependem dos contratos,

@@ -230,11 +230,20 @@ try:
     os.write(fd, b"\x03")
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
+        # macOS PTYs have a smaller output buffer. Drain final redraw/terminal
+        # restoration while waiting, rather than blocking the child on writes.
+        ready, _, _ = select.select([fd], [], [], 0.02)
+        if ready:
+            try:
+                data = os.read(fd, 65536)
+                if b"\x1b[6n" in data:
+                    os.write(fd, b"\x1b[1;1R")
+            except OSError:
+                pass  # PTY closure can precede waitpid reporting the exit.
         child, status = os.waitpid(pid, os.WNOHANG)
         if child:
             assert os.waitstatus_to_exitcode(status) == 0
             break
-        time.sleep(0.02)
     else:
         raise AssertionError("Second idle Ctrl+C did not terminate the TUI")
     print("Should validate real PTY updates, message → activity → approval → result → queue advancement, resize and interruption: passed")
