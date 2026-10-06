@@ -4,11 +4,12 @@
 **Status:** decisões aprovadas pelo responsável pelo produto\
 **Escopo:** complemento normativo do [plano de desenvolvimento](development-plan.md)
 
-Este documento registra a revisão do plano. Não declara funcionalidades implementadas,
-integração comprovada ou aprovação do Delivery 0. Ler os dois documentos juntos; regras
+Este documento registra a revisão do plano. Não declara integração real comprovada.
+Delivery 0 aprovado explicitamente em 6 de outubro de 2026 e Delivery 1 autorizado;
+PR #1 integrada em `main`. Ler os dois documentos juntos; regras
 específicas aqui definidas prevalecem sobre exemplos anteriores incompatíveis do plano.
-O gate permanece: Delivery 0 exclusivamente com mocks, apresentação do conjunto e parada
-até aprovação explícita para iniciar o Delivery 1.
+O gate do Delivery 0 foi cumprido com mocks e aprovação do conjunto. As entregas
+seguintes continuam seguindo seus próprios escopos e gates do roadmap.
 
 ## PD-01 — Delivery 0 e aprovação
 

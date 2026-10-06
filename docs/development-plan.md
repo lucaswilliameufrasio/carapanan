@@ -18,8 +18,10 @@ que registra a revisão aprovada de perfis, fila, autonomia, segurança, recover
 e critérios de dogfooding. Suas regras específicas prevalecem sobre exemplos anteriores
 incompatíveis, sem dispensar os gates deste documento.
 
-As decisões estão aprovadas como especificação, não implementadas. **O Delivery 0 ainda
-precisa ser produzido e aprovado explicitamente; atualizar este plano não libera runtime.**
+As decisões estão aprovadas como especificação, não integralmente implementadas.
+**Delivery 0 aprovado explicitamente em 6 de outubro de 2026; PR #1 integrada
+em `main`. Delivery 1 autorizado**, limitado à fundação de engenharia descrita
+na seção 155; essa aprovação não declara as entregas posteriores implementadas.
 
 ---
 
