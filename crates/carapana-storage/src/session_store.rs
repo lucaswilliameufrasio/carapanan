@@ -910,6 +910,39 @@ mod tests {
     }
 
     #[test]
+    fn should_rollback_event_and_projection_when_snapshot_write_fails() {
+        let path = TestDatabase::new();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database.create_session("session-1", 10).unwrap();
+            database
+                .connection
+                .execute_batch(
+                    "CREATE TRIGGER reject_snapshot_update BEFORE UPDATE ON session_snapshots
+                     BEGIN SELECT RAISE(ABORT, 'injected snapshot failure'); END;",
+                )
+                .unwrap();
+
+            assert!(matches!(
+                database.enqueue_message("session-1", message("m1"), 11),
+                Err(SessionStoreError::Sqlite(_))
+            ));
+        }
+
+        let database = Database::open(&path.0).unwrap();
+        let session = database.load_session("session-1").unwrap();
+        assert_eq!(session.event_sequence, 1);
+        assert!(session.queued_messages.is_empty());
+        assert_eq!(session.updated_at_ms, 10);
+        assert_eq!(
+            database.session_events("session-1").unwrap(),
+            vec![StoredSessionEvent::Created {
+                session_id: "session-1".into()
+            }]
+        );
+    }
+
+    #[test]
     fn should_rebuild_a_missing_or_corrupt_snapshot_from_contiguous_events() {
         let path = TestDatabase::new();
         let mut database = Database::open(&path.0).unwrap();
@@ -995,6 +1028,55 @@ mod tests {
             Some(&StoredSessionEvent::RecoveredPaused {
                 active_message_id: Some("m1".into())
             })
+        );
+    }
+
+    #[test]
+    fn should_recover_once_when_two_connections_race_after_restart() {
+        let path = TestDatabase::new();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database.create_session("session-1", 10).unwrap();
+            database
+                .enqueue_message("session-1", message("m1"), 11)
+                .unwrap();
+            database.start_next_message("session-1", 12).unwrap();
+        }
+
+        let barrier = Arc::new(Barrier::new(2));
+        let first_path = path.0.clone();
+        let first_barrier = Arc::clone(&barrier);
+        let second_path = path.0.clone();
+        let second_barrier = Arc::clone(&barrier);
+        let (first, second) = thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                let mut database = Database::open(first_path).unwrap();
+                first_barrier.wait();
+                database.recover_active_sessions(20).unwrap().len()
+            });
+            let second = scope.spawn(move || {
+                let mut database = Database::open(second_path).unwrap();
+                second_barrier.wait();
+                database.recover_active_sessions(20).unwrap().len()
+            });
+            (first.join().unwrap(), second.join().unwrap())
+        });
+
+        assert_eq!(first + second, 1);
+        let database = Database::open(&path.0).unwrap();
+        let session = database.load_session("session-1").unwrap();
+        assert_eq!(session.status, StoredSessionStatus::Paused);
+        assert_eq!(session.active_message, Some(message("m1")));
+        assert!(session.recovery_needs_revalidation);
+        assert!(session.active_work_uncertain);
+        assert_eq!(
+            database
+                .session_events("session-1")
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, StoredSessionEvent::RecoveredPaused { .. }))
+                .count(),
+            1
         );
     }
 
