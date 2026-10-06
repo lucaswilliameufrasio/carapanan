@@ -2,6 +2,7 @@ node_modules/
 .svelte-kit/
 apps/web/build/
 prototypes/terminal/target/
+target/
 playwright-report/
 test-results/
 coverage/

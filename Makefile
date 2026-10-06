@@ -1,7 +1,24 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := dev
 
-.PHONY: dev
+.PHONY: dev verify verify-web verify-rust
+verify: verify-web verify-rust
+
+verify-web:
+	pnpm format:check
+	pnpm lint
+	pnpm check
+	pnpm test
+	pnpm build
+	pnpm test:e2e
+
+# cargo test includes the real Unix PTY integration (Python 3 required).
+verify-rust:
+	cargo fmt --all -- --check
+	cargo clippy --workspace --all-targets --locked -- -D warnings
+	cargo test --workspace --locked
+	cargo build --workspace --locked
+
 dev:
 	@set -em; \
 	export HOST="$${HOST:-127.0.0.1}" PORT="$${PORT:-5173}"; \

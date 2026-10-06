@@ -3,6 +3,7 @@ export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
   workers: 2,
+  snapshotPathTemplate: `{testDir}/{testFilePath}-snapshots/{arg}-{projectName}-${process.env.CARAPANA_SNAPSHOT_ENV ?? '{platform}'}{ext}`,
   use: { baseURL: 'http://127.0.0.1:4173', trace: 'retain-on-failure' },
   projects: [
     { name: 'desktop', testMatch: 'prototype.spec.ts', use: { ...devices['Desktop Chrome'] } },
