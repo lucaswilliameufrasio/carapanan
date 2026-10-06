@@ -89,7 +89,7 @@ def resize(width, height):
     os.kill(pid, signal.SIGWINCH)
 
 
-def expect_output(expected, keys=b"", resize_to=None):
+def expect_output(expected, keys=b"", resize_to=None, absent=None):
     if keys:
         os.write(fd, keys)
     if resize_to:
@@ -109,7 +109,7 @@ def expect_output(expected, keys=b"", resize_to=None):
         text = decoder.decode(data)
         output += text
         screen.feed(text)
-        if expected in screen.text():
+        if expected in screen.text() and (absent is None or absent not in screen.text()):
             return
     raise AssertionError(f"Missing {expected!r} in real PTY output: {output!r}")
 
@@ -172,22 +172,20 @@ try:
     expect_output("Próxima:", b"\r")
     expect_output("Opções", b"\x10")
     expect_output("Atualizações · mock", b"update\r")
-    os.write(fd, b"\x1b")
-    time.sleep(0.12)
+    # Wait for the actual close frame. Bare Escape decoding latency differs
+    # between Linux and macOS; a fixed sleep can combine it with the next key.
+    expect_output("Próxima:", b"\x1b", absent="Atualizações · mock")
     expect_output("Colagem multilinha", b"?")
     expect_output("Escolher modelo", b"\x1b[C")
     expect_output("/intervene", b"\x1b[C")
     expect_output("Retomar trabalho pausado", b"\x1b[C")
     capture("help-control-80x24")
-    os.write(fd, b"\x1b")
-    time.sleep(0.12)
+    expect_output("Próxima:", b"\x1b", absent="Retomar trabalho pausado")
     expect_output("Modelo da próxima mensagem", b"/model\r")
-    os.write(fd, b"\x1b")
-    time.sleep(0.12)  # Bare Escape must not be decoded as an Alt-prefixed next key.
+    expect_output("Próxima:", b"\x1b", absent="Modelo da próxima mensagem")
     expect_output("Opções", b"\x10")  # Ctrl+P, as transmitted by normal SSH terminals.
     expect_output("Perfil da próxima mensagem", b"profile\r")
-    os.write(fd, b"\x1b")
-    time.sleep(0.12)
+    expect_output("Próxima:", b"\x1b", absent="Perfil da próxima mensagem")
     expect_output("Raciocínio", b"\x1bv")
     expect_output("Raciocínio", resize_to=(160, 48))
     expect_output("Raciocínio", resize_to=(80, 24))
