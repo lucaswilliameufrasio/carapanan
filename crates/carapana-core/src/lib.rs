@@ -5,6 +5,7 @@ pub mod approval;
 pub mod configuration;
 pub mod intervention;
 pub mod queue;
+pub mod tracing;
 pub mod trust;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
