@@ -1,0 +1,170 @@
+[
+  {
+    "id": "approval",
+    "label": "Aprovação pendente",
+    "status": "waiting-for-approval",
+    "summary": "Publicar a branch requer sua autorização.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "running",
+    "label": "Executando",
+    "status": "running",
+    "summary": "Inspecionando a rotação de refresh tokens.",
+    "attention": false,
+    "blocking": false
+  },
+  {
+    "id": "completed",
+    "label": "Concluído e validado",
+    "status": "completed",
+    "summary": "Rotação corrigida. 183 testes passaram.",
+    "attention": false,
+    "blocking": false
+  },
+  {
+    "id": "incomplete",
+    "label": "Validação incompleta",
+    "status": "paused",
+    "summary": "Implementado. Callback OAuth externo não validado.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "quota",
+    "label": "Cota esgotada",
+    "status": "paused",
+    "summary": "O provider informou renovação às 18:40. Sem fallback pago.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "retry",
+    "label": "Provider temporariamente indisponível",
+    "status": "waiting-for-tool",
+    "summary": "Falha temporária. Nova tentativa em 30 segundos (simulado).",
+    "attention": false,
+    "blocking": true
+  },
+  {
+    "id": "auth",
+    "label": "Autenticação expirada",
+    "status": "paused",
+    "summary": "Conecte sua conta novamente para continuar.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "model",
+    "label": "Modelo indisponível",
+    "status": "paused",
+    "summary": "O modelo salvo não está disponível. Escolha outro explicitamente.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "variant",
+    "label": "Variante incompatível",
+    "status": "paused",
+    "summary": "Este modelo não suporta high. Selecione uma variante compatível.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "mcp",
+    "label": "MCP degradado",
+    "status": "running",
+    "summary": "ai-memory indisponível. Continuando com contexto local.",
+    "attention": false,
+    "blocking": false
+  },
+  {
+    "id": "recovery",
+    "label": "Recuperação após crash",
+    "status": "paused",
+    "summary": "Sessão e fila recuperadas em pausa. Nenhum comando foi repetido.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "offline",
+    "label": "Cliente desconectado",
+    "status": "detached",
+    "summary": "Sem conexão. Rascunhos preservados; ações bloqueadas.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "resources",
+    "label": "Pressão de recursos",
+    "status": "running",
+    "summary": "Paralelismo reduzido. Continuando sem iniciar subagents.",
+    "attention": false,
+    "blocking": false
+  },
+  {
+    "id": "loop",
+    "label": "Loop sem progresso",
+    "status": "paused",
+    "summary": "3 tentativas + 3 após diagnóstico sem avanço. Intervenção necessária.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "sandbox",
+    "label": "Sandbox indisponível",
+    "status": "waiting-for-approval",
+    "summary": "Execução bloqueada até autorização explícita para trabalhar sem sandbox.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "trust",
+    "label": "Workspace não confiável",
+    "status": "waiting-for-approval",
+    "summary": "Revise MCPs e hooks antes de confiar neste workspace.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "conflict",
+    "label": "Conflito com alterações anteriores",
+    "status": "waiting-for-user",
+    "summary": "auth/service.rs mudou desde a leitura. Suas alterações foram preservadas.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "shared",
+    "label": "Diretório em uso",
+    "status": "waiting-for-approval",
+    "summary": "Outra sessão está editando este diretório. Worktree é escolha sua.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "secret",
+    "label": "Arquivo sensível",
+    "status": "waiting-for-approval",
+    "summary": "Ler .env.example exige autorização. Valores reais nunca serão expostos.",
+    "attention": true,
+    "blocking": true
+  },
+  {
+    "id": "compaction",
+    "label": "Contexto compactado",
+    "status": "running",
+    "summary": "Contexto reduzido de 86% para 31%. Histórico, plano e autorizações preservados.",
+    "attention": false,
+    "blocking": false
+  },
+  {
+    "id": "empty",
+    "label": "Nenhuma sessão",
+    "status": "stopped",
+    "summary": "Abra um workspace para começar. Este é um protótipo sem execução real.",
+    "attention": false,
+    "blocking": true
+  }
+]

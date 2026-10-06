@@ -1,0 +1,8 @@
+node_modules/
+.svelte-kit/
+apps/web/build/
+prototypes/terminal/target/
+playwright-report/
+test-results/
+coverage/
+.DS_Store

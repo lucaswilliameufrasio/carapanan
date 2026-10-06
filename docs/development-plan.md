@@ -1,15 +1,25 @@
-
 # Carapanã
 
 ## Plano completo de desenvolvimento
 
 **Status:** especificação de produto e engenharia  
 **Baseline:** outubro de 2026  
+**Revisão de produto:** 4 de outubro de 2026\
 **Nome do produto:** Carapanã  
 **Binário:** `carapana`  
 **Categoria:** local-first, model-agnostic coding agent harness  
 **Implementação principal:** Rust  
 **Objetivo inicial:** obter uma experiência de uso comparável ou superior ao Claude Code utilizando prioritariamente o plano do ChatGPT, sem ficar preso a um único provider, dispositivo ou interface.
+
+## Decisões complementares obrigatórias
+
+Ler este plano junto de [Decisões de produto e comportamento](product-decisions.md),
+que registra a revisão aprovada de perfis, fila, autonomia, segurança, recovery, memória
+e critérios de dogfooding. Suas regras específicas prevalecem sobre exemplos anteriores
+incompatíveis, sem dispensar os gates deste documento.
+
+As decisões estão aprovadas como especificação, não implementadas. **O Delivery 0 ainda
+precisa ser produzido e aprovado explicitamente; atualizar este plano não libera runtime.**
 
 ---
 
@@ -123,7 +133,13 @@ O primeiro caso de uso, entretanto, é intencionalmente mais específico:
 
 > **Experiência próxima ao Claude Code usando o plano do ChatGPT.**
 
-A OpenAI atualmente permite que aplicações participantes ofereçam login com ChatGPT e, para planos elegíveis, consumo da cota de Work/Codex sem compartilhamento de API key. A implementação do Carapanã deverá utilizar somente esse fluxo oficial quando disponível para o projeto; scraping de credenciais, reutilização indevida de tokens do Codex ou endpoints privados são proibidos.
+A OpenAI documenta autenticação e uso do plano ChatGPT para ferramentas open-source e
+projetos pessoais locais elegíveis, com autorização própria da aplicação, sem API key.
+A conta de referência é ChatGPT Pro de US$100; acesso, modelos, capacidades e cota
+precisam ser comprovados por inferência real após o Delivery 0, não presumidos pelo
+nome do plano. Usar somente o fluxo oficial; scraping de credenciais, reutilização
+indevida de tokens do Codex ou endpoints privados são proibidos. Não há fallback pago
+automático. Referências e regras de cota estão em PD-02 e PD-10 do complemento.
 
 ---
 
@@ -166,6 +182,10 @@ O agente não recebe automaticamente acesso a:
 - state de Terraform;
 - kubeconfigs;
 - arquivos considerados secretos.
+
+Valores secretos nunca vão para modelo, classifier, chat, logs, artifacts, reports
+ou memória externa. Uso local por comando autorizado não concede exposição. Essas
+proteções exigem enforcement antes de tools reais, não apenas uma skill de prompt.
 
 ## 2.5 Entrega só existe quando há evidência
 
@@ -237,6 +257,17 @@ Por isso o Delivery 0 existe antes do runtime.
 - ABI de plugins Rust;
 - vector database obrigatório;
 - memória global proprietária substituindo MCPs como `ai-memory`.
+
+## Primeiro marco de dogfooding
+
+O escopo acima é o roadmap, não uma exigência de implementar tudo antes do primeiro uso.
+Após aprovação do Delivery 0, priorizar CLI/TUI, assinatura ChatGPT, edição/execução
+seguras, sessões persistentes, MCP/skills e validação. Esse marco depende dos Deliveries
+1–9 e dos gates de segurança, conforme PD-02 e PD-17 do complemento.
+
+Conexão real de web/mobile, providers adicionais e subagents não bloqueiam o marco;
+protótipos web/mobile continuam obrigatórios no Delivery 0. Tudo depende de viabilidade
+comprovada, sem tornar API paga requisito no lugar da assinatura.
 
 ---
 
@@ -367,6 +398,9 @@ Usar WAL com:
 
 Não persistir cada token de streaming individualmente.
 
+Persistir também fila ordenada, origem, seleção de perfil/provider/modelo/variante e
+estados de processamento. Após reinício, recuperar a fila com a sessão em pausa.
+
 ## Artifact store
 
 Objetos grandes ficam fora do SQLite.
@@ -451,6 +485,10 @@ Definir a experiência completa antes de ligar qualquer agent runtime real.
 Toda UI usa dados simulados.
 
 Nenhum provider externo será necessário.
+
+Os protótipos serão interativos, com seletor de cenários para reproduzir execução,
+fila, intervenção, approvals, cota, falhas, recovery, desconexão e pressão de recursos.
+Incluir headless simulado, JSON e códigos de saída, conforme PD-01 e PD-14.
 
 ---
 
@@ -548,6 +586,10 @@ Também definir:
 
 Cor nunca será o único indicador.
 
+Validar claro/escuro desde o Delivery 0, seguindo o sistema com escolha manual.
+Interface inicial em pt-BR, com textos separados do código para inglês depois;
+comandos e identificadores técnicos permanecem estáveis.
+
 ---
 
 # 13. Accessibility
@@ -570,6 +612,10 @@ TUI:
 - símbolos + texto além de cor;
 - shortcuts documentados;
 - foco claro.
+
+Todas as ações por teclado via SSH, sem depender de mouse, truecolor ou teclas especiais.
+Documentar alternativas a `Shift+Tab`. Suportar `80×24`, reorganizando painéis sem
+esconder approvals/ações essenciais; abaixo disso, orientar ampliar o terminal.
 
 ---
 
@@ -618,6 +664,10 @@ Precisa mostrar permanentemente:
 - contexto;
 - resource state.
 
+Separar visualmente `Executando: perfil · modelo · variante` da seleção
+`Próxima mensagem: perfil · modelo · variante`. Trocar a seleção no composer, sem
+enviar, não altera o agente em execução.
+
 Exemplo:
 
 ```text
@@ -661,6 +711,9 @@ Detalhes podem ser expandidos.
 
 O output completo pode virar artifact quando necessário.
 
+Na TUI, conversa principal com atividade resumida integrada. Plano/diff/validação/logs
+completos abrem sob demanda; terminal largo pode mostrar detalhes em painel lateral.
+
 ---
 
 # 17. Plan UX
@@ -688,6 +741,11 @@ skipped
 ```
 
 Mudanças no plano devem aparecer como eventos.
+
+Em Executar, apresentar plano não exige aprovação adicional; ações seguem permissões
+efetivas. Planejar não implementa automaticamente. Sessões podem conter vários trabalhos
+sem botão obrigatório de `Nova tarefa`. Autorizações temporárias expiram na conclusão;
+ambiguidade exige pergunta antes de reutilizá-las.
 
 ---
 
@@ -717,6 +775,10 @@ Previous   3 / 11   Next
 ```
 
 Não construir IDE web.
+
+Registrar estado inicial e distinguir alterações anteriores das feitas pelo agente.
+Conflitos exigem confirmação, inclusive em Yolo. Restaurar checkpoint exige prévia e
+confirmação, sem descartar trabalho do operador; conflitos impedem rollback forçado.
 
 ---
 
@@ -756,6 +818,11 @@ Required to open the requested PR.
 [ Deny ]
 ```
 
+Intervenção invalida approvals pendentes; ações necessárias são reavaliadas.
+Para caminhos externos, oferecer também `Permitir sempre`, vinculado à ação e ao
+caminho específico, com descendentes explícitos para pastas e sem seguir symlinks
+para alvos externos. Permissões persistentes são visíveis e revogáveis.
+
 ---
 
 # 20. Completion UX
@@ -790,6 +857,9 @@ Not validated
 Changes
 4 files · +124 −38
 ```
+
+Sem validação suficiente, mostrar `Implementado, validação incompleta`, motivo e
+evidências. Pausar a fila até decisão do operador; não apresentar como sucesso validado.
 
 ---
 
@@ -843,6 +913,9 @@ Pergunta que essa tela precisa responder imediatamente:
 
 > Tem alguma coisa precisando de mim?
 
+Inicialmente, attention queue destacada e avisos com PWA aberta. Notificações com a
+PWA fechada ficam para investigação posterior; não prometer push no Delivery 0.
+
 ---
 
 # 22. Command palette
@@ -867,6 +940,12 @@ View context
 Show resources
 Open settings
 ```
+
+`Shift+Tab` percorre perfis configuráveis na ordem escolhida. Presets: Planejar,
+Perguntar, Auto e Yolo, cada um com provider/modelo/variante próprios. Seleção salva
+na sessão; defaults gerais só mudam por `Salvar como padrão deste perfil`.
+Novas sessões começam em Perguntar, salvo padrão explicitamente configurado.
+Perfis/fila/intervenção seguem PD-03 e PD-04 do complemento.
 
 ---
 
@@ -938,7 +1017,9 @@ Entregar:
 27. accessibility checklist;
 28. visual acceptance tests.
 
-Os protótipos podem utilizar mocks.
+Os protótipos devem ser interativos e utilizar mocks, incluindo os cenários de
+perfis/fila/intervenção, permissões, modelo/variante indisponível, contexto e headless.
+Entregar seletor de cenários, roteiro de revisão e checklist de aceitação.
 
 ---
 
@@ -960,6 +1041,10 @@ A entrega não passa se:
 - estados de erro não estiverem desenhados.
 
 **Depois da apresentação: STOP.**
+
+Aprovação do conjunto CLI/TUI/web/mobile; revisões parciais não liberam runtime.
+Validar macOS/Linux dentro e fora do Herdr, ambiente de teste e não dependência do
+Carapanã. CLI/TUI também serão testadas via SSH, sem integração real nesta entrega.
 
 ---
 
@@ -1194,13 +1279,16 @@ e depois:
 
 ```text
 paused
-running
-failed
 ```
 
-conforme segurança.
+Recovery após crash/reinício nunca retoma execução automaticamente, inclusive em Yolo.
+Mostrar onde parou e permitir retomada explícita. Falha na recuperação pode marcar
+`failed`, com diagnóstico, sem iniciar ações.
 
 Nunca repetir automaticamente operação destrutiva cujo resultado esteja incerto.
+
+Preservar fila com ordem/texto/perfil/provider/modelo/variante. Na retomada, revalidar
+arquivos/permissões, invalidando leituras antigas e pedindo confirmação em conflitos.
 
 ---
 
@@ -1255,6 +1343,10 @@ provider_accounts
 audit_events
 ```
 
+Representar também perfis/seleções por sessão, fila ordenada e estado de processamento,
+confiança por workspace e permissões persistentes vinculadas à ação/caminho.
+Contratos e nomes finais são definidos na fundação, não no Delivery 0.
+
 ---
 
 # 40. Configuração
@@ -1282,6 +1374,10 @@ CLI
   ↓
 session
 ```
+
+A precedência não autoriza o projeto a ampliar permissões ou desligar proteções.
+Exigir confiança antes de ativar configs/MCPs/hooks do workspace; mudanças que introduzam
+execução ou ampliem acesso exigem nova confirmação com diff, conforme PD-09.
 
 ---
 
@@ -1393,6 +1489,10 @@ carapana skills
 carapana update
 carapana completion
 ```
+
+Headless não interativo que precisar de approval pausa a sessão e retorna resultado
+estruturado, sem aprovação automática nem espera indefinida do comando. Formatos,
+códigos de saída e exemplos serão desenhados com mocks no Delivery 0.
 
 ---
 
@@ -1569,6 +1669,11 @@ A integração deve tratar:
 
 O plano do ChatGPT não deve ser confundido com cobrança da API.
 
+Na primeira troca de provider, explicar compartilhamento de contexto e pedir confirmação.
+Oferecer dispensa por provider nesta sessão e configuração global para desativar esses
+avisos, sem liberar segredos. Modelos/variantes indisponíveis pausam e exigem escolha,
+sem substituição silenciosa. Retries, espera por cota e retomada seguem PD-10.
+
 ---
 
 # 54. Provider auth storage
@@ -1664,6 +1769,10 @@ L6 summarize
 
 O modelo não decide sozinho o que esquecer.
 
+Compactação automática com evento visível não apaga histórico local. Preservar objetivo,
+plano, autorizações e trabalho pendente; se informação essencial não puder ser preservada,
+pausar. Hooks de memória complementam o processo, sem substituir estado local.
+
 ---
 
 # 58. AGENTS.md
@@ -1735,6 +1844,11 @@ CommandSpec {
 
 Usar shell apenas quando sintaxe de shell for necessária.
 
+Não herdar todo o ambiente do terminal; variáveis sensíveis exigem autorização para
+uso local sem exposição. Elevação de privilégios é bloqueada na versão inicial,
+inclusive `sudo` e equivalentes em Yolo. Operações administrativas ficam para execução
+manual fora do harness. Instalações locais/globais seguem PD-07.
+
 ---
 
 # 62. File modifications
@@ -1772,7 +1886,11 @@ push
 
 Sessões concorrentes no mesmo repo devem preferir isolamento.
 
-Evitar que dois agents modifiquem o mesmo working tree inadvertidamente.
+Worktree é escolha do operador, não obrigação. Antes de permitir edição concorrente
+no mesmo diretório, mostrar nome/caminho/estado/tempo das sessões existentes e oferecer
+worktree, compartilhamento explícito ou voltar. Nova sessão recebe aviso próprio.
+Registrar mudanças anteriores, detectar arquivos alterados desde a leitura e pedir
+confirmação em conflitos, inclusive em Yolo; não sobrescrever silenciosamente.
 
 ---
 
@@ -1788,6 +1906,10 @@ Detectar:
 - branch compartilhada.
 
 Ações perigosas entram no policy engine.
+
+Commit/push exigem pedido ou autorização para o trabalho atual, inclusive em Yolo.
+Pasta-limite é o diretório de abertura, não raiz Git. Autonomia destrutiva e permissões
+persistentes por ação/caminho seguem PD-08; não ampliar acesso através de symlinks.
 
 ---
 
@@ -2058,7 +2180,12 @@ auto
 yolo
 ```
 
-Mesmo `yolo` respeita hard safety constraints configuradas pelo usuário.
+Modos de autonomia pertencem a perfis configuráveis, separados de Planejar/Executar.
+Mesmo `yolo` respeita proteções de segredos, privilégios, trabalho anterior e bloqueios
+catastróficos. Dentro da pasta da sessão pode executar ações destrutivas; fora dela
+exige autorização específica, inclusive permissão persistente por ação/caminho.
+Sem sandbox disponível, execução/alterações precisam de consentimento explícito e aviso
+visível. Recursos sem implementação segura podem ficar indisponíveis naquele OS.
 
 ---
 
@@ -2097,7 +2224,11 @@ secret.describe
 
 em vez de ler valor.
 
-`secret.read_value` exige autorização explícita.
+Valores secretos não são enviados ao modelo, mesmo com autorização ou em Yolo.
+Não oferecer `secret.read_value` como forma de expor valores ao agente. Credenciais
+podem ser usadas localmente por comandos autorizados, sem aparecer em modelo/chat/logs.
+Até `.env.example` exige permissão antes da leitura; esperar nomes/placeholders não
+dispensa verificar ausência de valores reais.
 
 ---
 
@@ -2109,14 +2240,19 @@ Valor sensível autorizado entra marcado como:
 Sensitive<T>
 ```
 
-Não deve ser automaticamente:
+Nunca deve ser:
 
 - logado;
-- armazenado;
+- armazenado em histórico de conversa ou artefatos de tarefa;
 - enviado a classifier;
-- enviado a outro provider;
+- enviado a qualquer modelo/provider;
 - colocado em artifact;
 - incluído em report.
+
+Consentimento para uso local não libera esses destinos. A proteção precisa ser
+comprovada também em outputs/env de comandos; bloquear fluxos que não puderem ser protegidos.
+Armazenamento protegido de credenciais de autenticação continua seguindo a seção 54;
+isso não autoriza sua inclusão no contexto, histórico ou outputs do agente.
 
 ---
 
@@ -2431,6 +2567,9 @@ postgres
 
 Adicionar MCP não significa autorizar tudo.
 
+Tools novas ou mudanças que ampliem acesso exigem nova aprovação; tools inalteradas
+mantêm permissões. Configuração confiável não pode conceder privilégios novos sozinha.
+
 ---
 
 # 98. MCP import
@@ -2502,6 +2641,8 @@ timestamp
 
 Não armazenar necessariamente stdout inteiro.
 
+Validação incompleta não é sucesso validado: mostrar motivo e pausar fila até decisão.
+
 ---
 
 # 103. Doom-loop detection
@@ -2530,6 +2671,11 @@ inspect assumptions
 choose alternative
 ```
 
+Defaults configuráveis: três tentativas equivalentes sem progresso exigem diagnóstico
+e outra estratégia; mais três sem avanço exigem pausa e intervenção, inclusive em Yolo.
+Só evidência real reinicia contador. Diferenciar isso de retries de falha temporária
+do provider; estes não autorizam loop infinito de edição/teste que esgote a cota.
+
 ---
 
 # 104. Subagents
@@ -2555,6 +2701,11 @@ token budget
 time budget
 resource budget
 ```
+
+Perguntar pede approval para delegar; Auto/Yolo podem delegar dentro de budgets e
+permissões. Planejar só investiga. Não ampliar privilégios nem impor worktrees.
+Sem capacidade para subagent, continuar sozinho ou aguardar; nunca aumentar limites
+automaticamente. Pausar apenas se não houver alternativa dentro do orçamento.
 
 ---
 
@@ -2605,6 +2756,12 @@ Hooks:
 - bounded output;
 - policy;
 - structured payload.
+
+Hooks seguem as mesmas permissões, sandbox, supervisão, proteção de segredos e limites
+das tools. Consultas ai-memory no início/retomada e hooks antes de compactação e no
+encerramento seguem PD-12. Gravações podem ser autorizadas por integração/projeto; exclusões e
+gravações fora do escopo exigem autorização separada. Falhas são avisadas, sem apagar
+histórico ou impedir encerramento. Memória é referência não confiável, não autoridade.
 
 ---
 
@@ -2704,6 +2861,14 @@ reveal secrets       no
 disable sandbox      no
 edit global config   optional
 ```
+
+Celular começa com visualização, prompts, intervenção/parada e approvals comuns.
+Políticas globais, permissões permanentes e autorização sem sandbox ficam desativadas
+por padrão, habilitáveis explicitamente por device. Não há device dono da sessão:
+clientes autorizados compartilham fila única, com origem das mensagens e estado sincronizado.
+
+Desconexão bloqueia comandos/approvals até snapshot atualizado. Preservar rascunhos,
+sem enviar ações offline silenciosamente após reconectar.
 
 ---
 
@@ -2857,6 +3022,10 @@ log_storage_max = "2 GiB"
 
 Valores finais serão calibrados por benchmark.
 
+Sem budget para subagent, continuar sozinho ou aguardar capacidade, sem aumentar os
+limites automaticamente. Pausar apenas quando não houver alternativa dentro do orçamento.
+Medir harness e processos externos separadamente, mas controlar o total supervisionado.
+
 ---
 
 # 124. Dynamic defaults
@@ -2867,6 +3036,11 @@ Defaults devem considerar:
 - disco livre;
 - arquitetura;
 - OS.
+
+Considerar memória disponível e pressão atual, não somente RAM total. A referência
+principal é Mac M3/16 GB; validar também Ryzen 9 7900/~64 GB e Tirion i5-8265U/~16 GB
+via SSH. Tirion deve suportar uma sessão ativa com paralelismo adaptado. Metas numéricas
+só após benchmarks reais, não no Delivery 0.
 
 Máquina de 8 GB e máquina de 64 GB não devem ter exatamente o mesmo paralelismo.
 
@@ -2961,6 +3135,10 @@ forced
 ```
 
 Sem processos órfãos.
+
+Ao parar, cancelar agente/comandos e encerrar processos temporários iniciados para o
+trabalho. Não encerrar serviços anteriores nem processos marcados `Manter rodando`.
+Preservar arquivos alterados, sem rollback automático; checkpoints seguem PD-06.
 
 ---
 
@@ -3389,6 +3567,11 @@ standalone binaries
 cargo install quando adequado
 ```
 
+Usuário final recebe produto pronto, sem precisar de Rust/Node para o Carapanã.
+Dependências de projetos/MCPs ficam separadas e são explicadas pelo Doctor, sem
+instalação silenciosa. Licença escolhida: Apache-2.0; incluir licença/notices na
+distribuição e verificar compatibilidade de dependências/SDKs.
+
 ---
 
 # 153. Self-update
@@ -3444,6 +3627,10 @@ Após aprovação do Delivery 0:
 - deterministic mock provider;
 - fake session engine suficiente para contracts.
 
+Definir contratos de perfis/seleção, fila/edit/intervenção, resultados headless,
+permissões por ação/caminho e confiança por workspace conforme o complemento.
+Não confundir seleção do composer com mudança da execução atual.
+
 Objetivo:
 
 > construir fundação sem implementar autonomia ainda.
@@ -3466,6 +3653,9 @@ Implementar:
 - crash recovery;
 - hibernation base;
 - process supervisor.
+
+Persistir fila e seleções, recuperar sempre em pausa, distinguir processos anteriores,
+temporários e marcados `Manter rodando`. Não repetir efeitos incertos automaticamente.
 
 Conectar TUI/CLI à arquitetura real.
 
@@ -3491,6 +3681,10 @@ Caso o delegated ChatGPT-plan integration dependa de habilitação externa ainda
 - OpenAI API pode ser adapter temporário de desenvolvimento;
 - não criar workaround não oficial.
 
+Comprovar auth/inferência/capacidades na conta ChatGPT autorizada, sem tools executáveis
+nesta fase. Implementar modelos/variantes sem fallback silencioso, confirmação ao trocar
+provider e espera/retries/cota conforme PD-10. API paga não vira requisito do produto.
+
 ---
 
 # 158. Delivery 4 — Core Coding Tools
@@ -3508,6 +3702,23 @@ Implementar:
 - worktree awareness;
 - artifact handling.
 
+### Gate bloqueante antes de tools reais
+
+Antecipar a camada mínima de segurança, sem esperar o Delivery 6 completo:
+
+- proteção de arquivos sensíveis, inclusive `.env.example`, env e outputs;
+- uso local autorizado de credenciais sem exposição ao modelo/chat/logs/memória;
+- approvals básicos e diretório-limite de abertura, com validação de alvos/symlinks;
+- confiança explícita em configs de workspace, sem ampliação automática de permissões;
+- bloqueio de elevação de privilégios;
+- sandbox efetivo onde suportado, ou autorização explícita e aviso para execução sem ele;
+- supervisão/cancelamento de processos e preservação de alterações anteriores;
+- worktrees opcionais, com confirmação de edição concorrente no mesmo diretório.
+
+Controles devem ser comprovados antes de ativar a capacidade correspondente. Se não
+for possível garantir proteção, bloquear a capacidade. Essas implementações são após
+aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
+
 ---
 
 # 159. Delivery 5 — Context Engine
@@ -3522,6 +3733,10 @@ Implementar:
 - compaction;
 - provider adaptation;
 - archived summaries.
+
+Compactação automática visível não apaga histórico; preservar objetivo/plano/autorizações/
+trabalho pendente. Pausar quando não houver preservação segura. Integração real ai-memory
+fica no Delivery 9, sem dependência externa obrigatória para contexto local.
 
 ---
 
@@ -3540,6 +3755,10 @@ Implementar:
 - sandbox;
 - secret protection;
 - prompt-injection boundaries.
+
+Este delivery amplia policy/Auto/sandbox sobre o enforcement mínimo do Delivery 4.
+Não adiar proteção de segredos/privilégios/arquivos até classifiers ou skills.
+Aplicar regras de Yolo, limites de diretório e permissões persistentes de PD-07/PD-08.
 
 ---
 
@@ -3576,6 +3795,10 @@ Implementar:
 - TODO/stub checks;
 - transparent "not validated".
 
+Validação incompleta pausa fila. Doom loops usam defaults 3 tentativas → diagnóstico/
+mudança de estratégia, mais 3 sem progresso → pausa, inclusive em Yolo. Só evidência
+real de avanço reinicia contador; não confundir com retries temporários do provider.
+
 ---
 
 # 163. Delivery 9 — MCP
@@ -3596,6 +3819,14 @@ Implementar:
 
 Validar especificamente MCP de memória persistente como uso prioritário.
 
+Validar ai-memory e hooks antes de compactação/no encerramento, leitura relevante no
+início/retomada, escopo de gravação autorizado e degradação segura conforme PD-12.
+Atualizações de tools que ampliem acesso exigem approval; hooks seguem todas as proteções.
+
+Com os gates dos Deliveries 1–9 satisfeitos, realizar as três jornadas de primeiro
+dogfooding de PD-02, no macOS/Linux com a assinatura ChatGPT. Web/mobile reais e
+providers/subagents adicionais não bloqueiam esse marco.
+
 ---
 
 # 164. Delivery 10 — Remote Attach & Multi-device
@@ -3610,6 +3841,9 @@ Implementar:
 - remote CLI;
 - remote TUI;
 - Tailscale/NetBird interface selection.
+
+Pareamento aplica defaults restritos do celular, fila compartilhada sem device dono,
+origem de mensagens e bloqueio de ações offline até snapshot atualizado, conforme PD-13.
 
 ---
 
@@ -3630,6 +3864,12 @@ Implementar:
 - resources;
 - pairing;
 - mobile UX.
+
+### Evolução posterior — notificações com a PWA fechada
+
+Investigar suporte do sistema, infraestrutura e segurança em etapa posterior à
+conexão inicial. UX inicial usa attention queue e avisos com a PWA aberta. Não prometer
+push sem comprovar viabilidade, nem introduzir relay/cloud obrigatório como atalho.
 
 ---
 
@@ -3660,6 +3900,10 @@ Implementar:
 - budgets;
 - permission isolation;
 - context isolation.
+
+Delegação segue o perfil e os budgets conforme PD-15: Perguntar pede approval;
+Auto/Yolo podem delegar; Planejar só investiga. Sem ampliar privilégios ou impor worktree.
+Sem capacidade, continuar sozinho ou aguardar, sem aumentar limites automaticamente.
 
 Role routing opcional:
 
@@ -3704,6 +3948,9 @@ Antes:
 - issue template;
 - doctor report;
 - compatibility matrix.
+
+Distribuir sob Apache-2.0, incluindo licença/notices aplicáveis e artefatos prontos
+sem toolchain Rust/Node obrigatório para usuário final.
 
 ---
 
@@ -3887,15 +4134,19 @@ Após v1:
 
 # 180. Config exemplo
 
+Exemplo conceitual, não implementação do contrato final de perfis/fila. Defaults de
+modelo/variante devem ser compatíveis com o catálogo real. `sandbox.enabled` não
+garante enforcement disponível: ausência de isolamento exige consentimento explícito.
+
 ```toml
 [agent]
-mode = "auto"
+mode = "ask"
 
 [model]
 primary = "chatgpt:default"
 
 [reasoning]
-level = "high"
+level = "default"
 
 [decision]
 mode = "hybrid"
@@ -3975,6 +4226,9 @@ A sessão, as regras, a segurança, o contexto, as ferramentas e a qualidade da 
 
 # 183. Primeira ação de implementação
 
+A atualização documental e as decisões aprovadas não equivalem à aprovação do Delivery 0.
+O próximo trabalho de implementação continua exclusivamente o protótipo com mocks.
+
 A primeira tarefa do repositório não é implementar OpenAI, MCP ou shell.
 
 É:
@@ -4027,4 +4281,3 @@ Não implementar daemon "só para ligar a tela".
 Mocks são suficientes.
 
 A primeira entrega existe para impedir exatamente que a engenharia produza um harness tecnicamente sofisticado com uma experiência ruim.
-

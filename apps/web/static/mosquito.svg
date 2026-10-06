@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>Carapanã — mosquito amazônico</title>
+  <g stroke="#91c6df" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M39 29C33 7 17 7 20 16C23 23 31 26 39 29Z" fill="#91c6df" fill-opacity=".16"/>
+    <path d="M39 29C40 10 51 6 51 14C51 21 45 26 39 29Z" fill="#91c6df" fill-opacity=".16"/>
+    <path d="M33 32L24 42L9 46M35 31L36 45L23 57M39 30L49 39L55 53"/>
+    <path d="M32 31L22 28L8 32M37 29L29 21L15 22M40 29L47 32L60 30"/>
+    <path d="M18 39L39 29" stroke-width="5"/>
+    <path d="M24 36L23 34M29 34L28 32" stroke="#191e24" stroke-width="1.7"/>
+    <path d="M45 25L60 17M44 23L42 16M46 24L52 20"/>
+    <circle cx="42" cy="27" r="3.5" fill="#91c6df"/>
+  </g>
+</svg>
