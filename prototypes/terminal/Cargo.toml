@@ -6,6 +6,9 @@ publish = false
 license = "Apache-2.0"
 description = "Delivery 0 CLI/TUI prototype using fixtures only; no agent runtime"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "carapana-prototype"
 path = "src/main.rs"

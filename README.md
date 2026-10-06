@@ -196,6 +196,10 @@ screenshot nativo do Mac nem a aprovação humana de UX.
 
 ### Revisão do Delivery 0
 
+**Conjunto aprovado pelo responsável pelo produto em 6 de outubro de 2026.**
+PR #1 integrada em `main`; Delivery 1 autorizado. O checklist abaixo preserva
+o roteiro de revisão, não uma certificação de todos os ambientes remotos.
+
 - [ ] Aprovar hierarquia desktop e entrada mobile por atenção.
 - [ ] Revisar temas claro/escuro, densidade, foco, contraste e telas estreitas.
 - [ ] Confirmar distinção entre execução atual, próxima mensagem e seleção capturada na fila.
@@ -223,6 +227,18 @@ pnpm --filter @carapana/web exec playwright install chromium
 just verify
 ```
 
+`make verify` é o gate canônico; `just verify` delega a ele. A CI executa
+`make verify-web` no Linux (incluindo snapshots) e `make verify-rust` no Linux
+e macOS (incluindo PTY). Toolchains vêm de `mise.toml` e `rust-toolchain.toml`;
+instalação JS e verificações Rust usam os lockfiles sem resolução nova.
+
+O workspace Rust usa `Cargo.toml` e `Cargo.lock` na raiz. Por enquanto contém
+somente `prototypes/terminal`; não foi criada uma engine de produção. Novos
+crates de domínio não devem depender de UI; adapters dependem dos contratos,
+e as interfaces consomem esses contratos. Essas fronteiras serão verificáveis
+quando os crates forem extraídos na próxima fatia. Código Rust do workspace
+proíbe `unsafe` nos crates que herdam seus lints.
+
 O gate inclui format/lint/typecheck/unit/build/e2e web, snapshots desktop/mobile,
 format/clippy/test/build Rust, testes CLI headless e interação do binário em PTY
 Unix (requer Python 3 para esse teste). O launcher tem regressão para o contrato
@@ -236,7 +252,7 @@ após `cargo build --manifest-path prototypes/terminal/Cargo.toml`:
 ```sh
 CARAPANA_REVIEW_DIR=/tmp/opencode/carapana-review \
   python3 prototypes/terminal/tests/pty_smoke.py \
-  "$PWD/prototypes/terminal/target/debug/carapana-prototype"
+  "$PWD/target/debug/carapana-prototype"
 ```
 
 O teste PTY atravessa envio → atividade → decisão inline → resultado → avanço
