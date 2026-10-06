@@ -4,7 +4,7 @@
 //! persist state, or make authorization decisions.
 
 use crate::queue::WorkQueue;
-use carapana_protocol::{Outcome, QueuedMessage, SessionEvent};
+use carapana_protocol::{ContractError, ErrorCode, Outcome, QueuedMessage, SessionEvent};
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +21,22 @@ pub enum SessionError {
     NoActiveMessage,
     AlreadyPaused,
     NotPaused,
+}
+
+impl SessionError {
+    /// Converts a lifecycle failure to the public structured contract without exposing
+    /// message text or other request content.
+    pub fn contract_error(self, message_id: Option<String>) -> ContractError {
+        let code = match self {
+            Self::EmptyMessageId => ErrorCode::InvalidMessageId,
+            Self::DuplicateMessageId => ErrorCode::DuplicateMessageId,
+            Self::AlreadyProcessing => ErrorCode::AlreadyProcessing,
+            Self::NoActiveMessage => ErrorCode::NoActiveMessage,
+            Self::AlreadyPaused => ErrorCode::AlreadyPaused,
+            Self::NotPaused => ErrorCode::NotPaused,
+        };
+        ContractError { code, message_id }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,7 +148,9 @@ impl SessionEngine {
 #[cfg(test)]
 mod tests {
     use super::{SessionEngine, SessionError, SessionStatus};
-    use carapana_protocol::{Autonomy, Outcome, QueuedMessage, Selection, SessionEvent, WorkMode};
+    use carapana_protocol::{
+        Autonomy, ErrorCode, Outcome, QueuedMessage, Selection, SessionEvent, WorkMode,
+    };
 
     fn message(id: &str) -> QueuedMessage {
         QueuedMessage {
@@ -248,6 +266,36 @@ mod tests {
         assert_eq!(
             engine.complete(Outcome::Success),
             Err(SessionError::NoActiveMessage)
+        );
+    }
+
+    #[test]
+    fn should_map_session_failures_to_content_free_contract_errors() {
+        for (error, code) in [
+            (SessionError::EmptyMessageId, ErrorCode::InvalidMessageId),
+            (
+                SessionError::DuplicateMessageId,
+                ErrorCode::DuplicateMessageId,
+            ),
+            (
+                SessionError::AlreadyProcessing,
+                ErrorCode::AlreadyProcessing,
+            ),
+            (SessionError::NoActiveMessage, ErrorCode::NoActiveMessage),
+            (SessionError::AlreadyPaused, ErrorCode::AlreadyPaused),
+            (SessionError::NotPaused, ErrorCode::NotPaused),
+        ] {
+            assert_eq!(
+                error.contract_error(Some("message-7".into())),
+                carapana_protocol::ContractError {
+                    code,
+                    message_id: Some("message-7".into()),
+                }
+            );
+        }
+        assert_eq!(
+            SessionError::EmptyMessageId.contract_error(None).message_id,
+            None
         );
     }
 }
