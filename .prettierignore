@@ -1,0 +1,13 @@
+# Biome owns these languages; avoid competing formatters.
+pnpm-lock.yaml
+**/Cargo.lock
+**/target/**
+**/node_modules/**
+**/*.js
+**/*.ts
+**/*.json
+**/*.css
+**/.svelte-kit/**
+**/build/**
+**/test-results/**
+**/playwright-report/**
