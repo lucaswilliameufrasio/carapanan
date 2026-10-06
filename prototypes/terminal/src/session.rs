@@ -1,5 +1,7 @@
 //! Scripted, in-memory Delivery 0 session. No tool, model or filesystem execution.
 use crate::{App, Message, interaction::Menu};
+use carapana_core::{DemoProvider, DemoRequest, DemoResponse, DeterministicDemoProvider};
+use carapana_protocol::{Autonomy, WorkMode};
 use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -335,40 +337,55 @@ impl App {
             return;
         };
         let turn = &mut self.turns[index];
-        if !turn.message.demo {
+        let response = DeterministicDemoProvider.next(DemoRequest {
+            step: turn.step,
+            work: if turn.message.selection.name == "Planejar" {
+                WorkMode::Plan
+            } else {
+                WorkMode::Execute
+            },
+            autonomy: match turn.message.selection.name.as_str() {
+                "Auto" => Autonomy::Auto,
+                "Yolo" => Autonomy::Yolo,
+                _ => Autonomy::Ask,
+            },
+            explicit_demo: turn.message.demo,
+        });
+        if response == DemoResponse::Acknowledge {
             turn.result = Some(
                 "Mensagem recebida nesta prévia. /demo inicia uma execução demonstrativa.".into(),
             );
             self.complete_turn();
             return;
         }
-        match turn.step {
-            0 => turn
+        match response {
+            DemoResponse::Read => turn
                 .events
                 .push("Read auth/service.rs (simulado) · 82 linhas".into()),
-            1 => turn
+            DemoResponse::Plan => turn
                 .events
                 .push("Plano: inspecionar → alterar → validar (fixture)".into()),
-            2 if turn.message.selection.name == "Planejar" => {
+            DemoResponse::PlanComplete => {
                 turn.result = Some("Plano demonstrado: inspecionar a invalidação, propor transação e verificar reutilização.\nPlanejar não altera arquivos nem executa testes.".into());
                 self.complete_turn();
                 return;
             }
-            2 if turn.message.selection.name == "Perguntar" => {
+            DemoResponse::ApprovalRequired => {
                 self.request_approval();
                 return;
             }
-            2 => turn
+            DemoResponse::MockPolicyAllows => turn
                 .events
                 .push("Policy da demonstração: alteração local permitida".into()),
-            3 => turn.events.push(self.approval_action.clone()),
-            4 => turn
+            DemoResponse::ApprovedActivity => turn.events.push(self.approval_action.clone()),
+            DemoResponse::Validation => turn
                 .events
                 .push("Test cargo test (simulado) · 183 passaram · 4,8s".into()),
-            _ => {
+            DemoResponse::Complete => {
                 self.finish();
                 return;
             }
+            DemoResponse::Acknowledge => unreachable!("acknowledgment handled before activity"),
         }
         self.turns[index].step += 1;
     }
