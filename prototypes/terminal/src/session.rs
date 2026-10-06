@@ -1,6 +1,8 @@
 //! Scripted, in-memory Delivery 0 session. No tool, model or filesystem execution.
 use crate::{App, Message, interaction::Menu};
-use carapana_core::{DemoProvider, DemoRequest, DemoResponse, DeterministicDemoProvider};
+use carapana_core::{
+    DemoProvider, DemoRequest, DemoResponse, DeterministicDemoProvider, approval::ApprovalState,
+};
 use carapana_protocol::{Autonomy, WorkMode};
 use std::time::Duration;
 
@@ -19,7 +21,7 @@ pub struct Turn {
     pub result: Option<String>,
     pub status: TurnStatus,
     pub step: u8,
-    pub needs_approval: bool,
+    pub approval: ApprovalState,
 }
 
 impl App {
@@ -90,7 +92,11 @@ impl App {
                 TurnStatus::Processing
             },
             step: if waiting { 2 } else { 0 },
-            needs_approval: waiting,
+            approval: if waiting {
+                ApprovalState::Pending
+            } else {
+                ApprovalState::NotRequired
+            },
         });
         if id == "completed" {
             let turn = self.turns.last_mut().unwrap();
@@ -252,7 +258,7 @@ impl App {
             return "Diff\nNenhuma alteração demonstrada.".into();
         };
         let edited = turn.events.iter().any(|e| e.starts_with("Edit"));
-        if !edited && !turn.needs_approval {
+        if !edited && !turn.approval.requires_approval() {
             return "Diff\nNenhuma alteração demonstrada neste trabalho.".into();
         }
         format!(
@@ -303,7 +309,7 @@ impl App {
             result: None,
             status: TurnStatus::Processing,
             step: 0,
-            needs_approval: false,
+            approval: ApprovalState::NotRequired,
         });
         self.active = Some(self.turns.len() - 1);
         self.set_scene("running");
@@ -395,7 +401,7 @@ impl App {
     fn request_approval(&mut self) {
         if let Some(index) = self.active {
             self.turns[index].status = TurnStatus::Waiting;
-            self.turns[index].needs_approval = true;
+            self.turns[index].approval.request();
         }
         if self.scenario().status != "waiting-for-approval" {
             self.set_scene("approval");
@@ -436,7 +442,7 @@ impl App {
         }
         self.notice.clear();
         if let Some(index) = self.active {
-            if self.turns[index].needs_approval && self.pending.is_none() {
+            if self.turns[index].approval.requires_approval() && self.pending.is_none() {
                 let action = self.approval_action.clone();
                 self.request_approval();
                 self.approval_action = action;

@@ -148,7 +148,7 @@ fn should_send_to_the_queue_from_the_approval_composer_without_authorizing_the_a
     app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.scenario().id, "approval");
     assert_eq!(app.queue[0].text, "pedido enquanto aguardo");
-    assert!(app.turns[0].needs_approval);
+    assert!(app.turns[0].approval.requires_approval());
 }
 
 #[test]
@@ -161,7 +161,7 @@ fn should_not_steal_composer_focus_when_approval_arrives_during_a_draft() {
     app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.scenario().id, "approval");
     assert_eq!(app.queue[0].text, "estou escrevendo a segunda");
-    assert!(app.turns[0].needs_approval);
+    assert!(app.turns[0].approval.requires_approval());
 }
 
 #[test]
