@@ -4,6 +4,12 @@ use std::{error::Error, fmt, path::Path, time::Duration};
 
 use rusqlite::{Connection, TransactionBehavior};
 
+mod session_store;
+
+pub use session_store::{
+    PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionStatus,
+};
+
 pub const SCHEMA_VERSION: i64 = 1;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -69,6 +75,48 @@ impl From<rusqlite::Error> for MigrationError {
 /// The caller is responsible for choosing a private, OS-owned data directory.
 pub struct Database {
     connection: Connection,
+}
+
+impl Database {
+    /// Create a session with an initial paused snapshot and an auditable creation event.
+    pub fn create_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::create_session(self, session_id, now_ms)
+    }
+
+    /// Append one queued message and update the materialized snapshot atomically.
+    pub fn enqueue_message(
+        &mut self,
+        session_id: &str,
+        message: carapana_protocol::QueuedMessage,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::enqueue_message(self, session_id, message, now_ms)
+    }
+
+    /// Load from the snapshot, falling back to replaying the event log if needed.
+    pub fn load_session(&self, session_id: &str) -> Result<PersistedSession, SessionStoreError> {
+        session_store::load_session(self, session_id)
+    }
+
+    /// Return the durable event history in sequence order.
+    pub fn session_events(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<StoredSessionEvent>, SessionStoreError> {
+        session_store::session_events(self, session_id)
+    }
+
+    /// Rebuild a session snapshot from its immutable event history.
+    pub fn rebuild_snapshot(
+        &mut self,
+        session_id: &str,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::rebuild_snapshot(self, session_id)
+    }
 }
 
 impl Database {
