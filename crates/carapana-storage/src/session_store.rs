@@ -765,8 +765,12 @@ mod tests {
     use rusqlite::params;
     use std::{
         fs,
+        fs::OpenOptions,
         path::PathBuf,
-        sync::{Arc, Barrier},
+        sync::{
+            Arc, Barrier,
+            atomic::{AtomicU64, Ordering},
+        },
         thread,
         time::SystemTime,
     };
@@ -779,7 +783,30 @@ mod tests {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            Self(std::env::temp_dir().join(format!("carapana-session-{nonce}.sqlite3")))
+            Self::with_timestamp(nonce)
+        }
+
+        fn with_timestamp(nonce: u128) -> Self {
+            Self(test_database_path(nonce))
+        }
+    }
+
+    fn test_database_path(nonce: u128) -> PathBuf {
+        static NEXT_TEST_DATABASE_ID: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let id = NEXT_TEST_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "carapana-session-{}-{nonce}-{id}.sqlite3",
+                std::process::id()
+            ));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => {
+                    drop(file);
+                    return path;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("could not allocate SQLite test fixture: {error}"),
+            }
         }
     }
 
@@ -805,6 +832,13 @@ mod tests {
                 variant: "default".into(),
             },
         }
+    }
+
+    #[test]
+    fn should_allocate_distinct_database_files_when_clock_timestamps_collide() {
+        let first = TestDatabase::with_timestamp(42);
+        let second = TestDatabase::with_timestamp(42);
+        assert_ne!(first.0, second.0);
     }
 
     #[test]
