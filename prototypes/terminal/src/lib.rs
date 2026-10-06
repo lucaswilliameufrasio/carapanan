@@ -961,22 +961,15 @@ fn render_dialog(frame: &mut Frame, app: &App, input_y: u16) {
     frame.render_widget(Paragraph::new(footer).style(palette.muted), rows[2]);
 }
 
-#[derive(Serialize)]
-pub struct HeadlessResult {
-    pub prototype: bool,
-    pub executed: bool,
-    pub scenario: String,
-    pub status: String,
-    pub summary: String,
-    pub exit_code: u8,
-}
+pub use carapana_protocol::HeadlessResult;
 
 pub fn headless(scenario: &Scenario) -> HeadlessResult {
-    let code = match scenario.id.as_str() {
-        "completed" => 0,
-        "incomplete" => 3,
-        "approval" | "sandbox" | "trust" | "shared" | "secret" => 4,
-        _ => 2,
+    use carapana_protocol::Outcome;
+    let outcome = match scenario.id.as_str() {
+        "completed" => Outcome::Success,
+        "incomplete" => Outcome::ValidationIncomplete,
+        "approval" | "sandbox" | "trust" | "shared" | "secret" => Outcome::ApprovalPending,
+        _ => Outcome::Failure,
     };
     HeadlessResult {
         prototype: true,
@@ -984,7 +977,7 @@ pub fn headless(scenario: &Scenario) -> HeadlessResult {
         scenario: scenario.id.clone(),
         status: scenario.status.clone(),
         summary: scenario.summary.clone(),
-        exit_code: code,
+        exit_code: outcome.exit_code(),
     }
 }
 
