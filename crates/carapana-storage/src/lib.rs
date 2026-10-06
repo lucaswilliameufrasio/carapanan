@@ -117,6 +117,42 @@ impl Database {
     ) -> Result<PersistedSession, SessionStoreError> {
         session_store::rebuild_snapshot(self, session_id)
     }
+
+    /// Explicitly move the oldest queued message into active state without executing it.
+    pub fn start_next_message(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<Option<PersistedSession>, SessionStoreError> {
+        session_store::start_next_message(self, session_id, now_ms)
+    }
+
+    /// Pause the active session while preserving its active message and remaining queue.
+    pub fn pause_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::pause_session(self, session_id, now_ms)
+    }
+
+    /// Record explicit completion of the active message; this does not start the next one.
+    pub fn complete_active_message(
+        &mut self,
+        session_id: &str,
+        outcome: carapana_protocol::Outcome,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::complete_active_message(self, session_id, outcome, now_ms)
+    }
+
+    /// Recover all active sessions into a paused state. No work is resumed or repeated.
+    pub fn recover_active_sessions(
+        &mut self,
+        now_ms: i64,
+    ) -> Result<Vec<PersistedSession>, SessionStoreError> {
+        session_store::recover_active_sessions(self, now_ms)
+    }
 }
 
 impl Database {
