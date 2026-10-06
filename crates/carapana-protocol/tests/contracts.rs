@@ -67,6 +67,14 @@ fn should_preserve_headless_exit_codes_and_typed_event_error_round_trips() {
         serde_json::to_string(&error).unwrap(),
         r#"{"code":"already_resolved","message_id":null}"#
     );
+    assert_eq!(
+        serde_json::to_string(&ContractError {
+            code: ErrorCode::DuplicateMessageId,
+            message_id: Some("message-7".into()),
+        })
+        .unwrap(),
+        r#"{"code":"duplicate_message_id","message_id":"message-7"}"#
+    );
 }
 
 #[test]

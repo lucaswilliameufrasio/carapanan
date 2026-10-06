@@ -103,7 +103,12 @@ pub struct HeadlessResult {
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     InvalidSelection,
+    InvalidMessageId,
+    DuplicateMessageId,
     AlreadyProcessing,
+    NoActiveMessage,
+    AlreadyPaused,
+    NotPaused,
     AlreadyResolved,
     ApprovalInvalidated,
     ProviderUnavailable,
