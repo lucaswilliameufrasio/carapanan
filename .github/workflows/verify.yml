@@ -37,26 +37,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Temporary bootstrap: only produces review artifacts, never substitutes
-  # for the strict Web gate above. Removed after reviewing the Ubuntu images.
-  snapshot-review:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      CARAPANA_SNAPSHOT_ENV: ubuntu
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @carapana/web exec playwright install --with-deps chromium
-      - run: pnpm build
-      - run: pnpm test:e2e --grep 'Should render' --update-snapshots
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ubuntu-snapshot-review
-          path: apps/web/tests/prototype.spec.ts-snapshots/*-ubuntu.png
-          retention-days: 7
-
   rust:
     name: Rust / ${{ matrix.os }}
     strategy:
