@@ -60,8 +60,11 @@ impl<T> WorkQueue<T> {
         (index < self.items.len()).then(|| self.items.remove(index))
     }
 
-    /// Moves an item by a signed offset and returns its new index.
+    /// Moves an item one position toward either end and returns its new index.
     pub fn move_by(&mut self, index: usize, offset: isize) -> Option<usize> {
+        if !matches!(offset, -1 | 1) {
+            return None;
+        }
         let target = index.checked_add_signed(offset)?;
         if index >= self.items.len() || target >= self.items.len() {
             return None;
@@ -121,6 +124,8 @@ mod tests {
             ["first", "third", "second"]
         );
         assert_eq!(queue.move_by(0, -1), None);
+        assert_eq!(queue.move_by(0, 2), None);
+        assert_eq!(queue.move_by(1, 0), None);
         assert_eq!(queue.move_by(2, 1), None);
         assert_eq!(queue.remove(1), Some("third"));
         assert_eq!(queue.remove(8), None);
