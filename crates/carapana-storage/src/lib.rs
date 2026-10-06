@@ -5,10 +5,12 @@ use std::{error::Error, fmt, path::Path, time::Duration};
 use rusqlite::{Connection, TransactionBehavior};
 
 mod session_store;
+mod user_database;
 
 pub use session_store::{
     PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionStatus,
 };
+pub use user_database::{UserDatabaseError, open_user_database, user_database_path};
 
 /// Per-user index and lifecycle facade over the user's single SQLite database.
 pub struct SessionRegistry {
