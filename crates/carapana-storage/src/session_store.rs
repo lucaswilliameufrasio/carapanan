@@ -238,6 +238,28 @@ pub(super) fn load_session(
     load_session_connection(&database.connection, session_id)
 }
 
+pub(super) fn list_sessions(
+    database: &mut Database,
+    active_only: bool,
+) -> Result<Vec<PersistedSession>, SessionStoreError> {
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let session_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT session_id FROM sessions WHERE (?1 = 0 OR state = 'active') ORDER BY updated_at_ms DESC, session_id ASC",
+        )?;
+        let rows = statement.query_map([active_only], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let sessions = session_ids
+        .iter()
+        .map(|session_id| load_session_connection(&transaction, session_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    transaction.commit()?;
+    Ok(sessions)
+}
+
 pub(super) fn session_events(
     database: &Database,
     session_id: &str,
@@ -738,10 +760,16 @@ fn validate_timestamp(timestamp_ms: i64) -> Result<(), SessionStoreError> {
 #[cfg(test)]
 mod tests {
     use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus};
-    use crate::Database;
+    use crate::{Database, SessionRegistry};
     use carapana_protocol::{Autonomy, Outcome, QueuedMessage, Selection, WorkMode};
     use rusqlite::params;
-    use std::{fs, path::PathBuf, time::SystemTime};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{Arc, Barrier},
+        thread,
+        time::SystemTime,
+    };
 
     struct TestDatabase(PathBuf);
 
@@ -983,5 +1011,76 @@ mod tests {
             Err(SessionStoreError::InvalidTransition)
         ));
         assert_eq!(database.load_session("session-1").unwrap(), paused);
+    }
+
+    #[test]
+    fn should_list_sessions_consistently_and_detect_active_sessions() {
+        let path = TestDatabase::new();
+        let mut registry = SessionRegistry::open(&path.0).unwrap();
+        registry.create("older", 10).unwrap();
+        registry.enqueue("older", message("m1"), 11).unwrap();
+        registry.create("newer", 12).unwrap();
+        registry.start_next("older", 13).unwrap();
+
+        let listed = registry.list().unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["older", "newer"]
+        );
+        let active = registry.active().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].session_id, "older");
+        assert_eq!(active[0].active_message, Some(message("m1")));
+    }
+
+    #[test]
+    fn should_serialize_concurrent_duplicate_enqueues_across_real_connections() {
+        let path = TestDatabase::new();
+        let mut database = Database::open(&path.0).unwrap();
+        database.create_session("session-1", 10).unwrap();
+        drop(database);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let first_path = path.0.clone();
+        let first_barrier = Arc::clone(&barrier);
+        let second_path = path.0.clone();
+        let second_barrier = Arc::clone(&barrier);
+        let (first, second) = thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                let mut database = Database::open(first_path).unwrap();
+                first_barrier.wait();
+                match database.enqueue_message("session-1", message("same"), 20) {
+                    Ok(_) => "inserted",
+                    Err(SessionStoreError::DuplicateMessageId) => "duplicate",
+                    Err(error) => panic!("unexpected concurrent enqueue error: {error}"),
+                }
+            });
+            let second = scope.spawn(move || {
+                let mut database = Database::open(second_path).unwrap();
+                second_barrier.wait();
+                match database.enqueue_message("session-1", message("same"), 20) {
+                    Ok(_) => "inserted",
+                    Err(SessionStoreError::DuplicateMessageId) => "duplicate",
+                    Err(error) => panic!("unexpected concurrent enqueue error: {error}"),
+                }
+            });
+            (first.join().unwrap(), second.join().unwrap())
+        });
+
+        assert_ne!(first, second);
+        assert_eq!(
+            [first, second]
+                .into_iter()
+                .filter(|result| *result == "inserted")
+                .count(),
+            1
+        );
+        let database = Database::open(&path.0).unwrap();
+        let session = database.load_session("session-1").unwrap();
+        assert_eq!(session.queued_messages, vec![message("same")]);
+        assert_eq!(session.event_sequence, 2);
     }
 }
