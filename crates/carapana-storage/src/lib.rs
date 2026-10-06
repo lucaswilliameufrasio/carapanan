@@ -10,6 +10,81 @@ pub use session_store::{
     PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionStatus,
 };
 
+/// Per-user index and lifecycle facade over the user's single SQLite database.
+pub struct SessionRegistry {
+    database: Database,
+}
+
+impl SessionRegistry {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, MigrationError> {
+        Ok(Self {
+            database: Database::open(path)?,
+        })
+    }
+
+    pub fn create(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.create_session(session_id, now_ms)
+    }
+
+    pub fn enqueue(
+        &mut self,
+        session_id: &str,
+        message: carapana_protocol::QueuedMessage,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.enqueue_message(session_id, message, now_ms)
+    }
+
+    pub fn get(&self, session_id: &str) -> Result<PersistedSession, SessionStoreError> {
+        self.database.load_session(session_id)
+    }
+
+    pub fn list(&mut self) -> Result<Vec<PersistedSession>, SessionStoreError> {
+        self.database.list_sessions()
+    }
+
+    pub fn active(&mut self) -> Result<Vec<PersistedSession>, SessionStoreError> {
+        self.database.active_sessions()
+    }
+
+    pub fn start_next(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<Option<PersistedSession>, SessionStoreError> {
+        self.database.start_next_message(session_id, now_ms)
+    }
+
+    pub fn pause(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.pause_session(session_id, now_ms)
+    }
+
+    pub fn complete(
+        &mut self,
+        session_id: &str,
+        outcome: carapana_protocol::Outcome,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database
+            .complete_active_message(session_id, outcome, now_ms)
+    }
+
+    pub fn recover_after_restart(
+        &mut self,
+        now_ms: i64,
+    ) -> Result<Vec<PersistedSession>, SessionStoreError> {
+        self.database.recover_active_sessions(now_ms)
+    }
+}
+
 pub const SCHEMA_VERSION: i64 = 1;
 
 const INITIAL_SCHEMA: &str = r#"
@@ -108,6 +183,14 @@ impl Database {
         session_id: &str,
     ) -> Result<Vec<StoredSessionEvent>, SessionStoreError> {
         session_store::session_events(self, session_id)
+    }
+
+    pub fn list_sessions(&mut self) -> Result<Vec<PersistedSession>, SessionStoreError> {
+        session_store::list_sessions(self, false)
+    }
+
+    pub fn active_sessions(&mut self) -> Result<Vec<PersistedSession>, SessionStoreError> {
+        session_store::list_sessions(self, true)
     }
 
     /// Rebuild a session snapshot from its immutable event history.
