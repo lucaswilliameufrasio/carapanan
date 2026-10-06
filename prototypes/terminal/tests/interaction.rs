@@ -140,7 +140,7 @@ fn should_preserve_pending_intervention_on_interrupt_and_never_treat_command_c_a
     assert_eq!(app.input, "rascunho");
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.scenario().id, "recovery");
-    assert_eq!(app.pending.as_ref().unwrap().text, "intervenção");
+    assert_eq!(app.pending.get().unwrap().text, "intervenção");
     app.approve(true);
     assert_eq!(app.scenario().id, "recovery");
 }
@@ -296,7 +296,7 @@ fn should_intervene_from_command_menu_without_special_terminal_keys() {
     app.key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
     type_text(&mut app, "intervene");
     press(&mut app, KeyCode::Enter);
-    assert!(app.pending.is_some());
+    assert!(app.pending.has_pending());
     assert_eq!(app.executing.name, "Auto");
     app.command("/approve");
     press(&mut app, KeyCode::Enter);

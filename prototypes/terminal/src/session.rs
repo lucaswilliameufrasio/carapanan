@@ -51,7 +51,7 @@ impl App {
             self.turns[index].result =
                 Some("Demonstração anterior encerrada ao trocar de cenário.".into());
         }
-        self.pending = None;
+        self.pending.clear();
         self.approval_focus = false;
         self.set_scene(id);
         self.scroll = 0;
@@ -197,7 +197,7 @@ impl App {
             }
             text.push('\n');
         }
-        if let Some(message) = &self.pending {
+        if let Some(message) = self.pending.get() {
             text.push_str(&format!(
                 "Intervenção pendente: {}\nAplicação na próxima etapa segura.\n",
                 message.text
@@ -288,7 +288,7 @@ impl App {
 
     pub fn start_next(&mut self) {
         if self.active.is_some()
-            || self.pending.is_some()
+            || self.pending.has_pending()
             || self.queue.is_empty()
             || self.queue_edit.is_some()
             || (self.scenario().blocking && self.scenario().id != "empty")
@@ -329,7 +329,7 @@ impl App {
             return;
         }
         self.elapsed = Duration::ZERO;
-        if self.pending.is_some() {
+        if self.pending.has_pending() {
             self.safe_step();
             return;
         }
@@ -442,7 +442,7 @@ impl App {
         }
         self.notice.clear();
         if let Some(index) = self.active {
-            if self.turns[index].approval.requires_approval() && self.pending.is_none() {
+            if self.turns[index].approval.requires_approval() && !self.pending.has_pending() {
                 let action = self.approval_action.clone();
                 self.request_approval();
                 self.approval_action = action;
