@@ -2,6 +2,7 @@
 use carapana_protocol::{Autonomy, WorkMode};
 
 pub mod approval;
+pub mod intervention;
 pub mod queue;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

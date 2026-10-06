@@ -1,3 +1,4 @@
+use carapana_core::intervention::PendingIntervention;
 use carapana_core::queue::WorkQueue;
 use ratatui::{
     Frame,
@@ -53,7 +54,7 @@ pub struct App {
     pub selected: usize,
     pub executing: Selection,
     pub queue: WorkQueue<Message>,
-    pub pending: Option<Message>,
+    pub pending: PendingIntervention<Message>,
     pub input: String,
     pub pane: usize,
     pub scroll: u16,
@@ -136,7 +137,7 @@ impl Default for App {
             executing: executing.clone(),
             queue: WorkQueue::new(),
             profiles,
-            pending: None,
+            pending: PendingIntervention::new(),
             input: String::new(),
             pane: 0,
             scroll: 0,
@@ -243,7 +244,11 @@ impl App {
             self.queue[index] = message;
             self.notice = "Mensagem da fila atualizada com sua seleção explícita.".into();
         } else if intervene {
-            self.pending = Some(message);
+            let replaced = self.pending.stage(message);
+            let had_replaced = replaced.is_some();
+            if let Some(previous) = replaced {
+                self.queue.push_front(previous);
+            }
             self.approval_focus = false;
             if let Some(index) = self.active {
                 self.turns[index].approval.invalidate();
@@ -258,8 +263,11 @@ impl App {
             {
                 self.set_scene("running");
             }
-            self.notice =
-                "Intervenção pendente. Approval invalidado. /safe aplica na etapa segura.".into();
+            self.notice = if had_replaced {
+                "Intervenção atualizada; a anterior foi preservada na fila. Approval invalidado. /safe aplica a nova na etapa segura.".into()
+            } else {
+                "Intervenção pendente. Approval invalidado. /safe aplica na etapa segura.".into()
+            };
         } else {
             self.queue.push(message);
             self.notice.clear();
@@ -274,7 +282,7 @@ impl App {
         if self.scenario().id == "offline" {
             return;
         }
-        if let Some(message) = self.pending.take() {
+        if let Some(message) = self.pending.take_at_safe_step() {
             if let Some(index) = self.active.take() {
                 self.turns[index].status = session::TurnStatus::Superseded;
                 self.turns[index].result = Some("Trabalho redirecionado por intervenção na etapa segura; alterações preservadas.".into());
@@ -283,7 +291,7 @@ impl App {
         }
     }
     pub fn approve(&mut self, allow: bool) {
-        if self.pending.is_some() {
+        if self.pending.has_pending() {
             self.notice = "already_resolved: approval invalidado pela intervenção.".into();
             return;
         }
@@ -340,7 +348,7 @@ impl App {
             self.notice = "Resolva o bloqueio; a fila permanece intacta.".into();
             return;
         }
-        if self.pending.is_some() {
+        if self.pending.has_pending() {
             self.safe_step();
             return;
         }
@@ -401,7 +409,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let attention = palette.attention;
     let approval_height = if app.dialog.is_none()
         && app.scenario().status == "waiting-for-approval"
-        && app.pending.is_none()
+        && !app.pending.has_pending()
     {
         8
     } else {

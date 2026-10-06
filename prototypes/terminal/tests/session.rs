@@ -1,4 +1,4 @@
-use carapana_ui_prototype::{App, interaction::Menu, render, session::TurnStatus};
+use carapana_ui_prototype::{App, Message, interaction::Menu, render, session::TurnStatus};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 use std::time::Duration;
@@ -196,12 +196,39 @@ fn should_apply_intervention_at_the_next_safe_tick_and_preserve_the_original_tur
     app.input = "priorize o plano".into();
     app.send(true);
     assert_eq!(app.executing.name, "Auto");
-    assert!(app.pending.is_some());
+    assert!(app.pending.has_pending());
     tick(&mut app, 1);
     assert_eq!(app.executing.name, "Planejar");
     assert_eq!(app.turns[0].status, TurnStatus::Superseded);
     assert_eq!(app.turns[1].message.text, "priorize o plano");
-    assert!(app.pending.is_none());
+    assert!(!app.pending.has_pending());
+}
+
+#[test]
+fn should_preserve_a_displaced_intervention_ahead_of_the_existing_queue() {
+    let mut app = App::default();
+    app.queue.push(Message {
+        text: "mensagem já enfileirada".into(),
+        selection: app.profiles[app.selected].clone(),
+        demo: false,
+    });
+    app.input = "primeira intervenção".into();
+    app.send(true);
+    app.input = "intervenção mais recente".into();
+    app.send(true);
+
+    assert_eq!(app.pending.get().unwrap().text, "intervenção mais recente");
+    assert_eq!(app.queue.len(), 2);
+    assert_eq!(app.queue[0].text, "primeira intervenção");
+    assert_eq!(app.queue[1].text, "mensagem já enfileirada");
+
+    app.safe_step();
+    assert_eq!(app.executing, app.turns.last().unwrap().message.selection);
+    assert_eq!(
+        app.turns.last().unwrap().message.text,
+        "intervenção mais recente"
+    );
+    assert_eq!(app.queue[0].text, "primeira intervenção");
 }
 
 #[test]
