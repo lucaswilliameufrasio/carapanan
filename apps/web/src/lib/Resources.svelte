@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { Cpu, MemoryStick } from '@lucide/svelte';
+  import Cpu from '@lucide/svelte/icons/cpu';
+  import MemoryStick from '@lucide/svelte/icons/memory-stick';
   import Picker from './Picker.svelte';
   import {
     machines,

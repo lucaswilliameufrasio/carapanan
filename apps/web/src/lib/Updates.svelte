@@ -1,5 +1,10 @@
 <script lang="ts">
-  import { Download, ShieldCheck, RefreshCw, Check, Clock, TriangleAlert } from '@lucide/svelte';
+  import Download from '@lucide/svelte/icons/download';
+  import ShieldCheck from '@lucide/svelte/icons/shield-check';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Check from '@lucide/svelte/icons/check';
+  import Clock from '@lucide/svelte/icons/clock';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import Picker from './Picker.svelte';
   import {
     updateFixtures,

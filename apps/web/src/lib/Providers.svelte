@@ -1,5 +1,8 @@
 <script lang="ts">
-  import { Plus, Server, Pencil, X } from '@lucide/svelte';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Server from '@lucide/svelte/icons/server';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import X from '@lucide/svelte/icons/x';
   import Modal from './Modal.svelte';
   import Picker from './Picker.svelte';
   import {
