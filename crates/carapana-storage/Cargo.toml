@@ -1,0 +1,13 @@
+[package]
+name = "carapana-storage"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "SQLite schema and migration foundation for local Carapanã sessions"
+
+[lints]
+workspace = true
+
+[dependencies]
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
