@@ -4,13 +4,18 @@
 //! prompts, paths, command output, provider data, or secret values. This module does not
 //! configure a subscriber, write files, or send telemetry.
 
+use carapana_protocol::{Outcome, SessionEvent};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceEvent {
     SessionStarted,
     MessageQueued,
     TurnStarted,
+    SessionResumed,
+    SessionPaused,
     ApprovalRequested,
     ApprovalResolved,
+    ApprovalInvalidated,
     InterventionStaged,
     InterventionApplied,
     ValidationCompleted,
@@ -25,8 +30,11 @@ impl TraceEvent {
             Self::SessionStarted => "session_started",
             Self::MessageQueued => "message_queued",
             Self::TurnStarted => "turn_started",
+            Self::SessionResumed => "session_resumed",
+            Self::SessionPaused => "session_paused",
             Self::ApprovalRequested => "approval_requested",
             Self::ApprovalResolved => "approval_resolved",
+            Self::ApprovalInvalidated => "approval_invalidated",
             Self::InterventionStaged => "intervention_staged",
             Self::InterventionApplied => "intervention_applied",
             Self::ValidationCompleted => "validation_completed",
@@ -73,6 +81,26 @@ impl TraceResult {
     }
 }
 
+impl From<Outcome> for TraceResult {
+    fn from(outcome: Outcome) -> Self {
+        match outcome {
+            Outcome::Success => Self::Succeeded,
+            Outcome::Failure | Outcome::ValidationIncomplete => Self::Failed,
+            Outcome::ApprovalPending => Self::Pending,
+        }
+    }
+}
+
+impl From<TraceResult> for TraceLevel {
+    fn from(result: TraceResult) -> Self {
+        match result {
+            TraceResult::Succeeded | TraceResult::Pending => Self::Info,
+            TraceResult::Denied => Self::Warn,
+            TraceResult::Failed => Self::Error,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TraceRecord {
     correlation: u64,
@@ -97,6 +125,30 @@ impl TraceRecord {
             result,
             elapsed_millis,
         }
+    }
+
+    /// Projects a protocol event into a content-free observability record.
+    /// Message/approval identifiers are intentionally ignored; callers provide a
+    /// numeric correlation value that is safe for their local trace boundary.
+    pub fn from_session_event(correlation: u64, event: &SessionEvent) -> Self {
+        let (event, result) = match event {
+            SessionEvent::Queued { .. } => (TraceEvent::MessageQueued, TraceResult::Pending),
+            SessionEvent::Started { .. } => (TraceEvent::TurnStarted, TraceResult::Succeeded),
+            SessionEvent::Resumed { .. } => (TraceEvent::SessionResumed, TraceResult::Succeeded),
+            SessionEvent::Paused { reason } => {
+                (TraceEvent::SessionPaused, TraceResult::from(*reason))
+            }
+            SessionEvent::ApprovalInvalidated { .. } => {
+                (TraceEvent::ApprovalInvalidated, TraceResult::Denied)
+            }
+            SessionEvent::InterventionApplied { .. } => {
+                (TraceEvent::InterventionApplied, TraceResult::Succeeded)
+            }
+            SessionEvent::Completed { outcome, .. } => {
+                (TraceEvent::TurnCompleted, TraceResult::from(*outcome))
+            }
+        };
+        Self::new(correlation, event, TraceLevel::from(result), result, None)
     }
 
     pub const fn correlation(self) -> u64 {
@@ -124,11 +176,16 @@ impl TraceRecord {
 /// Local file rotation and any remote telemetry policy belong to the adapter.
 pub trait TraceSink {
     fn record(&mut self, event: TraceRecord);
+
+    fn record_session_event(&mut self, correlation: u64, event: &SessionEvent) {
+        self.record(TraceRecord::from_session_event(correlation, event));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{TraceEvent, TraceLevel, TraceRecord, TraceResult, TraceSink};
+    use carapana_protocol::{Outcome, SessionEvent};
 
     #[derive(Default)]
     struct CollectingSink(Vec<TraceRecord>);
@@ -170,5 +227,106 @@ mod tests {
         );
         assert_eq!(record.event().name(), "session_started");
         assert_eq!(record.elapsed_millis(), None);
+    }
+
+    #[test]
+    fn should_project_every_session_event_without_copying_identifiers_into_traces() {
+        let events = [
+            (
+                SessionEvent::Queued {
+                    message_id: "private-message-id".into(),
+                },
+                TraceEvent::MessageQueued,
+                TraceResult::Pending,
+            ),
+            (
+                SessionEvent::Started {
+                    message_id: "private-message-id".into(),
+                },
+                TraceEvent::TurnStarted,
+                TraceResult::Succeeded,
+            ),
+            (
+                SessionEvent::Resumed {
+                    message_id: "private-message-id".into(),
+                },
+                TraceEvent::SessionResumed,
+                TraceResult::Succeeded,
+            ),
+            (
+                SessionEvent::Paused {
+                    reason: Outcome::ApprovalPending,
+                },
+                TraceEvent::SessionPaused,
+                TraceResult::Pending,
+            ),
+            (
+                SessionEvent::ApprovalInvalidated {
+                    approval_id: "private-approval-id".into(),
+                },
+                TraceEvent::ApprovalInvalidated,
+                TraceResult::Denied,
+            ),
+            (
+                SessionEvent::InterventionApplied {
+                    message_id: "private-message-id".into(),
+                },
+                TraceEvent::InterventionApplied,
+                TraceResult::Succeeded,
+            ),
+            (
+                SessionEvent::Completed {
+                    message_id: "private-message-id".into(),
+                    outcome: Outcome::ValidationIncomplete,
+                },
+                TraceEvent::TurnCompleted,
+                TraceResult::Failed,
+            ),
+        ];
+
+        let mut sink = CollectingSink::default();
+        for (event, _, _) in &events {
+            sink.record_session_event(23, event);
+        }
+
+        assert_eq!(sink.0.len(), events.len());
+        for (record, (_, expected_event, expected_result)) in sink.0.iter().zip(events.iter()) {
+            assert_eq!(record.correlation(), 23);
+            assert_eq!(record.event(), *expected_event);
+            assert_eq!(record.result(), *expected_result);
+            assert_eq!(record.level(), TraceLevel::from(*expected_result));
+            assert_eq!(record.elapsed_millis(), None);
+            let debug_record = format!("{record:?}");
+            assert!(!debug_record.contains("private-message-id"));
+            assert!(!debug_record.contains("private-approval-id"));
+        }
+    }
+
+    #[test]
+    fn should_reduce_each_outcome_to_a_closed_trace_result_and_level() {
+        for (outcome, result, level) in [
+            (Outcome::Success, TraceResult::Succeeded, TraceLevel::Info),
+            (Outcome::Failure, TraceResult::Failed, TraceLevel::Error),
+            (
+                Outcome::ValidationIncomplete,
+                TraceResult::Failed,
+                TraceLevel::Error,
+            ),
+            (
+                Outcome::ApprovalPending,
+                TraceResult::Pending,
+                TraceLevel::Info,
+            ),
+        ] {
+            let record = TraceRecord::from_session_event(
+                0,
+                &SessionEvent::Completed {
+                    message_id: "message".into(),
+                    outcome,
+                },
+            );
+            assert_eq!(record.result(), result);
+            assert_eq!(record.level(), level);
+        }
     }
 }
