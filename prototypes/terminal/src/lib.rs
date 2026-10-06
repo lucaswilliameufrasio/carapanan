@@ -245,6 +245,9 @@ impl App {
         } else if intervene {
             self.pending = Some(message);
             self.approval_focus = false;
+            if let Some(index) = self.active {
+                self.turns[index].approval.invalidate();
+            }
             if self.scenario().status == "waiting-for-approval" {
                 self.set_scene("running");
                 if let Some(index) = self.active {
@@ -296,6 +299,17 @@ impl App {
         }
         self.approval_focus = false;
         if let Some(index) = self.active {
+            if let Err(error) = self.turns[index].approval.resolve(allow) {
+                self.notice = match error {
+                    carapana_core::approval::ApprovalError::Invalidated => {
+                        "already_resolved: approval invalidado pela intervenção.".into()
+                    }
+                    carapana_core::approval::ApprovalError::NotPending => {
+                        "already_resolved: não há approval pendente.".into()
+                    }
+                };
+                return;
+            }
             self.turns[index].events.push(
                 if allow {
                     "Autorização: permitir uma vez (simulado)"
@@ -307,7 +321,6 @@ impl App {
             if allow {
                 self.turns[index].step = 3;
                 self.turns[index].status = session::TurnStatus::Processing;
-                self.turns[index].needs_approval = false;
             }
         }
         if allow {
@@ -1017,7 +1030,9 @@ mod tests {
         let original = app.executing.clone();
         app.input = "Intervenção".into();
         app.send(true);
+        assert!(app.turns[0].approval.is_invalidated());
         app.approve(true);
+        assert!(app.turns[0].approval.is_invalidated());
         assert_eq!(app.executing, original);
         assert_eq!(app.scenario().id, "running");
         app.safe_step();
