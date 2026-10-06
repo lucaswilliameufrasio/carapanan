@@ -289,7 +289,9 @@ impl App {
         {
             return;
         }
-        let message = self.queue.remove(0);
+        let Some(message) = self.queue.take_next() else {
+            return;
+        };
         self.start_message(message);
     }
 

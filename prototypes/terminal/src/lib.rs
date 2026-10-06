@@ -1,3 +1,4 @@
+use carapana_core::queue::WorkQueue;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -51,7 +52,7 @@ pub struct App {
     pub profiles: Vec<Selection>,
     pub selected: usize,
     pub executing: Selection,
-    pub queue: Vec<Message>,
+    pub queue: WorkQueue<Message>,
     pub pending: Option<Message>,
     pub input: String,
     pub pane: usize,
@@ -133,7 +134,7 @@ impl Default for App {
             scene,
             selected: 1,
             executing: executing.clone(),
-            queue: vec![],
+            queue: WorkQueue::new(),
             profiles,
             pending: None,
             input: String::new(),
