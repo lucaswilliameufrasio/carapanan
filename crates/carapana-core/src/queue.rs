@@ -14,6 +14,10 @@ impl<T> WorkQueue<T> {
         self.items.push(item);
     }
 
+    pub fn push_front(&mut self, item: T) {
+        self.items.insert(0, item);
+    }
+
     pub fn get(&self, index: usize) -> Option<&T> {
         self.items.get(index)
     }

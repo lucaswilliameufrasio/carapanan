@@ -235,7 +235,8 @@ impl App {
             "/config" => self.open_menu(Menu::Config),
             "/update" => self.open_menu(Menu::Updates),
             "/approve"
-                if self.scenario().status == "waiting-for-approval" && self.pending.is_none() =>
+                if self.scenario().status == "waiting-for-approval"
+                    && !self.pending.has_pending() =>
             {
                 self.open_menu(Menu::Approval)
             }
@@ -475,7 +476,7 @@ impl App {
             }
             return false;
         }
-        if self.scenario().status == "waiting-for-approval" && self.pending.is_none() {
+        if self.scenario().status == "waiting-for-approval" && !self.pending.has_pending() {
             if key.code == KeyCode::Tab {
                 self.approval_focus = !self.approval_focus;
                 return false;
@@ -603,7 +604,7 @@ impl App {
         if matches!(self.scenario().id.as_str(), "offline" | "recovery") {
             return false;
         }
-        if self.pending.is_some()
+        if self.pending.has_pending()
             || matches!(
                 self.scenario().id.as_str(),
                 "running" | "approval" | "sandbox" | "trust" | "shared" | "secret"
