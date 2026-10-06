@@ -28,6 +28,29 @@ fn should_round_trip_captured_messages_without_permissions_or_secret_fields() {
 }
 
 #[test]
+fn should_round_trip_profile_defaults_without_permission_fields() {
+    let profile = Profile {
+        id: "ask-default".into(),
+        name: "Perguntar".into(),
+        work: WorkMode::Execute,
+        autonomy: Autonomy::Ask,
+        provider: "mock-provider".into(),
+        model: "mock-model".into(),
+        variant: "default".into(),
+    };
+    let json = serde_json::to_string(&Envelope::new(profile.clone())).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Envelope<Profile>>(&json).unwrap(),
+        Envelope::new(profile)
+    );
+    assert!(!json.contains("permission"));
+    assert!(!json.contains("secret"));
+    let mut injected: serde_json::Value = serde_json::from_str(&json).unwrap();
+    injected["payload"]["permissions"] = serde_json::json!(["all"]);
+    assert!(serde_json::from_value::<Envelope<Profile>>(injected).is_err());
+}
+
+#[test]
 fn should_reject_missing_unsupported_versions_unknown_fields_and_unknown_variants() {
     for json in [
         r#"{"protocol":2,"payload":"value"}"#,

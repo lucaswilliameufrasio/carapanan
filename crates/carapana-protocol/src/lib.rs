@@ -47,6 +47,19 @@ pub enum Autonomy {
     Yolo,
 }
 
+/// Stored profile defaults. A profile describes selections, never permissions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Profile {
+    pub id: String,
+    pub name: String,
+    pub work: WorkMode,
+    pub autonomy: Autonomy,
+    pub provider: String,
+    pub model: String,
+    pub variant: String,
+}
+
 /// Captured selection is data, never a permission grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
