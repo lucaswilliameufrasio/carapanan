@@ -113,12 +113,12 @@ enum Platform {
 fn resolve_data_directory(
     platform: Platform,
     home: Option<PathBuf>,
-    xdg_data_home: Option<PathBuf>,
+    _xdg_data_home: Option<PathBuf>,
 ) -> Result<PathBuf, UserDatabaseError> {
     match platform {
         #[cfg(any(target_os = "linux", test))]
         Platform::Linux => {
-            if let Some(xdg) = xdg_data_home.filter(|path| path.is_absolute()) {
+            if let Some(xdg) = _xdg_data_home.filter(|path| path.is_absolute()) {
                 return Ok(xdg.join("carapana"));
             }
             Ok(home_or_error(home)?.join(".local/share/carapana"))
