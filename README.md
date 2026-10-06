@@ -143,6 +143,12 @@ cargo run --manifest-path prototypes/terminal/Cargo.toml -- run --scenario appro
 Códigos ilustrativos: `0` conclusão, `2` pausa/erro, `3` validação incompleta,
 `4` aprovação necessária. `doctor`, `info`, `config` e `sessions` também são mocks.
 
+Logs locais JSON são opcionais e ficam desligados por padrão. Para habilitá-los,
+defina `CARAPANA_LOG_DIR=/caminho/privado`; os arquivos rodam diariamente e são
+limitados aos sete mais recentes. `RUST_LOG=carapana=debug` ajusta o filtro.
+O sink de tracing aceita apenas eventos tipados e campos numéricos; não registra
+mensagens, paths, IDs de mensagens/approvals, segredos ou saídas de comandos.
+
 ### Teclado
 
 - Web: `Ctrl/⌘ P` abre a paleta (`Ctrl/⌘ K` também), `Alt P` alterna perfil,

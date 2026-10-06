@@ -6,6 +6,8 @@ use std::{
     process::ExitCode,
 };
 
+mod logging;
+
 #[derive(Parser)]
 #[command(
     name = "carapana-prototype",
@@ -78,6 +80,7 @@ fn tui(plain: bool, no_animation: bool) -> io::Result<()> {
 }
 
 fn main() -> ExitCode {
+    let _log_guard = logging::install();
     let cli = Cli::parse();
     match cli.command {
         Some(Commands::Run { scenario, json }) => {
