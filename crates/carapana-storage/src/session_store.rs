@@ -88,6 +88,7 @@ pub enum SessionStoreError {
     DuplicateMessageId,
     InvalidEventHistory,
     InvalidTransition,
+    RevalidationRequired,
     NoActiveMessage,
 }
 
@@ -111,6 +112,9 @@ impl fmt::Display for SessionStoreError {
             }
             Self::InvalidTransition => {
                 formatter.write_str("session transition is not valid in the current state")
+            }
+            Self::RevalidationRequired => {
+                formatter.write_str("session state must be revalidated before advancing")
             }
             Self::NoActiveMessage => formatter.write_str("session has no active message"),
         }
@@ -314,6 +318,9 @@ pub(super) fn start_next_message(
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut session = load_session_tx(&transaction, session_id)?;
     validate_transition_time(&session, now_ms)?;
+    if session.recovery_needs_revalidation {
+        return Err(SessionStoreError::RevalidationRequired);
+    }
     if session.status != StoredSessionStatus::Paused || session.active_message.is_some() {
         return Err(SessionStoreError::InvalidTransition);
     }
@@ -1045,6 +1052,35 @@ mod tests {
             Err(SessionStoreError::InvalidTransition)
         ));
         assert_eq!(database.load_session("session-1").unwrap(), paused);
+    }
+
+    #[test]
+    fn should_not_advance_a_recovered_session_before_revalidation() {
+        let path = TestDatabase::new();
+        let mut database = Database::open(&path.0).unwrap();
+        database.create_session("session-1", 10).unwrap();
+        database
+            .enqueue_message("session-1", message("m1"), 11)
+            .unwrap();
+        database
+            .enqueue_message("session-1", message("m2"), 12)
+            .unwrap();
+        database.start_next_message("session-1", 13).unwrap();
+        let recovered = database.recover_active_sessions(14).unwrap();
+        let sequence_before_attempt = recovered[0].event_sequence;
+
+        assert!(matches!(
+            database.start_next_message("session-1", 15),
+            Err(SessionStoreError::RevalidationRequired)
+        ));
+
+        let session = database.load_session("session-1").unwrap();
+        assert_eq!(session.status, StoredSessionStatus::Paused);
+        assert_eq!(session.active_message, Some(message("m1")));
+        assert_eq!(session.queued_messages, vec![message("m2")]);
+        assert!(session.recovery_needs_revalidation);
+        assert!(session.active_work_uncertain);
+        assert_eq!(session.event_sequence, sequence_before_attempt);
     }
 
     #[test]
