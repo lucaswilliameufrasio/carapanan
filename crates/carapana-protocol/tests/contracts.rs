@@ -68,3 +68,19 @@ fn should_preserve_headless_exit_codes_and_typed_event_error_round_trips() {
         r#"{"code":"already_resolved","message_id":null}"#
     );
 }
+
+#[test]
+fn should_round_trip_the_resumed_session_event() {
+    let event = Envelope::new(SessionEvent::Resumed {
+        message_id: "m1".into(),
+    });
+    let json = serde_json::to_string(&event).unwrap();
+    assert_eq!(
+        json,
+        r#"{"protocol":1,"payload":{"type":"resumed","message_id":"m1"}}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Envelope<SessionEvent>>(&json).unwrap(),
+        event
+    );
+}

@@ -127,6 +127,9 @@ pub enum SessionEvent {
     Started {
         message_id: String,
     },
+    Resumed {
+        message_id: String,
+    },
     Paused {
         reason: Outcome,
     },
