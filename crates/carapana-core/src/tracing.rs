@@ -182,6 +182,51 @@ pub trait TraceSink {
     }
 }
 
+/// Emits only the closed, content-free fields represented by [`TraceRecord`]
+/// through the application's local `tracing` subscriber.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LocalTraceSink;
+
+impl TraceSink for LocalTraceSink {
+    fn record(&mut self, record: TraceRecord) {
+        let event = record.event().name();
+        let result = record.result().name();
+        let correlation = record.correlation();
+        let elapsed_millis = record.elapsed_millis().unwrap_or_default();
+        let elapsed_millis_present = record.elapsed_millis().is_some();
+
+        match record.level() {
+            TraceLevel::Info => tracing::info!(
+                target: "carapana::trace",
+                correlation,
+                event,
+                result,
+                elapsed_millis,
+                elapsed_millis_present,
+                "trace event"
+            ),
+            TraceLevel::Warn => tracing::warn!(
+                target: "carapana::trace",
+                correlation,
+                event,
+                result,
+                elapsed_millis,
+                elapsed_millis_present,
+                "trace event"
+            ),
+            TraceLevel::Error => tracing::error!(
+                target: "carapana::trace",
+                correlation,
+                event,
+                result,
+                elapsed_millis,
+                elapsed_millis_present,
+                "trace event"
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{TraceEvent, TraceLevel, TraceRecord, TraceResult, TraceSink};
