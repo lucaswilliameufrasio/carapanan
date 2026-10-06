@@ -15,7 +15,7 @@ fn version<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> 
 #[serde(deny_unknown_fields)]
 pub struct Envelope<T> {
     #[serde(deserialize_with = "version")]
-    pub protocol: u16,
+    protocol: u16,
     pub payload: T,
 }
 
@@ -25,6 +25,10 @@ impl<T> Envelope<T> {
             protocol: PROTOCOL_VERSION,
             payload,
         }
+    }
+
+    pub fn protocol(&self) -> u16 {
+        self.protocol
     }
 }
 
