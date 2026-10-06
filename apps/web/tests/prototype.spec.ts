@@ -25,6 +25,32 @@ async function nav(page: Page, name: string) {
   await page.locator('.navigation').getByRole('button', { name, exact: true }).click();
 }
 
+test('Should match browser theme chrome to the palette and honor reduced motion', async ({
+  page,
+}) => {
+  await detail(page);
+  for (const theme of ['light', 'dark']) {
+    await pick(page, 'Tema', theme);
+    await expect(page.locator('.app')).toHaveAttribute('data-theme', theme);
+    const surface = await page
+      .locator('.app')
+      .evaluate((element) => getComputedStyle(element).getPropertyValue('--surface').trim());
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', surface);
+    expect(
+      await page.locator('html').evaluate((element) => getComputedStyle(element).colorScheme),
+    ).toBe(theme);
+  }
+  await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
+  await pick(page, 'Tema', 'system');
+  await expect(page.locator('.app')).toHaveAttribute('data-theme', 'light');
+  expect(
+    await page
+      .locator('.composer-send button')
+      .last()
+      .evaluate((element) => getComputedStyle(element).transitionDuration),
+  ).toBe('0s');
+});
+
 test('Should preview an interface update and rollback without changing the conversation queue draft or approval', async ({
   page,
 }) => {

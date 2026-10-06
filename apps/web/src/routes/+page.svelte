@@ -1,37 +1,35 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import {
-    Activity,
-    ArrowUp,
-    ArrowDown,
-    Check,
-    ChevronDown,
-    ChevronRight,
-    Clock,
-    Download,
-    Cpu,
-    FileDiff,
-    FolderOpen,
-    GitBranch,
-    ListChecks,
-    Menu,
-    MessageSquare,
-    Monitor,
-    Pause,
-    PanelLeftClose,
-    PanelLeftOpen,
-    Plus,
-    Search,
-    Settings,
-    Shield,
-    Smartphone,
-    Square,
-    Terminal,
-    Trash2,
-    WifiOff,
-    X,
-    Zap,
-  } from '@lucide/svelte';
+  import { onMount, tick } from 'svelte';
+  import Activity from '@lucide/svelte/icons/activity';
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
+  import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import Check from '@lucide/svelte/icons/check';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Clock from '@lucide/svelte/icons/clock';
+  import Download from '@lucide/svelte/icons/download';
+  import Cpu from '@lucide/svelte/icons/cpu';
+  import FileDiff from '@lucide/svelte/icons/file-diff';
+  import FolderOpen from '@lucide/svelte/icons/folder-open';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
+  import ListChecks from '@lucide/svelte/icons/list-checks';
+  import Menu from '@lucide/svelte/icons/menu';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
+  import Monitor from '@lucide/svelte/icons/monitor';
+  import Pause from '@lucide/svelte/icons/pause';
+  import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
+  import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Search from '@lucide/svelte/icons/search';
+  import Settings from '@lucide/svelte/icons/settings';
+  import Shield from '@lucide/svelte/icons/shield';
+  import Smartphone from '@lucide/svelte/icons/smartphone';
+  import Square from '@lucide/svelte/icons/square';
+  import Terminal from '@lucide/svelte/icons/terminal';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import WifiOff from '@lucide/svelte/icons/wifi-off';
+  import X from '@lucide/svelte/icons/x';
+  import Zap from '@lucide/svelte/icons/zap';
   import '@fontsource/ibm-plex-sans/latin-400.css';
   import '@fontsource/ibm-plex-sans/latin-500.css';
   import '@fontsource/ibm-plex-sans/latin-600.css';
@@ -334,7 +332,18 @@
     return () => query.removeEventListener('change', handler);
   });
   $effect(() => {
-    if (typeof document !== 'undefined') document.documentElement.lang = locale;
+    if (typeof document === 'undefined') return;
+    document.documentElement.lang = locale;
+    document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    // Read the semantic token after the data-theme attribute has been patched;
+    // otherwise browser chrome can lag one theme switch behind the interface.
+    void tick().then(() => {
+      const app = document.querySelector('.app');
+      if (app)
+        document
+          .querySelector('meta[name="theme-color"]')
+          ?.setAttribute('content', getComputedStyle(app).getPropertyValue('--surface').trim());
+    });
   });
 </script>
 

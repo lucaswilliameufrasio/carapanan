@@ -24,6 +24,11 @@
 }
 
 @layer components {
+  @media (prefers-reduced-motion: reduce) {
+    .app {
+      --motion: 0ms;
+    }
+  }
   * {
     box-sizing: border-box;
   }

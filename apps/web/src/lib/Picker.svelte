@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ChevronDown, Check } from '@lucide/svelte';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import Check from '@lucide/svelte/icons/check';
   import Modal from './Modal.svelte';
   let {
     label,

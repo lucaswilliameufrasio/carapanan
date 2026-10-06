@@ -1,14 +1,12 @@
 <script lang="ts">
-  import {
-    Check,
-    Shield,
-    Smartphone,
-    Server,
-    RotateCw,
-    Plus,
-    HardDrive,
-    ExternalLink,
-  } from '@lucide/svelte';
+  import Check from '@lucide/svelte/icons/check';
+  import Shield from '@lucide/svelte/icons/shield';
+  import Smartphone from '@lucide/svelte/icons/smartphone';
+  import Server from '@lucide/svelte/icons/server';
+  import RotateCw from '@lucide/svelte/icons/rotate-cw';
+  import Plus from '@lucide/svelte/icons/plus';
+  import HardDrive from '@lucide/svelte/icons/hard-drive';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
   import { labels as l, demo } from './content';
   import Providers from './Providers.svelte';
   import Resources from './Resources.svelte';

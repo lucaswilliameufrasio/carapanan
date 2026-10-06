@@ -14,6 +14,18 @@ export default [
     files: ['**/*.svelte'],
     plugins: { 'better-tailwindcss': tailwind },
     settings: { 'better-tailwindcss': { entryPoint: 'src/app.css', detectComponentClasses: true } },
-    rules: { ...tailwind.configs.correctness.rules },
+    rules: {
+      ...tailwind.configs.correctness.rules,
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: ['@lucide/svelte', '@lucide/svelte/icons'].map((name) => ({
+            name,
+            message:
+              'Use @lucide/svelte/icons/<nome>: o barrel compila e envia o catálogo inteiro no dev.',
+          })),
+        },
+      ],
+    },
   },
 ];
