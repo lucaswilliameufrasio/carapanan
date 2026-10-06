@@ -24,6 +24,13 @@ impl SessionRegistry {
         })
     }
 
+    /// Open the private per-user database selected for the current OS account.
+    pub fn open_user() -> Result<Self, UserDatabaseError> {
+        Ok(Self {
+            database: open_user_database()?,
+        })
+    }
+
     pub fn create(
         &mut self,
         session_id: &str,
