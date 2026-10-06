@@ -1,6 +1,8 @@
 //! Extracted Delivery 0 script. Pure deterministic decisions, no tools or IO.
 use carapana_protocol::{Autonomy, WorkMode};
 
+pub mod queue;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DemoRequest {
     pub step: u8,

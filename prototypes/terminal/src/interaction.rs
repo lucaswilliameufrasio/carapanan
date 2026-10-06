@@ -715,12 +715,14 @@ impl App {
                     dialog.cursor = index.min(self.queue.len().saturating_sub(1));
                 }
                 KeyCode::Char('-') if index > 0 => {
-                    self.queue.swap(index, index - 1);
-                    dialog.cursor -= 1;
+                    if let Some(target) = self.queue.move_by(index, -1) {
+                        dialog.cursor = target;
+                    }
                 }
                 KeyCode::Char('+') if index + 1 < self.queue.len() => {
-                    self.queue.swap(index, index + 1);
-                    dialog.cursor += 1;
+                    if let Some(target) = self.queue.move_by(index, 1) {
+                        dialog.cursor = target;
+                    }
                 }
                 _ => {}
             }
