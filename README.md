@@ -238,12 +238,19 @@ Ubuntu 24.04 e revisadas separadamente devido às diferenças de rasterização
 e fallback de fontes entre distribuições. Não há atualização automática de
 snapshots no gate, máscaras adicionais ou tolerância ampliada.
 
-O workspace Rust usa `Cargo.toml` e `Cargo.lock` na raiz. Por enquanto contém
-somente `prototypes/terminal`; não foi criada uma engine de produção. Novos
-crates de domínio não devem depender de UI; adapters dependem dos contratos,
-e as interfaces consomem esses contratos. Essas fronteiras serão verificáveis
-quando os crates forem extraídos na próxima fatia. Código Rust do workspace
-proíbe `unsafe` nos crates que herdam seus lints.
+O workspace Rust usa `Cargo.toml` e `Cargo.lock` na raiz. Além do protótipo,
+`carapana-protocol` define envelopes versionados, seleções capturadas, eventos,
+erros e resultados headless; `carapana-core` contém o roteiro determinístico
+extraído da TUI sob um contrato explicitamente mock-only. Testes verificam a
+fronteira `UI → core → protocol`, sem dependência de interface nos dois crates.
+Código Rust do workspace proíbe `unsafe` nos crates que herdam seus lints.
+
+A extração da Entrega 1 é gradual: a TUI já consome o roteiro e o resultado
+headless compartilhados, preservando textos e JSON legados. Fila, estado de
+sessão, approvals e temporização ainda pertencem a `App`; o reducer Web ainda
+é próprio. O novo envelope não é transportado por rede nem declara que toda
+a engine, configuração, confiança ou autorização foi implementada. Seleções
+não concedem permissões; o mock de policy não autoriza ações reais.
 
 O gate inclui format/lint/typecheck/unit/build/e2e web, snapshots desktop/mobile,
 format/clippy/test/build Rust, testes CLI headless e interação do binário em PTY
