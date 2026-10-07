@@ -12,7 +12,9 @@ use std::{
     time::Duration,
 };
 
-use carapana_protocol::{DaemonRequest, DaemonResponse, Envelope, SessionSnapshot};
+use carapana_protocol::{
+    DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope, SessionSnapshot,
+};
 use carapana_storage::{UserDatabaseError, user_database_path};
 
 const MAX_FRAME_BYTES: usize = 64 * 1024;
@@ -29,6 +31,7 @@ pub enum IpcError {
     UserDatabase(UserDatabaseError),
     PersistentConnectionRequired,
     UnexpectedResponse,
+    Daemon(DaemonErrorCode),
 }
 
 impl fmt::Display for IpcError {
@@ -49,6 +52,7 @@ impl fmt::Display for IpcError {
             Self::UnexpectedResponse => {
                 formatter.write_str("daemon returned a response incompatible with the request")
             }
+            Self::Daemon(code) => write!(formatter, "daemon request failed: {code:?}"),
         }
     }
 }
@@ -62,7 +66,8 @@ impl Error for IpcError {
             Self::InvalidFrame
             | Self::UnsafeSocketPath(_)
             | Self::PersistentConnectionRequired
-            | Self::UnexpectedResponse => None,
+            | Self::UnexpectedResponse
+            | Self::Daemon(_) => None,
         }
     }
 }
@@ -244,7 +249,7 @@ pub fn request(
 ) -> Result<Envelope<DaemonResponse>, IpcError> {
     if matches!(
         request.payload,
-        DaemonRequest::Attach { .. } | DaemonRequest::Detach {}
+        DaemonRequest::Attach { .. } | DaemonRequest::EventsAfter { .. } | DaemonRequest::Detach {}
     ) {
         return Err(IpcError::PersistentConnectionRequired);
     }
@@ -273,8 +278,10 @@ impl IpcAttachment {
             }),
         )?;
         let response: Envelope<DaemonResponse> = read_json_frame(&mut stream)?;
-        let DaemonResponse::Attached { snapshot } = response.payload else {
-            return Err(IpcError::UnexpectedResponse);
+        let snapshot = match response.payload {
+            DaemonResponse::Attached { snapshot } => snapshot,
+            DaemonResponse::Error { code } => return Err(IpcError::Daemon(code)),
+            _ => return Err(IpcError::UnexpectedResponse),
         };
         Ok(Self {
             stream,
@@ -284,6 +291,24 @@ impl IpcAttachment {
 
     pub fn snapshot(&self) -> &SessionSnapshot {
         &self.snapshot
+    }
+
+    /// Fetch the next bounded page after the last sequence the client applied.
+    pub fn events_after(
+        &mut self,
+        after_sequence: i64,
+    ) -> Result<carapana_protocol::SessionEventBatch, IpcError> {
+        write_json_frame(
+            &mut self.stream,
+            &Envelope::new(DaemonRequest::EventsAfter { after_sequence }),
+        )?;
+        let response: Envelope<DaemonResponse> = read_json_frame(&mut self.stream)?;
+        let batch = match response.payload {
+            DaemonResponse::Events { batch } => batch,
+            DaemonResponse::Error { code } => return Err(IpcError::Daemon(code)),
+            _ => return Err(IpcError::UnexpectedResponse),
+        };
+        Ok(*batch)
     }
 
     pub fn detach(mut self) -> Result<u64, IpcError> {
@@ -420,6 +445,27 @@ impl ClientConnection {
             (Some(_), DaemonRequest::Attach { .. }) => Envelope::new(DaemonResponse::Error {
                 code: carapana_protocol::DaemonErrorCode::AlreadyAttached,
             }),
+            (None, DaemonRequest::EventsAfter { .. }) => Envelope::new(DaemonResponse::Error {
+                code: carapana_protocol::DaemonErrorCode::NotAttached,
+            }),
+            (Some(session_id), DaemonRequest::EventsAfter { after_sequence }) => {
+                match runtime.events_after(session_id, after_sequence) {
+                    Ok(batch) => Envelope::new(DaemonResponse::Events {
+                        batch: Box::new(batch),
+                    }),
+                    Err(error) => Envelope::new(DaemonResponse::Error {
+                        code: match error {
+                            carapana_storage::SessionStoreError::SessionNotFound => {
+                                carapana_protocol::DaemonErrorCode::SessionNotFound
+                            }
+                            carapana_storage::SessionStoreError::InvalidEventCursor => {
+                                carapana_protocol::DaemonErrorCode::InvalidEventCursor
+                            }
+                            _ => carapana_protocol::DaemonErrorCode::StorageUnavailable,
+                        },
+                    }),
+                }
+            }
             (_, request @ (DaemonRequest::ListSessions {} | DaemonRequest::ListAttention {})) => {
                 runtime.handle(Envelope::new(request))
             }
@@ -637,13 +683,41 @@ mod tests {
                 .unwrap();
         });
 
-        let first = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
+        let mut first = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
         assert_eq!(first.snapshot().status, SessionStatus::Paused);
         assert_eq!(first.snapshot().queued_messages, vec![queued_message()]);
         assert_eq!(first.snapshot().attached_clients, 1);
 
+        let mut later_message = queued_message();
+        later_message.id = "queued-2".into();
+        later_message.text = "queued after the first snapshot".into();
+        SessionRegistry::open(&database_path)
+            .unwrap()
+            .enqueue("session-1", later_message.clone(), 12)
+            .unwrap();
+        let catch_up = first.events_after(first.snapshot().event_sequence).unwrap();
+        assert_eq!(catch_up.events.len(), 1);
+        assert_eq!(catch_up.events[0].sequence, 3);
+        assert_eq!(catch_up.next_sequence, 3);
+        assert!(!catch_up.has_more);
+        assert!(matches!(
+            &catch_up.events[0].event,
+            carapana_protocol::DaemonSessionEvent::MessageQueued { message }
+                if message == &later_message
+        ));
+        assert!(matches!(
+            first.events_after(999),
+            Err(IpcError::Daemon(
+                carapana_protocol::DaemonErrorCode::InvalidEventCursor
+            ))
+        ));
+
         let second = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
         assert_eq!(second.snapshot().attached_clients, 2);
+        assert_eq!(
+            second.snapshot().queued_messages,
+            vec![queued_message(), later_message]
+        );
         let listed =
             super::request(&socket_path, Envelope::new(DaemonRequest::ListSessions {})).unwrap();
         let DaemonResponse::Sessions { sessions } = listed.payload else {
@@ -660,7 +734,7 @@ mod tests {
         };
         assert_eq!(sessions[0].attached_clients, 0);
         assert_eq!(sessions[0].status, SessionStatus::Paused);
-        assert_eq!(sessions[0].queued_count, 1);
+        assert_eq!(sessions[0].queued_count, 2);
 
         shutdown.store(true, Ordering::Release);
         server_thread.join().unwrap();
@@ -724,10 +798,17 @@ mod tests {
         let socket_path = PathBuf::from("unused.sock");
         assert!(matches!(
             super::request(
-                socket_path,
+                &socket_path,
                 Envelope::new(DaemonRequest::Attach {
                     session_id: "session-1".into()
                 })
+            ),
+            Err(IpcError::PersistentConnectionRequired)
+        ));
+        assert!(matches!(
+            super::request(
+                &socket_path,
+                Envelope::new(DaemonRequest::EventsAfter { after_sequence: 0 })
             ),
             Err(IpcError::PersistentConnectionRequired)
         ));

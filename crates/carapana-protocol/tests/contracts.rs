@@ -250,3 +250,47 @@ fn should_round_trip_derived_recovery_attention_without_free_form_details() {
         response
     );
 }
+
+#[test]
+fn should_round_trip_bounded_incremental_session_event_batches() {
+    let batch = SessionEventBatch {
+        events: vec![SessionEventRecord {
+            sequence: 3,
+            occurred_at_ms: 42,
+            event: DaemonSessionEvent::MessageQueued {
+                message: QueuedMessage {
+                    id: "queued-3".into(),
+                    text: "new message".into(),
+                    origin: "tui".into(),
+                    selection: Selection {
+                        profile: "ask".into(),
+                        work: WorkMode::Plan,
+                        autonomy: Autonomy::Ask,
+                        provider: "mock".into(),
+                        model: "mock-model".into(),
+                        variant: "default".into(),
+                    },
+                },
+            },
+        }],
+        next_sequence: 3,
+        has_more: true,
+    };
+    let request = Envelope::new(DaemonRequest::EventsAfter { after_sequence: 2 });
+    let response = Envelope::new(DaemonResponse::Events {
+        batch: Box::new(batch),
+    });
+    for json in [
+        serde_json::to_string(&request).unwrap(),
+        serde_json::to_string(&response).unwrap(),
+    ] {
+        assert!(json.len() < 64 * 1024);
+    }
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(
+            &serde_json::to_string(&response).unwrap()
+        )
+        .unwrap(),
+        response
+    );
+}

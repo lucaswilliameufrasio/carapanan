@@ -63,6 +63,14 @@ pub enum StoredSessionEvent {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredSessionEventRecord {
+    pub sequence: i64,
+    pub occurred_at_ms: i64,
+    pub event: StoredSessionEvent,
+}
+
 impl StoredSessionEvent {
     fn event_type(&self) -> &'static str {
         match self {
@@ -87,6 +95,7 @@ pub enum SessionStoreError {
     InvalidMessageId,
     DuplicateMessageId,
     InvalidEventHistory,
+    InvalidEventCursor,
     InvalidTransition,
     RevalidationRequired,
     NoActiveMessage,
@@ -109,6 +118,9 @@ impl fmt::Display for SessionStoreError {
             }
             Self::InvalidEventHistory => {
                 formatter.write_str("session event history is inconsistent")
+            }
+            Self::InvalidEventCursor => {
+                formatter.write_str("session event cursor is outside the event history")
             }
             Self::InvalidTransition => {
                 formatter.write_str("session transition is not valid in the current state")
@@ -278,6 +290,74 @@ pub(super) fn session_events(
         return Err(SessionStoreError::SessionNotFound);
     }
     read_events(&database.connection, session_id)
+}
+
+pub(super) fn session_events_after(
+    database: &mut Database,
+    session_id: &str,
+    after_sequence: i64,
+    limit: u16,
+) -> Result<(Vec<StoredSessionEventRecord>, i64, bool), SessionStoreError> {
+    validate_session_id(session_id)?;
+    if after_sequence < 0 || limit == 0 {
+        return Err(SessionStoreError::InvalidEventCursor);
+    }
+
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let current_sequence = transaction
+        .query_row(
+            "SELECT event_sequence FROM session_snapshots WHERE session_id = ?1",
+            [session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .ok_or(SessionStoreError::SessionNotFound)?;
+    if after_sequence > current_sequence {
+        return Err(SessionStoreError::InvalidEventCursor);
+    }
+
+    let (records, has_more) = {
+        let fetch_limit = i64::from(limit) + 1;
+        let mut statement = transaction.prepare(
+            "SELECT sequence, occurred_at_ms, event_type, payload_json FROM session_events WHERE session_id = ?1 AND sequence > ?2 ORDER BY sequence LIMIT ?3",
+        )?;
+        let mut rows = statement.query(params![session_id, after_sequence, fetch_limit])?;
+        let mut records = Vec::new();
+        let mut expected_sequence = after_sequence
+            .checked_add(1)
+            .ok_or(SessionStoreError::InvalidEventCursor)?;
+        while let Some(row) = rows.next()? {
+            let sequence: i64 = row.get(0)?;
+            let occurred_at_ms: i64 = row.get(1)?;
+            let event_type: String = row.get(2)?;
+            let payload: String = row.get(3)?;
+            if sequence != expected_sequence {
+                return Err(SessionStoreError::InvalidEventHistory);
+            }
+            let event: StoredSessionEvent = serde_json::from_str(&payload)?;
+            if event.event_type() != event_type {
+                return Err(SessionStoreError::InvalidEventHistory);
+            }
+            records.push(StoredSessionEventRecord {
+                sequence,
+                occurred_at_ms,
+                event,
+            });
+            expected_sequence = expected_sequence
+                .checked_add(1)
+                .ok_or(SessionStoreError::InvalidEventHistory)?;
+        }
+        let has_more = records.len() > usize::from(limit);
+        records.truncate(usize::from(limit));
+        (records, has_more)
+    };
+    let next_sequence = records
+        .last()
+        .map_or(after_sequence, |record| record.sequence);
+    transaction.commit()?;
+    Ok((records, next_sequence, has_more))
 }
 
 pub(super) fn rebuild_snapshot(
@@ -1186,6 +1266,48 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].session_id, "older");
         assert_eq!(active[0].active_message, Some(message("m1")));
+    }
+
+    #[test]
+    fn should_read_bounded_contiguous_event_pages_after_a_valid_sequence_cursor() {
+        let path = TestDatabase::new();
+        let mut registry = SessionRegistry::open(&path.0).unwrap();
+        registry.create("session-1", 10).unwrap();
+        registry.enqueue("session-1", message("m1"), 11).unwrap();
+        registry.enqueue("session-1", message("m2"), 12).unwrap();
+        registry.enqueue("session-1", message("m3"), 13).unwrap();
+
+        let (first_page, first_cursor, first_has_more) =
+            registry.session_events_after("session-1", 0, 2).unwrap();
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|record| record.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(first_page[0].occurred_at_ms, 10);
+        assert!(matches!(
+            first_page[1].event,
+            StoredSessionEvent::MessageQueued { .. }
+        ));
+        assert_eq!(first_cursor, 2);
+        assert!(first_has_more);
+
+        let (second_page, second_cursor, second_has_more) = registry
+            .session_events_after("session-1", first_cursor, 2)
+            .unwrap();
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|record| record.sequence)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert_eq!(second_cursor, 4);
+        assert!(!second_has_more);
+        assert!(registry.session_events_after("session-1", 5, 1).is_err());
+        assert!(registry.session_events_after("session-1", 0, 0).is_err());
     }
 
     #[test]

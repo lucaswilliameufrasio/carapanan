@@ -8,7 +8,8 @@ mod session_store;
 mod user_database;
 
 pub use session_store::{
-    PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionStatus,
+    PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionEventRecord,
+    StoredSessionStatus,
 };
 pub use user_database::{UserDatabaseError, open_user_database, user_database_path};
 
@@ -50,6 +51,16 @@ impl SessionRegistry {
 
     pub fn get(&self, session_id: &str) -> Result<PersistedSession, SessionStoreError> {
         self.database.load_session(session_id)
+    }
+
+    pub fn session_events_after(
+        &mut self,
+        session_id: &str,
+        after_sequence: i64,
+        limit: u16,
+    ) -> Result<(Vec<StoredSessionEventRecord>, i64, bool), SessionStoreError> {
+        self.database
+            .session_events_after(session_id, after_sequence, limit)
     }
 
     pub fn list(&mut self) -> Result<Vec<PersistedSession>, SessionStoreError> {
@@ -192,6 +203,16 @@ impl Database {
         session_id: &str,
     ) -> Result<Vec<StoredSessionEvent>, SessionStoreError> {
         session_store::session_events(self, session_id)
+    }
+
+    /// Return a bounded contiguous event page after the caller's inclusive cursor.
+    pub fn session_events_after(
+        &mut self,
+        session_id: &str,
+        after_sequence: i64,
+        limit: u16,
+    ) -> Result<(Vec<StoredSessionEventRecord>, i64, bool), SessionStoreError> {
+        session_store::session_events_after(self, session_id, after_sequence, limit)
     }
 
     pub fn list_sessions(&mut self) -> Result<Vec<PersistedSession>, SessionStoreError> {
