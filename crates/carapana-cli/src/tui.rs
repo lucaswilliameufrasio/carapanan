@@ -7,7 +7,8 @@ use std::{
 
 use carapana_daemon::{IpcAttachment, ipc_request};
 use carapana_protocol::{
-    AttentionItem, DaemonRequest, DaemonResponse, Envelope, SessionSnapshot, SessionSummary,
+    AttentionItem, DaemonRequest, DaemonResponse, Envelope, SessionEventRecord, SessionSnapshot,
+    SessionSummary,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::{
@@ -26,6 +27,10 @@ struct App {
     selected: usize,
     detail: Option<SessionSnapshot>,
     detail_scroll: usize,
+    event_mode: bool,
+    events: Vec<SessionEventRecord>,
+    event_cursor: i64,
+    event_has_more: bool,
     error: Option<String>,
 }
 
@@ -38,6 +43,10 @@ impl App {
             selected: 0,
             detail: None,
             detail_scroll: 0,
+            event_mode: false,
+            events: Vec::new(),
+            event_cursor: 0,
+            event_has_more: false,
             error: None,
         }
     }
@@ -91,6 +100,10 @@ impl App {
                     Ok(_) => {
                         self.detail = Some(snapshot);
                         self.detail_scroll = 0;
+                        self.event_mode = false;
+                        self.events.clear();
+                        self.event_cursor = 0;
+                        self.event_has_more = false;
                         self.error = None;
                     }
                     Err(error) => self.error = Some(error.to_string()),
@@ -100,11 +113,45 @@ impl App {
         }
     }
 
+    fn load_event_page(&mut self) {
+        let Some(session_id) = self
+            .detail
+            .as_ref()
+            .map(|snapshot| snapshot.session_id.clone())
+        else {
+            return;
+        };
+        let result = (|| {
+            let mut attachment = IpcAttachment::attach(&self.socket_path, session_id)?;
+            let batch = attachment.events_after(self.event_cursor);
+            let detached = attachment.detach();
+            let batch = batch?;
+            detached?;
+            Ok::<_, Box<dyn Error>>(batch)
+        })();
+        match result {
+            Ok(batch) => {
+                self.events.extend(batch.events);
+                self.event_cursor = batch.next_sequence;
+                self.event_has_more = batch.has_more;
+                self.detail_scroll = 0;
+                self.error = None;
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('q') => true,
             KeyCode::Char('r') => {
-                if self.detail.is_some() {
+                if self.event_mode {
+                    self.events.clear();
+                    self.event_cursor = 0;
+                    self.event_has_more = false;
+                    self.detail_scroll = 0;
+                    self.load_event_page();
+                } else if self.detail.is_some() {
                     let session_id = self.detail.as_ref().unwrap().session_id.clone();
                     match IpcAttachment::attach(&self.socket_path, session_id) {
                         Ok(attachment) => {
@@ -126,6 +173,12 @@ impl App {
                 false
             }
             KeyCode::Esc if self.detail.is_some() => {
+                if self.event_mode {
+                    self.event_mode = false;
+                    self.detail_scroll = 0;
+                    self.error = None;
+                    return false;
+                }
                 self.detail = None;
                 self.error = None;
                 false
@@ -152,6 +205,20 @@ impl App {
                 self.open_selected();
                 false
             }
+            KeyCode::Char('e') if self.detail.is_some() => {
+                self.event_mode = true;
+                self.detail_scroll = 0;
+                if self.events.is_empty() {
+                    self.load_event_page();
+                } else {
+                    self.error = None;
+                }
+                false
+            }
+            KeyCode::Char('n') if self.event_mode && self.event_has_more => {
+                self.load_event_page();
+                false
+            }
             KeyCode::Esc => {
                 self.error = None;
                 false
@@ -172,7 +239,11 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         .areas(frame.area());
 
     let title = if let Some(snapshot) = &app.detail {
-        format!("Carapanã · {}", snapshot.session_id)
+        if app.event_mode {
+            format!("Carapanã · {} · Events", snapshot.session_id)
+        } else {
+            format!("Carapanã · {}", snapshot.session_id)
+        }
     } else {
         "Carapanã · Sessions".to_owned()
     };
@@ -186,7 +257,16 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
     let inner = content_block.inner(content);
     frame.render_widget(content_block, content);
     let (lines, scroll) = if let Some(snapshot) = &app.detail {
-        let lines = detail_lines(snapshot, app.error.as_deref());
+        let lines = if app.event_mode {
+            event_lines(
+                &app.events,
+                app.event_cursor,
+                app.event_has_more,
+                app.error.as_deref(),
+            )
+        } else {
+            detail_lines(snapshot, app.error.as_deref())
+        };
         let width = usize::from(inner.width.max(1));
         let visual_height = lines
             .iter()
@@ -208,8 +288,10 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         inner,
     );
 
-    let footer_text = if app.detail.is_some() {
-        "↑/↓ scroll · Esc back · r refresh · q quit"
+    let footer_text = if app.event_mode {
+        "↑/↓ scroll · n next page · r reload · Esc details · q quit"
+    } else if app.detail.is_some() {
+        "↑/↓ scroll · e events · r refresh · Esc back · q quit"
     } else {
         "↑/↓ select · Enter inspect · r refresh · q quit"
     };
@@ -340,6 +422,41 @@ fn detail_lines(snapshot: &SessionSnapshot, error: Option<&str>) -> Vec<Line<'st
         lines.push(Line::from(""));
         lines.push(Line::styled(
             format!("Refresh error: {error} · press r to retry"),
+            Style::default().fg(Color::Red),
+        ));
+    }
+    lines
+}
+
+fn event_lines(
+    events: &[SessionEventRecord],
+    cursor: i64,
+    has_more: bool,
+    error: Option<&str>,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        format!("Event history · {} loaded · cursor {cursor}", events.len()),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    if events.is_empty() {
+        lines.push(Line::from("  No events available."));
+    } else {
+        for event in events {
+            lines.push(Line::from(format!(
+                "{} · {} · {:?}",
+                event.sequence, event.occurred_at_ms, event.event
+            )));
+        }
+    }
+    if has_more {
+        lines.push(Line::styled(
+            format!("More events available after cursor {cursor}; press n."),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    if let Some(error) = error {
+        lines.push(Line::styled(
+            format!("Event read failed: {error} · press r to reload"),
             Style::default().fg(Color::Red),
         ));
     }
@@ -548,10 +665,27 @@ mod tests {
             queued_messages
         );
         assert!(app.error.is_none());
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert!(app.event_mode);
+        assert_eq!(app.events.len(), 16);
+        assert!(app.event_has_more);
+        let first_page_last_sequence = app.events.last().unwrap().sequence;
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.events.len(), 21);
+        assert!(!app.event_has_more);
+        assert_eq!(app.events[16].sequence, first_page_last_sequence + 1);
+        assert!(
+            app.events
+                .windows(2)
+                .all(|pair| pair[1].sequence == pair[0].sequence + 1)
+        );
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.detail_scroll, 1);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.event_mode);
+        assert!(app.detail.is_some());
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.detail.is_none());
 
