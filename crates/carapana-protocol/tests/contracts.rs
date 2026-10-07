@@ -224,3 +224,29 @@ fn should_model_connection_scoped_attach_with_a_full_reconnect_snapshot() {
         DaemonRequest::Detach {}
     );
 }
+
+#[test]
+fn should_round_trip_derived_recovery_attention_without_free_form_details() {
+    let request = Envelope::new(DaemonRequest::ListAttention {});
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&serde_json::to_string(&request).unwrap())
+            .unwrap(),
+        request
+    );
+
+    let response = Envelope::new(DaemonResponse::Attention {
+        items: vec![AttentionItem {
+            session_id: "session-1".into(),
+            reason: AttentionReason::RecoveryReview,
+            active_work_uncertain: true,
+            updated_at_ms: 20,
+            event_sequence: 4,
+        }],
+    });
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(!json.contains("secret"));
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(&json).unwrap(),
+        response
+    );
+}
