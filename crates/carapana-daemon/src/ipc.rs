@@ -12,12 +12,13 @@ use std::{
     time::Duration,
 };
 
-use carapana_protocol::{DaemonRequest, DaemonResponse, Envelope};
+use carapana_protocol::{DaemonRequest, DaemonResponse, Envelope, SessionSnapshot};
 use carapana_storage::{UserDatabaseError, user_database_path};
 
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const SOCKET_NAME: &str = "daemon.sock";
+const MAX_CLIENT_CONNECTIONS: usize = 128;
 
 #[derive(Debug)]
 pub enum IpcError {
@@ -26,6 +27,8 @@ pub enum IpcError {
     InvalidFrame,
     UnsafeSocketPath(PathBuf),
     UserDatabase(UserDatabaseError),
+    PersistentConnectionRequired,
+    UnexpectedResponse,
 }
 
 impl fmt::Display for IpcError {
@@ -40,6 +43,12 @@ impl fmt::Display for IpcError {
                 path.display()
             ),
             Self::UserDatabase(error) => write!(formatter, "could not resolve IPC path: {error}"),
+            Self::PersistentConnectionRequired => {
+                formatter.write_str("attach/detach requires a persistent IPC connection")
+            }
+            Self::UnexpectedResponse => {
+                formatter.write_str("daemon returned a response incompatible with the request")
+            }
         }
     }
 }
@@ -50,7 +59,10 @@ impl Error for IpcError {
             Self::Io(error) => Some(error),
             Self::Serialization(error) => Some(error),
             Self::UserDatabase(error) => Some(error),
-            Self::InvalidFrame | Self::UnsafeSocketPath(_) => None,
+            Self::InvalidFrame
+            | Self::UnsafeSocketPath(_)
+            | Self::PersistentConnectionRequired
+            | Self::UnexpectedResponse => None,
         }
     }
 }
@@ -73,7 +85,7 @@ impl From<UserDatabaseError> for IpcError {
     }
 }
 
-/// Single-process local socket listener for the versioned, read-only daemon API.
+/// Single-process local socket listener for the versioned session API.
 ///
 /// Existing paths (including stale sockets) are never removed on startup. The caller
 /// must resolve a stale endpoint explicitly rather than risk unlinking another process's
@@ -127,7 +139,7 @@ impl IpcServer {
         })
     }
 
-    /// Accept and handle exactly one request. Call repeatedly from the daemon loop.
+    /// Accept and handle exactly one one-shot request. Attachments require `serve_until`.
     pub fn accept_once(&self, runtime: &mut crate::DaemonRuntime) -> Result<(), IpcError> {
         let (mut stream, _) = self.listener.accept()?;
         handle_connection(&mut stream, runtime)
@@ -135,32 +147,64 @@ impl IpcServer {
 
     /// Serve clients until the caller sets `shutdown` to true.
     ///
-    /// Each connection is isolated: malformed frames, unsupported protocol versions,
-    /// disconnects, and failed response writes do not terminate the listener. The loop
-    /// polls a nonblocking socket so shutdown is observed promptly between clients.
-    /// The caller remains responsible for translating its platform's shutdown signal
-    /// into the atomic flag.
+    /// The loop multiplexes one-shot queries and persistent attachments. Malformed
+    /// requests, disconnects, and failed response writes only remove that connection.
+    /// EOF implicitly detaches the client; explicit detach sends an acknowledgement.
+    /// The socket is polled nonblocking so shutdown remains responsive. The host is
+    /// responsible for translating OS shutdown signals into the atomic flag.
     pub fn serve_until(
         &self,
         runtime: &mut crate::DaemonRuntime,
         shutdown: &AtomicBool,
     ) -> Result<(), IpcError> {
         self.listener.set_nonblocking(true)?;
-        let result = loop {
+        let mut clients = Vec::<ClientConnection>::new();
+        let result = 'serve: loop {
             if shutdown.load(Ordering::Acquire) {
                 break Ok(());
             }
-            match self.listener.accept() {
-                Ok((mut stream, _)) => {
-                    let _ = handle_connection(&mut stream, runtime);
+            let mut did_work = false;
+            loop {
+                match self.listener.accept() {
+                    Ok((stream, _)) => {
+                        did_work = true;
+                        if clients.len() >= MAX_CLIENT_CONNECTIONS {
+                            drop(stream);
+                            continue;
+                        }
+                        if stream.set_nonblocking(true).is_ok() {
+                            clients.push(ClientConnection::new(stream));
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => break 'serve Err(IpcError::Io(error)),
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(10));
+            }
+            let mut index = 0;
+            while index < clients.len() {
+                let connected = clients[index].poll(runtime);
+                did_work |= clients[index].did_work;
+                clients[index].did_work = false;
+                if connected {
+                    index += 1;
+                } else {
+                    if let Some(session_id) = clients[index].attached_session.take() {
+                        runtime.detach(&session_id);
+                    }
+                    clients.swap_remove(index);
+                    did_work = true;
                 }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => break Err(IpcError::Io(error)),
+            }
+            if !did_work {
+                thread::sleep(Duration::from_millis(10));
             }
         };
+        for client in &mut clients {
+            if let Some(session_id) = client.attached_session.take() {
+                runtime.detach(&session_id);
+            }
+        }
         self.listener.set_nonblocking(false)?;
         result
     }
@@ -176,7 +220,7 @@ fn handle_connection(
 ) -> Result<(), IpcError> {
     stream.set_read_timeout(Some(CONNECTION_TIMEOUT))?;
     stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
-    let request = read_json_frame::<_, Envelope<DaemonRequest>>(stream)?;
+    let request: Envelope<DaemonRequest> = read_json_frame(stream)?;
     let response: Envelope<DaemonResponse> = runtime.handle(request);
     write_json_frame(stream, &response)
 }
@@ -198,11 +242,187 @@ pub fn request(
     path: impl AsRef<Path>,
     request: Envelope<DaemonRequest>,
 ) -> Result<Envelope<DaemonResponse>, IpcError> {
+    if matches!(
+        request.payload,
+        DaemonRequest::Attach { .. } | DaemonRequest::Detach {}
+    ) {
+        return Err(IpcError::PersistentConnectionRequired);
+    }
     let mut stream = UnixStream::connect(path)?;
     stream.set_read_timeout(Some(CONNECTION_TIMEOUT))?;
     stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
     write_json_frame(&mut stream, &request)?;
     read_json_frame(&mut stream)
+}
+
+/// Persistent attachment to a session. Dropping the handle detaches via EOF.
+pub struct IpcAttachment {
+    stream: UnixStream,
+    snapshot: SessionSnapshot,
+}
+
+impl IpcAttachment {
+    pub fn attach(path: impl AsRef<Path>, session_id: impl Into<String>) -> Result<Self, IpcError> {
+        let mut stream = UnixStream::connect(path)?;
+        stream.set_read_timeout(Some(CONNECTION_TIMEOUT))?;
+        stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
+        write_json_frame(
+            &mut stream,
+            &Envelope::new(DaemonRequest::Attach {
+                session_id: session_id.into(),
+            }),
+        )?;
+        let response: Envelope<DaemonResponse> = read_json_frame(&mut stream)?;
+        let DaemonResponse::Attached { snapshot } = response.payload else {
+            return Err(IpcError::UnexpectedResponse);
+        };
+        Ok(Self {
+            stream,
+            snapshot: *snapshot,
+        })
+    }
+
+    pub fn snapshot(&self) -> &SessionSnapshot {
+        &self.snapshot
+    }
+
+    pub fn detach(mut self) -> Result<u64, IpcError> {
+        write_json_frame(&mut self.stream, &Envelope::new(DaemonRequest::Detach {}))?;
+        let response: Envelope<DaemonResponse> = read_json_frame(&mut self.stream)?;
+        let DaemonResponse::Detached {
+            remaining_attached_clients,
+        } = response.payload
+        else {
+            return Err(IpcError::UnexpectedResponse);
+        };
+        Ok(remaining_attached_clients)
+    }
+}
+
+struct ClientConnection {
+    stream: UnixStream,
+    incoming: Vec<u8>,
+    outgoing: Vec<u8>,
+    attached_session: Option<String>,
+    close_after_write: bool,
+    did_work: bool,
+}
+
+impl ClientConnection {
+    fn new(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            incoming: Vec::new(),
+            outgoing: Vec::new(),
+            attached_session: None,
+            close_after_write: false,
+            did_work: false,
+        }
+    }
+
+    fn poll(&mut self, runtime: &mut crate::DaemonRuntime) -> bool {
+        if !self.close_after_write {
+            let mut buffer = [0; 8192];
+            loop {
+                match self.stream.read(&mut buffer) {
+                    Ok(0) => return false,
+                    Ok(read) => {
+                        self.did_work = true;
+                        self.incoming.extend_from_slice(&buffer[..read]);
+                        if self.process_frames(runtime).is_err() {
+                            return false;
+                        }
+                        if self.close_after_write {
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => return false,
+                }
+            }
+        }
+
+        while !self.outgoing.is_empty() {
+            match self.stream.write(&self.outgoing) {
+                Ok(0) => return false,
+                Ok(written) => {
+                    self.outgoing.drain(..written);
+                    self.did_work = true;
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return false,
+            }
+        }
+        !(self.close_after_write && self.outgoing.is_empty())
+    }
+
+    fn process_frames(&mut self, runtime: &mut crate::DaemonRuntime) -> Result<(), IpcError> {
+        loop {
+            if self.incoming.len() < 4 {
+                return Ok(());
+            }
+            let length = usize::try_from(u32::from_be_bytes(
+                self.incoming[..4]
+                    .try_into()
+                    .map_err(|_| IpcError::InvalidFrame)?,
+            ))
+            .map_err(|_| IpcError::InvalidFrame)?;
+            if length == 0 || length > MAX_FRAME_BYTES {
+                return Err(IpcError::InvalidFrame);
+            }
+            let frame_length = 4 + length;
+            if self.incoming.len() < frame_length {
+                return Ok(());
+            }
+            let frame = self.incoming[4..frame_length].to_vec();
+            self.incoming.drain(..frame_length);
+            let request: Envelope<DaemonRequest> = serde_json::from_slice(&frame)?;
+            let response = self.handle_request(runtime, request);
+            let mut encoded = Vec::new();
+            write_json_frame(&mut encoded, &response)?;
+            if self.outgoing.len() + encoded.len() > 2 * (MAX_FRAME_BYTES + 4) {
+                return Err(IpcError::InvalidFrame);
+            }
+            self.outgoing.extend_from_slice(&encoded);
+            self.did_work = true;
+            if self.close_after_write {
+                return Ok(());
+            }
+        }
+    }
+
+    fn handle_request(
+        &mut self,
+        runtime: &mut crate::DaemonRuntime,
+        request: Envelope<DaemonRequest>,
+    ) -> Envelope<DaemonResponse> {
+        match (self.attached_session.as_deref(), request.payload) {
+            (None, DaemonRequest::Attach { session_id }) => {
+                let response = runtime.attach(&session_id);
+                if matches!(response.payload, DaemonResponse::Attached { .. }) {
+                    self.attached_session = Some(session_id);
+                }
+                response
+            }
+            (Some(session_id), DaemonRequest::Detach {}) => {
+                let remaining_attached_clients = runtime.detach(session_id);
+                self.attached_session = None;
+                self.close_after_write = true;
+                Envelope::new(DaemonResponse::Detached {
+                    remaining_attached_clients,
+                })
+            }
+            (None, DaemonRequest::Detach {}) => Envelope::new(DaemonResponse::Error {
+                code: carapana_protocol::DaemonErrorCode::NotAttached,
+            }),
+            (Some(_), DaemonRequest::Attach { .. }) => Envelope::new(DaemonResponse::Error {
+                code: carapana_protocol::DaemonErrorCode::AlreadyAttached,
+            }),
+            (_, request @ DaemonRequest::ListSessions {}) => runtime.handle(Envelope::new(request)),
+        }
+    }
 }
 
 fn read_json_frame<R, T>(reader: &mut R) -> Result<T, IpcError>
@@ -241,7 +461,10 @@ where
 mod tests {
     use super::{IpcError, IpcServer, MAX_FRAME_BYTES, read_json_frame, write_json_frame};
     use crate::DaemonRuntime;
-    use carapana_protocol::{DaemonRequest, DaemonResponse, Envelope};
+    use carapana_protocol::{
+        Autonomy, DaemonRequest, DaemonResponse, Envelope, QueuedMessage, Selection, SessionStatus,
+        WorkMode,
+    };
     use carapana_storage::SessionRegistry;
     use std::{
         fs,
@@ -254,7 +477,7 @@ mod tests {
             atomic::{AtomicBool, AtomicU64, Ordering},
         },
         thread,
-        time::SystemTime,
+        time::{Duration, SystemTime},
     };
 
     struct PrivateDir(PathBuf);
@@ -374,6 +597,169 @@ mod tests {
 
         shutdown.store(true, Ordering::Release);
         server_thread.join().unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    fn queued_message() -> QueuedMessage {
+        QueuedMessage {
+            id: "queued-1".into(),
+            text: "preserve this work across attach".into(),
+            origin: "tui".into(),
+            selection: Selection {
+                profile: "ask".into(),
+                work: WorkMode::Plan,
+                autonomy: Autonomy::Ask,
+                provider: "mock".into(),
+                model: "mock-model".into(),
+                variant: "default".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn should_attach_multiple_clients_with_full_snapshot_and_detach_without_mutating_session() {
+        let directory = PrivateDir::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry.create("session-1", 10).unwrap();
+        registry.enqueue("session-1", queued_message(), 11).unwrap();
+        drop(registry);
+        let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+        });
+
+        let first = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
+        assert_eq!(first.snapshot().status, SessionStatus::Paused);
+        assert_eq!(first.snapshot().queued_messages, vec![queued_message()]);
+        assert_eq!(first.snapshot().attached_clients, 1);
+
+        let second = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
+        assert_eq!(second.snapshot().attached_clients, 2);
+        let listed =
+            super::request(&socket_path, Envelope::new(DaemonRequest::ListSessions {})).unwrap();
+        let DaemonResponse::Sessions { sessions } = listed.payload else {
+            panic!("session listing should work while clients are attached");
+        };
+        assert_eq!(sessions[0].attached_clients, 2);
+
+        assert_eq!(first.detach().unwrap(), 1);
+        assert_eq!(second.detach().unwrap(), 0);
+        let listed =
+            super::request(&socket_path, Envelope::new(DaemonRequest::ListSessions {})).unwrap();
+        let DaemonResponse::Sessions { sessions } = listed.payload else {
+            panic!("session listing should work after detach");
+        };
+        assert_eq!(sessions[0].attached_clients, 0);
+        assert_eq!(sessions[0].status, SessionStatus::Paused);
+        assert_eq!(sessions[0].queued_count, 1);
+
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn should_treat_connection_eof_as_detach_and_reconnect_with_a_fresh_snapshot() {
+        let directory = PrivateDir::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry.create("session-1", 10).unwrap();
+        registry.enqueue("session-1", queued_message(), 11).unwrap();
+        drop(registry);
+        let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+        });
+
+        let first = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
+        drop(first);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            let response =
+                super::request(&socket_path, Envelope::new(DaemonRequest::ListSessions {}))
+                    .unwrap();
+            let DaemonResponse::Sessions { sessions } = response.payload else {
+                panic!("session listing should succeed");
+            };
+            if sessions[0].attached_clients == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "EOF did not detach client"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let reconnected = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
+        assert_eq!(reconnected.snapshot().attached_clients, 1);
+        assert_eq!(
+            reconnected.snapshot().queued_messages,
+            vec![queued_message()]
+        );
+        assert_eq!(reconnected.detach().unwrap(), 0);
+
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn should_require_persistent_connection_for_attach_and_detach_requests() {
+        let socket_path = PathBuf::from("unused.sock");
+        assert!(matches!(
+            super::request(
+                socket_path,
+                Envelope::new(DaemonRequest::Attach {
+                    session_id: "session-1".into()
+                })
+            ),
+            Err(IpcError::PersistentConnectionRequired)
+        ));
+    }
+
+    #[test]
+    fn should_clear_all_attachment_presence_on_controlled_service_shutdown() {
+        let directory = PrivateDir::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry.create("session-1", 10).unwrap();
+        drop(registry);
+        let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+            runtime
+        });
+
+        let attachment = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
+        assert_eq!(attachment.snapshot().attached_clients, 1);
+        shutdown.store(true, Ordering::Release);
+        let mut runtime = server_thread.join().unwrap();
+        let listed = runtime.handle(Envelope::new(DaemonRequest::ListSessions {}));
+        let DaemonResponse::Sessions { sessions } = listed.payload else {
+            panic!("runtime should remain inspectable after controlled shutdown");
+        };
+        assert_eq!(sessions[0].attached_clients, 0);
+        drop(attachment);
         assert!(!socket_path.exists());
     }
 }
