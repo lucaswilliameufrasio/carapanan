@@ -7,6 +7,9 @@ mod ipc;
 
 use std::{error::Error, fmt, path::Path};
 
+#[cfg(unix)]
+use std::sync::atomic::AtomicBool;
+
 use carapana_protocol::{
     DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope, SessionStatus, SessionSummary,
 };
@@ -124,6 +127,82 @@ impl DaemonRuntime {
     }
 }
 
+/// Recovered daemon runtime bound to its local IPC listener.
+///
+/// Construction reserves the socket before paused crash recovery, preventing a second
+/// daemon from recovering the same sessions. It accepts no requests until recovery has
+/// completed and the host starts serving with its supplied shutdown signal.
+#[cfg(unix)]
+pub struct DaemonService {
+    runtime: DaemonRuntime,
+    server: IpcServer,
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+pub enum DaemonServiceError {
+    Startup(DaemonStartupError),
+    Ipc(IpcError),
+}
+
+#[cfg(unix)]
+impl fmt::Display for DaemonServiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Startup(error) => write!(formatter, "daemon service startup failed: {error}"),
+            Self::Ipc(error) => write!(formatter, "daemon service IPC failed: {error}"),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Error for DaemonServiceError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Startup(error) => Some(error),
+            Self::Ipc(error) => Some(error),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl DaemonService {
+    /// Reserve the current user's private socket, then recover before serving requests.
+    pub fn open_user(now_ms: i64) -> Result<Self, DaemonServiceError> {
+        let registry = SessionRegistry::open_user().map_err(DaemonStartupError::from)?;
+        let server = IpcServer::bind_user()?;
+        let runtime = DaemonRuntime::recover(registry, now_ms)?;
+        Ok(Self { runtime, server })
+    }
+
+    /// Open an explicit database/socket pair, primarily for tests and embedding.
+    ///
+    /// The socket is reserved before crash recovery, but no connection is accepted until
+    /// recovery succeeds and the caller invokes `serve_until`.
+    pub fn open(
+        database_path: impl AsRef<Path>,
+        socket_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<Self, DaemonServiceError> {
+        let registry = SessionRegistry::open(database_path).map_err(DaemonStartupError::from)?;
+        let server = IpcServer::bind(socket_path)?;
+        let runtime = DaemonRuntime::recover(registry, now_ms)?;
+        Ok(Self { runtime, server })
+    }
+
+    pub fn startup_recovered(&self) -> &[PersistedSession] {
+        self.runtime.startup_recovered()
+    }
+
+    pub fn socket_path(&self) -> &Path {
+        self.server.path()
+    }
+
+    pub fn serve_until(&mut self, shutdown: &AtomicBool) -> Result<(), IpcError> {
+        self.server.serve_until(&mut self.runtime, shutdown)
+    }
+}
+
 impl From<MigrationError> for DaemonStartupError {
     fn from(error: MigrationError) -> Self {
         Self::Migration(error)
@@ -142,9 +221,25 @@ impl From<UserDatabaseError> for DaemonStartupError {
     }
 }
 
+#[cfg(unix)]
+impl From<DaemonStartupError> for DaemonServiceError {
+    fn from(error: DaemonStartupError) -> Self {
+        Self::Startup(error)
+    }
+}
+
+#[cfg(unix)]
+impl From<IpcError> for DaemonServiceError {
+    fn from(error: IpcError) -> Self {
+        Self::Ipc(error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::DaemonRuntime;
+    #[cfg(unix)]
+    use super::{DaemonService, DaemonServiceError, IpcError, IpcServer};
     use carapana_protocol::{
         Autonomy, DaemonRequest, DaemonResponse, Envelope, QueuedMessage, Selection, SessionStatus,
         WorkMode,
@@ -158,6 +253,37 @@ mod tests {
     };
 
     struct TestDatabase(PathBuf);
+
+    #[cfg(unix)]
+    struct TestDirectory(PathBuf);
+
+    #[cfg(unix)]
+    impl TestDirectory {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+            let nonce = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "carapana-daemon-service-{}-{nonce}-{id}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            Self(path)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     impl TestDatabase {
         fn new() -> Self {
@@ -256,5 +382,94 @@ mod tests {
         let mut second = DaemonRuntime::open(&path.0, 30).unwrap();
         assert!(second.startup_recovered().is_empty());
         assert_eq!(second.sessions().unwrap()[0].event_sequence, 4);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_recover_before_serving_from_a_composed_daemon_service() {
+        use carapana_protocol::{DaemonRequest, DaemonResponse, Envelope};
+        use std::{
+            os::unix::fs::PermissionsExt,
+            sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            },
+            thread,
+        };
+
+        let directory = TestDirectory::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        {
+            let mut registry = SessionRegistry::open(&database_path).unwrap();
+            registry.create("session-1", 10).unwrap();
+            registry
+                .enqueue("session-1", message("active"), 11)
+                .unwrap();
+            registry
+                .enqueue("session-1", message("queued"), 12)
+                .unwrap();
+            registry.start_next("session-1", 13).unwrap();
+        }
+
+        let socket_path = directory.0.join("daemon.sock");
+        let mut service = DaemonService::open(&database_path, &socket_path, 20).unwrap();
+        assert_eq!(service.startup_recovered().len(), 1);
+        assert_eq!(
+            service.startup_recovered()[0].status,
+            StoredSessionStatus::Paused
+        );
+        assert!(service.startup_recovered()[0].active_work_uncertain);
+        assert_eq!(
+            fs::metadata(&socket_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            service.serve_until(server_shutdown.as_ref()).unwrap();
+        });
+        let response =
+            super::ipc_request(&socket_path, Envelope::new(DaemonRequest::ListSessions {}))
+                .unwrap();
+        let DaemonResponse::Sessions { sessions } = response.payload else {
+            panic!("the service should list sessions");
+        };
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].status, SessionStatus::Paused);
+        assert!(sessions[0].active_work_uncertain);
+
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_recover_sessions_when_another_service_owns_the_socket() {
+        let directory = TestDirectory::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        {
+            let mut registry = SessionRegistry::open(&database_path).unwrap();
+            registry.create("session-1", 10).unwrap();
+            registry
+                .enqueue("session-1", message("active"), 11)
+                .unwrap();
+            registry.start_next("session-1", 12).unwrap();
+        }
+
+        let socket_path = directory.0.join("daemon.sock");
+        let existing_server = IpcServer::bind(&socket_path).unwrap();
+        assert!(matches!(
+            DaemonService::open(&database_path, &socket_path, 20),
+            Err(DaemonServiceError::Ipc(IpcError::UnsafeSocketPath(_)))
+        ));
+
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        let session = registry.list().unwrap().remove(0);
+        assert_eq!(session.status, StoredSessionStatus::Active);
+        assert!(!session.recovery_needs_revalidation);
+        assert!(!session.active_work_uncertain);
+        drop(existing_server);
     }
 }
