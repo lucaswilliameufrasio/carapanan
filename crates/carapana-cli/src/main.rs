@@ -8,6 +8,9 @@ use std::{
 };
 
 #[cfg(unix)]
+mod tui;
+
+#[cfg(unix)]
 use carapana_daemon::{DaemonService, IpcAttachment, ipc_request};
 #[cfg(unix)]
 use carapana_protocol::{DaemonRequest, DaemonResponse, Envelope};
@@ -43,6 +46,8 @@ enum Commands {
         #[arg(long)]
         events_after: Option<i64>,
     },
+    /// Open a read-only terminal view of daemon sessions.
+    Tui,
 }
 
 #[cfg(unix)]
@@ -75,6 +80,7 @@ fn run_client(
 ) -> Result<(), Box<dyn Error>> {
     match command {
         Commands::Daemon => unreachable!("daemon command is handled before client dispatch"),
+        Commands::Tui => return tui::run(path),
         Commands::Sessions { json } => {
             let response = ipc_request(path, Envelope::new(DaemonRequest::ListSessions {}))?;
             let DaemonResponse::Sessions { sessions } = response.payload else {
@@ -182,6 +188,7 @@ fn run_client(
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
         Commands::Daemon => run_daemon(),
+        Commands::Tui => tui::run(&socket_path()?),
         command => run_client(command, &socket_path()?, &mut io::stdout().lock()),
     }
 }
