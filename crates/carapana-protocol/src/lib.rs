@@ -1,4 +1,4 @@
-//! Delivery 1 contracts only. No transport, authorization or task execution.
+//! Versioned contracts. No transport, authorization or task execution.
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 
 pub const PROTOCOL_VERSION: u16 = 1;
@@ -134,6 +134,48 @@ pub enum ErrorCode {
 pub struct ContractError {
     pub code: ErrorCode,
     pub message_id: Option<String>,
+}
+
+/// Read-only local daemon API for the first IPC slice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DaemonRequest {
+    ListSessions {},
+}
+
+/// Content-free result of listing sessions; it intentionally excludes prompts and secrets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub status: SessionStatus,
+    pub queued_count: u64,
+    pub has_active_message: bool,
+    pub recovery_needs_revalidation: bool,
+    pub active_work_uncertain: bool,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Active,
+    Paused,
+    Hibernated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonErrorCode {
+    StorageUnavailable,
+}
+
+/// Response envelope payload. IPC errors are closed codes without SQLite details.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DaemonResponse {
+    Sessions { sessions: Vec<SessionSummary> },
+    Error { code: DaemonErrorCode },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
