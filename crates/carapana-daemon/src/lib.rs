@@ -1,24 +1,26 @@
 //! Safe startup orchestration for the future local daemon.
 //!
-//! This crate provides a local read-only IPC listener, but no provider or tool runner.
+//! This crate provides local session inspection/attachment IPC, but no provider or tool runner.
 
 #[cfg(unix)]
 mod ipc;
 
-use std::{error::Error, fmt, path::Path};
+use std::{collections::HashMap, error::Error, fmt, path::Path};
 
 #[cfg(unix)]
 use std::sync::atomic::AtomicBool;
 
 use carapana_protocol::{
-    DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope, SessionStatus, SessionSummary,
+    DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope, SessionSnapshot, SessionStatus,
+    SessionSummary,
 };
 use carapana_storage::{
-    MigrationError, PersistedSession, SessionRegistry, SessionStoreError, UserDatabaseError,
+    MigrationError, PersistedSession, SessionRegistry, SessionStoreError, StoredSessionStatus,
+    UserDatabaseError,
 };
 
 #[cfg(unix)]
-pub use ipc::{IpcError, IpcServer, request as ipc_request};
+pub use ipc::{IpcAttachment, IpcError, IpcServer, request as ipc_request};
 
 #[derive(Debug)]
 pub enum DaemonStartupError {
@@ -56,6 +58,7 @@ impl Error for DaemonStartupError {
 pub struct DaemonRuntime {
     registry: SessionRegistry,
     startup_recovered: Vec<PersistedSession>,
+    attached_clients: HashMap<String, u64>,
 }
 
 impl DaemonRuntime {
@@ -81,41 +84,103 @@ impl DaemonRuntime {
         self.registry.list()
     }
 
-    /// Handle the initial read-only daemon contract. No message content is returned.
+    /// Handle a one-shot query. Attach/detach are handled by persistent IPC connections.
     pub fn handle(&mut self, request: Envelope<DaemonRequest>) -> Envelope<DaemonResponse> {
         let response = match request.payload {
             DaemonRequest::ListSessions {} => match self.sessions() {
                 Ok(sessions) => DaemonResponse::Sessions {
                     sessions: sessions
                         .into_iter()
-                        .map(|session| SessionSummary {
-                            session_id: session.session_id,
-                            status: match session.status {
-                                carapana_storage::StoredSessionStatus::Active => {
-                                    SessionStatus::Active
-                                }
-                                carapana_storage::StoredSessionStatus::Paused => {
-                                    SessionStatus::Paused
-                                }
-                                carapana_storage::StoredSessionStatus::Hibernated => {
-                                    SessionStatus::Hibernated
-                                }
-                            },
-                            queued_count: u64::try_from(session.queued_messages.len())
-                                .unwrap_or(u64::MAX),
-                            has_active_message: session.active_message.is_some(),
-                            recovery_needs_revalidation: session.recovery_needs_revalidation,
-                            active_work_uncertain: session.active_work_uncertain,
-                            updated_at_ms: session.updated_at_ms,
-                        })
+                        .map(|session| self.session_summary(session))
                         .collect(),
                 },
                 Err(_) => DaemonResponse::Error {
                     code: DaemonErrorCode::StorageUnavailable,
                 },
             },
+            DaemonRequest::Attach { .. } | DaemonRequest::Detach {} => DaemonResponse::Error {
+                code: DaemonErrorCode::ConnectionRequired,
+            },
         };
         Envelope::new(response)
+    }
+
+    fn attach(&mut self, session_id: &str) -> Envelope<DaemonResponse> {
+        let session = match self.registry.get(session_id) {
+            Ok(session) => session,
+            Err(SessionStoreError::SessionNotFound) => {
+                return Envelope::new(DaemonResponse::Error {
+                    code: DaemonErrorCode::SessionNotFound,
+                });
+            }
+            Err(_) => {
+                return Envelope::new(DaemonResponse::Error {
+                    code: DaemonErrorCode::StorageUnavailable,
+                });
+            }
+        };
+        let attached_clients = self
+            .attached_clients
+            .entry(session_id.to_owned())
+            .or_default();
+        *attached_clients = attached_clients.saturating_add(1);
+        let snapshot = Self::session_snapshot(session, *attached_clients);
+        Envelope::new(DaemonResponse::Attached {
+            snapshot: Box::new(snapshot),
+        })
+    }
+
+    fn detach(&mut self, session_id: &str) -> u64 {
+        let Some(attached_clients) = self.attached_clients.get_mut(session_id) else {
+            return 0;
+        };
+        *attached_clients = attached_clients.saturating_sub(1);
+        if *attached_clients == 0 {
+            self.attached_clients.remove(session_id);
+            0
+        } else {
+            *attached_clients
+        }
+    }
+
+    fn session_summary(&self, session: PersistedSession) -> SessionSummary {
+        SessionSummary {
+            session_id: session.session_id.clone(),
+            status: Self::session_status(session.status),
+            queued_count: u64::try_from(session.queued_messages.len()).unwrap_or(u64::MAX),
+            has_active_message: session.active_message.is_some(),
+            recovery_needs_revalidation: session.recovery_needs_revalidation,
+            active_work_uncertain: session.active_work_uncertain,
+            attached_clients: self
+                .attached_clients
+                .get(&session.session_id)
+                .copied()
+                .unwrap_or(0),
+            updated_at_ms: session.updated_at_ms,
+        }
+    }
+
+    fn session_snapshot(session: PersistedSession, attached_clients: u64) -> SessionSnapshot {
+        SessionSnapshot {
+            session_id: session.session_id,
+            status: Self::session_status(session.status),
+            queued_messages: session.queued_messages,
+            active_message: session.active_message,
+            recovery_needs_revalidation: session.recovery_needs_revalidation,
+            active_work_uncertain: session.active_work_uncertain,
+            attached_clients,
+            created_at_ms: session.created_at_ms,
+            updated_at_ms: session.updated_at_ms,
+            event_sequence: session.event_sequence,
+        }
+    }
+
+    fn session_status(status: StoredSessionStatus) -> SessionStatus {
+        match status {
+            StoredSessionStatus::Active => SessionStatus::Active,
+            StoredSessionStatus::Paused => SessionStatus::Paused,
+            StoredSessionStatus::Hibernated => SessionStatus::Hibernated,
+        }
     }
 
     fn recover(mut registry: SessionRegistry, now_ms: i64) -> Result<Self, DaemonStartupError> {
@@ -123,6 +188,7 @@ impl DaemonRuntime {
         Ok(Self {
             registry,
             startup_recovered,
+            attached_clients: HashMap::new(),
         })
     }
 }

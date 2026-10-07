@@ -136,11 +136,13 @@ pub struct ContractError {
     pub message_id: Option<String>,
 }
 
-/// Read-only local daemon API for the first IPC slice.
+/// Local daemon API for session inspection and connection-scoped attachment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonRequest {
     ListSessions {},
+    Attach { session_id: String },
+    Detach {},
 }
 
 /// Content-free result of listing sessions; it intentionally excludes prompts and secrets.
@@ -153,7 +155,24 @@ pub struct SessionSummary {
     pub has_active_message: bool,
     pub recovery_needs_revalidation: bool,
     pub active_work_uncertain: bool,
+    pub attached_clients: u64,
     pub updated_at_ms: i64,
+}
+
+/// Full state delivered before a client is considered attached after connect/reconnect.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSnapshot {
+    pub session_id: String,
+    pub status: SessionStatus,
+    pub queued_messages: Vec<QueuedMessage>,
+    pub active_message: Option<QueuedMessage>,
+    pub recovery_needs_revalidation: bool,
+    pub active_work_uncertain: bool,
+    pub attached_clients: u64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub event_sequence: i64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,13 +187,20 @@ pub enum SessionStatus {
 #[serde(rename_all = "snake_case")]
 pub enum DaemonErrorCode {
     StorageUnavailable,
+    SessionNotFound,
+    NotAttached,
+    AlreadyAttached,
+    ConnectionRequired,
 }
 
-/// Response envelope payload. IPC errors are closed codes without SQLite details.
+/// Response envelope payload. Attachment returns the full session snapshot; IPC errors
+/// are closed codes without SQLite details.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonResponse {
     Sessions { sessions: Vec<SessionSummary> },
+    Attached { snapshot: Box<SessionSnapshot> },
+    Detached { remaining_attached_clients: u64 },
     Error { code: DaemonErrorCode },
 }
 

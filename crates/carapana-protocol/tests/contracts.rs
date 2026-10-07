@@ -137,6 +137,7 @@ fn should_version_read_only_daemon_session_listing_and_reject_unknown_fields() {
             has_active_message: true,
             recovery_needs_revalidation: true,
             active_work_uncertain: true,
+            attached_clients: 0,
             updated_at_ms: 42,
         }],
     });
@@ -160,7 +161,66 @@ fn should_version_read_only_daemon_session_listing_and_reject_unknown_fields() {
         );
     }
     assert!(serde_json::from_str::<SessionSummary>(
-        r#"{"session_id":"s","status":"paused","queued_count":0,"has_active_message":false,"recovery_needs_revalidation":false,"active_work_uncertain":false,"updated_at_ms":0,"prompt":"not allowed"}"#
+        r#"{"session_id":"s","status":"paused","queued_count":0,"has_active_message":false,"recovery_needs_revalidation":false,"active_work_uncertain":false,"attached_clients":0,"updated_at_ms":0,"prompt":"not allowed"}"#
     )
     .is_err());
+}
+
+#[test]
+fn should_model_connection_scoped_attach_with_a_full_reconnect_snapshot() {
+    let attach = Envelope::new(DaemonRequest::Attach {
+        session_id: "session-1".into(),
+    });
+    let attach_json = serde_json::to_string(&attach).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&attach_json).unwrap(),
+        attach
+    );
+    assert!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(
+            r#"{"protocol":1,"payload":{"type":"detach","session_id":"spoofed"}}"#
+        )
+        .is_err()
+    );
+
+    let response = Envelope::new(DaemonResponse::Attached {
+        snapshot: Box::new(SessionSnapshot {
+            session_id: "session-1".into(),
+            status: SessionStatus::Paused,
+            queued_messages: vec![QueuedMessage {
+                id: "queued-1".into(),
+                text: "preserve this queued message".into(),
+                origin: "tui".into(),
+                selection: Selection {
+                    profile: "ask".into(),
+                    work: WorkMode::Plan,
+                    autonomy: Autonomy::Ask,
+                    provider: "mock".into(),
+                    model: "mock-model".into(),
+                    variant: "default".into(),
+                },
+            }],
+            active_message: None,
+            recovery_needs_revalidation: false,
+            active_work_uncertain: false,
+            attached_clients: 1,
+            created_at_ms: 10,
+            updated_at_ms: 11,
+            event_sequence: 2,
+        }),
+    });
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains("preserve this queued message"));
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(&json).unwrap(),
+        response
+    );
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(
+            r#"{"protocol":1,"payload":{"type":"detach"}}"#
+        )
+        .unwrap()
+        .payload,
+        DaemonRequest::Detach {}
+    );
 }
