@@ -11,8 +11,8 @@ use std::{collections::HashMap, error::Error, fmt, path::Path};
 use std::sync::atomic::AtomicBool;
 
 use carapana_protocol::{
-    DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope, SessionSnapshot, SessionStatus,
-    SessionSummary,
+    AttentionItem, AttentionReason, DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope,
+    SessionSnapshot, SessionStatus, SessionSummary,
 };
 use carapana_storage::{
     MigrationError, PersistedSession, SessionRegistry, SessionStoreError, StoredSessionStatus,
@@ -98,11 +98,41 @@ impl DaemonRuntime {
                     code: DaemonErrorCode::StorageUnavailable,
                 },
             },
+            DaemonRequest::ListAttention {} => match self.attention_queue() {
+                Ok(items) => DaemonResponse::Attention { items },
+                Err(_) => DaemonResponse::Error {
+                    code: DaemonErrorCode::StorageUnavailable,
+                },
+            },
             DaemonRequest::Attach { .. } | DaemonRequest::Detach {} => DaemonResponse::Error {
                 code: DaemonErrorCode::ConnectionRequired,
             },
         };
         Envelope::new(response)
+    }
+
+    /// Derive a stable attention list from durable recovery state; no separate
+    /// acknowledgement or dismiss state can diverge from the session event log.
+    pub fn attention_queue(&mut self) -> Result<Vec<AttentionItem>, SessionStoreError> {
+        let mut items = self
+            .registry
+            .list()?
+            .into_iter()
+            .filter(|session| session.recovery_needs_revalidation || session.active_work_uncertain)
+            .map(|session| AttentionItem {
+                session_id: session.session_id,
+                reason: AttentionReason::RecoveryReview,
+                active_work_uncertain: session.active_work_uncertain,
+                updated_at_ms: session.updated_at_ms,
+                event_sequence: session.event_sequence,
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            left.updated_at_ms
+                .cmp(&right.updated_at_ms)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
+        Ok(items)
     }
 
     fn attach(&mut self, session_id: &str) -> Envelope<DaemonResponse> {
@@ -431,6 +461,45 @@ mod tests {
     }
 
     #[test]
+    fn should_derive_attention_from_recovery_state_in_a_stable_order() {
+        let path = TestDatabase::new();
+        {
+            let mut registry = SessionRegistry::open(&path.0).unwrap();
+            registry.create("z-normal", 1).unwrap();
+            registry.create("b-recovered", 2).unwrap();
+            registry
+                .enqueue("b-recovered", message("uncertain"), 3)
+                .unwrap();
+            registry.start_next("b-recovered", 4).unwrap();
+            registry.create("a-recovered", 5).unwrap();
+            registry
+                .enqueue("a-recovered", message("queued"), 6)
+                .unwrap();
+            registry.start_next("a-recovered", 7).unwrap();
+        }
+
+        let mut runtime = DaemonRuntime::open(&path.0, 10).unwrap();
+        let response = runtime.handle(Envelope::new(DaemonRequest::ListAttention {}));
+        let DaemonResponse::Attention { items } = response.payload else {
+            panic!("attention request should return a derived queue");
+        };
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].session_id, "a-recovered");
+        assert_eq!(items[1].session_id, "b-recovered");
+        assert!(items.iter().all(|item| {
+            item.reason == carapana_protocol::AttentionReason::RecoveryReview
+                && item.active_work_uncertain
+                && item.event_sequence == 4
+        }));
+
+        let empty_response = runtime.handle(Envelope::new(DaemonRequest::ListSessions {}));
+        assert!(matches!(
+            empty_response.payload,
+            DaemonResponse::Sessions { .. }
+        ));
+    }
+
+    #[test]
     fn should_not_append_another_recovery_event_when_runtime_restarts_again() {
         let path = TestDatabase::new();
         {
@@ -504,6 +573,16 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].status, SessionStatus::Paused);
         assert!(sessions[0].active_work_uncertain);
+
+        let response =
+            super::ipc_request(&socket_path, Envelope::new(DaemonRequest::ListAttention {}))
+                .unwrap();
+        let DaemonResponse::Attention { items } = response.payload else {
+            panic!("the service should expose derived recovery attention");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].session_id, "session-1");
+        assert!(items[0].active_work_uncertain);
 
         shutdown.store(true, Ordering::Release);
         server_thread.join().unwrap();

@@ -136,11 +136,12 @@ pub struct ContractError {
     pub message_id: Option<String>,
 }
 
-/// Local daemon API for session inspection and connection-scoped attachment.
+/// Local daemon API for session/attention inspection and connection-scoped attachment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonRequest {
     ListSessions {},
+    ListAttention {},
     Attach { session_id: String },
     Detach {},
 }
@@ -175,6 +176,23 @@ pub struct SessionSnapshot {
     pub event_sequence: i64,
 }
 
+/// Current attention state derived from durable session recovery state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttentionItem {
+    pub session_id: String,
+    pub reason: AttentionReason,
+    pub active_work_uncertain: bool,
+    pub updated_at_ms: i64,
+    pub event_sequence: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionReason {
+    RecoveryReview,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
@@ -199,6 +217,7 @@ pub enum DaemonErrorCode {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonResponse {
     Sessions { sessions: Vec<SessionSummary> },
+    Attention { items: Vec<AttentionItem> },
     Attached { snapshot: Box<SessionSnapshot> },
     Detached { remaining_attached_clients: u64 },
     Error { code: DaemonErrorCode },

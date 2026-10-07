@@ -420,7 +420,9 @@ impl ClientConnection {
             (Some(_), DaemonRequest::Attach { .. }) => Envelope::new(DaemonResponse::Error {
                 code: carapana_protocol::DaemonErrorCode::AlreadyAttached,
             }),
-            (_, request @ DaemonRequest::ListSessions {}) => runtime.handle(Envelope::new(request)),
+            (_, request @ (DaemonRequest::ListSessions {} | DaemonRequest::ListAttention {})) => {
+                runtime.handle(Envelope::new(request))
+            }
         }
     }
 }
