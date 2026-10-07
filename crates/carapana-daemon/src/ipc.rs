@@ -742,6 +742,56 @@ mod tests {
     }
 
     #[test]
+    fn should_page_more_than_one_event_batch_without_gaps_or_duplicates() {
+        let directory = PrivateDir::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry.create("session-1", 10).unwrap();
+        drop(registry);
+        let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+        });
+
+        let mut attachment = super::IpcAttachment::attach(&socket_path, "session-1").unwrap();
+        let mut writer = SessionRegistry::open(&database_path).unwrap();
+        for index in 0..18 {
+            let mut queued = queued_message();
+            queued.id = format!("queued-{index}");
+            queued.text = format!("message {index}");
+            writer
+                .enqueue("session-1", queued, 21 + i64::from(index))
+                .unwrap();
+        }
+
+        let mut cursor = attachment.snapshot().event_sequence;
+        let first_page = attachment.events_after(cursor).unwrap();
+        assert_eq!(first_page.events.len(), 16);
+        assert!(first_page.has_more);
+        assert_eq!(first_page.events[0].sequence, cursor + 1);
+        assert_eq!(first_page.next_sequence, first_page.events[15].sequence);
+        cursor = first_page.next_sequence;
+
+        let second_page = attachment.events_after(cursor).unwrap();
+        assert_eq!(second_page.events.len(), 2);
+        assert!(!second_page.has_more);
+        assert_eq!(second_page.events[0].sequence, cursor + 1);
+        assert_eq!(second_page.events[1].sequence, cursor + 2);
+        assert_eq!(second_page.next_sequence, second_page.events[1].sequence);
+
+        assert_eq!(attachment.detach().unwrap(), 0);
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    #[test]
     fn should_treat_connection_eof_as_detach_and_reconnect_with_a_fresh_snapshot() {
         let directory = PrivateDir::new();
         let database_path = directory.0.join("sessions.sqlite3");
