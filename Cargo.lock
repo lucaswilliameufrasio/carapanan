@@ -165,6 +165,8 @@ dependencies = [
  "carapana-protocol",
  "carapana-storage",
  "clap",
+ "crossterm",
+ "ratatui",
  "serde_json",
  "signal-hook",
 ]
