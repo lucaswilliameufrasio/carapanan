@@ -4,6 +4,9 @@
 
 use std::{error::Error, fmt, path::Path};
 
+use carapana_protocol::{
+    DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope, SessionStatus, SessionSummary,
+};
 use carapana_storage::{
     MigrationError, PersistedSession, SessionRegistry, SessionStoreError, UserDatabaseError,
 };
@@ -69,6 +72,43 @@ impl DaemonRuntime {
         self.registry.list()
     }
 
+    /// Handle the initial read-only daemon contract. No message content is returned.
+    pub fn handle(&mut self, request: Envelope<DaemonRequest>) -> Envelope<DaemonResponse> {
+        let response = match request.payload {
+            DaemonRequest::ListSessions {} => match self.sessions() {
+                Ok(sessions) => DaemonResponse::Sessions {
+                    sessions: sessions
+                        .into_iter()
+                        .map(|session| SessionSummary {
+                            session_id: session.session_id,
+                            status: match session.status {
+                                carapana_storage::StoredSessionStatus::Active => {
+                                    SessionStatus::Active
+                                }
+                                carapana_storage::StoredSessionStatus::Paused => {
+                                    SessionStatus::Paused
+                                }
+                                carapana_storage::StoredSessionStatus::Hibernated => {
+                                    SessionStatus::Hibernated
+                                }
+                            },
+                            queued_count: u64::try_from(session.queued_messages.len())
+                                .unwrap_or(u64::MAX),
+                            has_active_message: session.active_message.is_some(),
+                            recovery_needs_revalidation: session.recovery_needs_revalidation,
+                            active_work_uncertain: session.active_work_uncertain,
+                            updated_at_ms: session.updated_at_ms,
+                        })
+                        .collect(),
+                },
+                Err(_) => DaemonResponse::Error {
+                    code: DaemonErrorCode::StorageUnavailable,
+                },
+            },
+        };
+        Envelope::new(response)
+    }
+
     fn recover(mut registry: SessionRegistry, now_ms: i64) -> Result<Self, DaemonStartupError> {
         let startup_recovered = registry.recover_after_restart(now_ms)?;
         Ok(Self {
@@ -99,7 +139,10 @@ impl From<UserDatabaseError> for DaemonStartupError {
 #[cfg(test)]
 mod tests {
     use super::DaemonRuntime;
-    use carapana_protocol::{Autonomy, QueuedMessage, Selection, WorkMode};
+    use carapana_protocol::{
+        Autonomy, DaemonRequest, DaemonResponse, Envelope, QueuedMessage, Selection, SessionStatus,
+        WorkMode,
+    };
     use carapana_storage::{SessionRegistry, StoredSessionStatus};
     use std::{
         fs,
@@ -176,6 +219,17 @@ mod tests {
 
         let listed = runtime.sessions().unwrap();
         assert_eq!(listed, runtime.startup_recovered());
+
+        let response = runtime.handle(Envelope::new(DaemonRequest::ListSessions {}));
+        let DaemonResponse::Sessions { sessions } = response.payload else {
+            panic!("session listing should return a session response");
+        };
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].status, SessionStatus::Paused);
+        assert_eq!(sessions[0].queued_count, 1);
+        assert!(sessions[0].has_active_message);
+        assert!(sessions[0].recovery_needs_revalidation);
+        assert!(sessions[0].active_work_uncertain);
     }
 
     #[test]

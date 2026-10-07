@@ -115,3 +115,52 @@ fn should_round_trip_the_resumed_session_event() {
         event
     );
 }
+
+#[test]
+fn should_version_read_only_daemon_session_listing_and_reject_unknown_fields() {
+    let request = Envelope::new(DaemonRequest::ListSessions {});
+    let request_json = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        request_json,
+        r#"{"protocol":1,"payload":{"type":"list_sessions"}}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&request_json).unwrap(),
+        request
+    );
+
+    let response = Envelope::new(DaemonResponse::Sessions {
+        sessions: vec![SessionSummary {
+            session_id: "session-1".into(),
+            status: SessionStatus::Paused,
+            queued_count: 2,
+            has_active_message: true,
+            recovery_needs_revalidation: true,
+            active_work_uncertain: true,
+            updated_at_ms: 42,
+        }],
+    });
+    let response_json = serde_json::to_string(&response).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(&response_json).unwrap(),
+        response
+    );
+    assert!(!response_json.contains("text"));
+    assert!(!response_json.contains("selection"));
+    assert!(!response_json.contains("secret"));
+
+    for invalid in [
+        r#"{"protocol":2,"payload":{"type":"list_sessions"}}"#,
+        r#"{"protocol":1,"payload":{"type":"list_sessions","execute":true}}"#,
+        r#"{"protocol":1,"payload":{"type":"run_command"}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<Envelope<DaemonRequest>>(invalid).is_err(),
+            "accepted invalid request: {invalid}"
+        );
+    }
+    assert!(serde_json::from_str::<SessionSummary>(
+        r#"{"session_id":"s","status":"paused","queued_count":0,"has_active_message":false,"recovery_needs_revalidation":false,"active_work_uncertain":false,"updated_at_ms":0,"prompt":"not allowed"}"#
+    )
+    .is_err());
+}
