@@ -7,6 +7,8 @@ use std::{
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
     time::Duration,
 };
 
@@ -128,16 +130,55 @@ impl IpcServer {
     /// Accept and handle exactly one request. Call repeatedly from the daemon loop.
     pub fn accept_once(&self, runtime: &mut crate::DaemonRuntime) -> Result<(), IpcError> {
         let (mut stream, _) = self.listener.accept()?;
-        stream.set_read_timeout(Some(CONNECTION_TIMEOUT))?;
-        stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
-        let request = read_json_frame::<_, Envelope<DaemonRequest>>(&mut stream)?;
-        let response: Envelope<DaemonResponse> = runtime.handle(request);
-        write_json_frame(&mut stream, &response)
+        handle_connection(&mut stream, runtime)
+    }
+
+    /// Serve clients until the caller sets `shutdown` to true.
+    ///
+    /// Each connection is isolated: malformed frames, unsupported protocol versions,
+    /// disconnects, and failed response writes do not terminate the listener. The loop
+    /// polls a nonblocking socket so shutdown is observed promptly between clients.
+    /// The caller remains responsible for translating its platform's shutdown signal
+    /// into the atomic flag.
+    pub fn serve_until(
+        &self,
+        runtime: &mut crate::DaemonRuntime,
+        shutdown: &AtomicBool,
+    ) -> Result<(), IpcError> {
+        self.listener.set_nonblocking(true)?;
+        let result = loop {
+            if shutdown.load(Ordering::Acquire) {
+                break Ok(());
+            }
+            match self.listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = handle_connection(&mut stream, runtime);
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => break Err(IpcError::Io(error)),
+            }
+        };
+        self.listener.set_nonblocking(false)?;
+        result
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn handle_connection(
+    stream: &mut UnixStream,
+    runtime: &mut crate::DaemonRuntime,
+) -> Result<(), IpcError> {
+    stream.set_read_timeout(Some(CONNECTION_TIMEOUT))?;
+    stream.set_write_timeout(Some(CONNECTION_TIMEOUT))?;
+    let request = read_json_frame::<_, Envelope<DaemonRequest>>(stream)?;
+    let response: Envelope<DaemonResponse> = runtime.handle(request);
+    write_json_frame(stream, &response)
 }
 
 impl Drop for IpcServer {
@@ -204,10 +245,14 @@ mod tests {
     use carapana_storage::SessionRegistry;
     use std::{
         fs,
-        io::Cursor,
+        io::{Cursor, Write},
         os::unix::fs::PermissionsExt,
+        os::unix::net::UnixStream,
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+        },
         thread,
         time::SystemTime,
     };
@@ -294,5 +339,41 @@ mod tests {
             write_json_frame(&mut cursor, &"x".repeat(MAX_FRAME_BYTES)),
             Err(IpcError::InvalidFrame)
         ));
+    }
+
+    #[test]
+    fn should_continue_after_malformed_client_and_stop_on_shutdown() {
+        let directory = PrivateDir::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let registry = SessionRegistry::open(&database_path).unwrap();
+        drop(registry);
+        let mut runtime = DaemonRuntime::open(&database_path, 10).unwrap();
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+        });
+
+        let mut malformed = UnixStream::connect(&socket_path).unwrap();
+        let unsupported = br#"{"protocol":2,"payload":{"type":"list_sessions"}}"#;
+        let length = u32::try_from(unsupported.len()).unwrap();
+        malformed.write_all(&length.to_be_bytes()).unwrap();
+        malformed.write_all(unsupported).unwrap();
+        drop(malformed);
+
+        let response =
+            super::request(&socket_path, Envelope::new(DaemonRequest::ListSessions {})).unwrap();
+        assert_eq!(
+            response,
+            Envelope::new(DaemonResponse::Sessions { sessions: vec![] })
+        );
+
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        assert!(!socket_path.exists());
     }
 }
