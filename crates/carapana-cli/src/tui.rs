@@ -25,6 +25,7 @@ struct App {
     attention: Vec<AttentionItem>,
     selected: usize,
     detail: Option<SessionSnapshot>,
+    detail_scroll: usize,
     error: Option<String>,
 }
 
@@ -36,6 +37,7 @@ impl App {
             attention: Vec::new(),
             selected: 0,
             detail: None,
+            detail_scroll: 0,
             error: None,
         }
     }
@@ -88,6 +90,7 @@ impl App {
                 match attachment.detach() {
                     Ok(_) => {
                         self.detail = Some(snapshot);
+                        self.detail_scroll = 0;
                         self.error = None;
                     }
                     Err(error) => self.error = Some(error.to_string()),
@@ -109,6 +112,7 @@ impl App {
                             match attachment.detach() {
                                 Ok(_) => {
                                     self.detail = Some(snapshot);
+                                    self.detail_scroll = 0;
                                     self.error = None;
                                 }
                                 Err(error) => self.error = Some(error.to_string()),
@@ -126,11 +130,19 @@ impl App {
                 self.error = None;
                 false
             }
-            KeyCode::Up if self.detail.is_none() => {
+            KeyCode::Up if self.detail.is_some() => {
+                self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                false
+            }
+            KeyCode::Down if self.detail.is_some() => {
+                self.detail_scroll = self.detail_scroll.saturating_add(1);
+                false
+            }
+            KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 false
             }
-            KeyCode::Down if self.detail.is_none() => {
+            KeyCode::Down => {
                 if !self.sessions.is_empty() {
                     self.selected = (self.selected + 1).min(self.sessions.len() - 1);
                 }
@@ -173,18 +185,31 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
     let content_block = Block::default().borders(Borders::ALL);
     let inner = content_block.inner(content);
     frame.render_widget(content_block, content);
-    let lines = if let Some(snapshot) = &app.detail {
-        detail_lines(snapshot, app.error.as_deref())
+    let (lines, scroll) = if let Some(snapshot) = &app.detail {
+        let lines = detail_lines(snapshot, app.error.as_deref());
+        let width = usize::from(inner.width.max(1));
+        let visual_height = lines
+            .iter()
+            .map(|line| line.width().max(1).div_ceil(width))
+            .sum::<usize>();
+        let max_scroll = visual_height.saturating_sub(inner.height as usize);
+        (lines, app.detail_scroll.min(max_scroll) as u16)
     } else {
-        overview_lines(app)
+        let (lines, selected_line) = overview_lines(app);
+        let scroll = selected_line
+            .map(|line| overview_scroll(line, inner.height))
+            .unwrap_or_default();
+        (lines, scroll)
     };
     frame.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        Paragraph::new(Text::from(lines))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
         inner,
     );
 
     let footer_text = if app.detail.is_some() {
-        "Esc back · r refresh · q quit"
+        "↑/↓ scroll · Esc back · r refresh · q quit"
     } else {
         "↑/↓ select · Enter inspect · r refresh · q quit"
     };
@@ -194,7 +219,8 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
     );
 }
 
-fn overview_lines(app: &App) -> Vec<Line<'static>> {
+fn overview_lines(app: &App) -> (Vec<Line<'static>>, Option<usize>) {
+    const MAX_VISIBLE_ATTENTION: usize = 3;
     let attention_ids = app
         .attention
         .iter()
@@ -209,7 +235,7 @@ fn overview_lines(app: &App) -> Vec<Line<'static>> {
     if app.attention.is_empty() {
         lines.push(Line::from("  Nothing needs attention."));
     } else {
-        for item in &app.attention {
+        for item in app.attention.iter().take(MAX_VISIBLE_ATTENTION) {
             lines.push(Line::from(format!(
                 "  ! {} · {:?}{}",
                 item.session_id,
@@ -221,6 +247,12 @@ fn overview_lines(app: &App) -> Vec<Line<'static>> {
                 }
             )));
         }
+        if app.attention.len() > MAX_VISIBLE_ATTENTION {
+            lines.push(Line::from(format!(
+                "  … and {} more; inspect sessions below",
+                app.attention.len() - MAX_VISIBLE_ATTENTION
+            )));
+        }
     }
 
     lines.push(Line::from(""));
@@ -228,6 +260,7 @@ fn overview_lines(app: &App) -> Vec<Line<'static>> {
         format!("Sessions ({})", app.sessions.len()),
         Style::default().add_modifier(Modifier::BOLD),
     ));
+    let mut selected_line = None;
     if app.sessions.is_empty() {
         lines.push(Line::from("  No sessions."));
     } else {
@@ -243,6 +276,9 @@ fn overview_lines(app: &App) -> Vec<Line<'static>> {
                 session.queued_count,
                 session.has_active_message,
             );
+            if selected {
+                selected_line = Some(lines.len());
+            }
             lines.push(if selected {
                 Line::styled(line, Style::default().add_modifier(Modifier::REVERSED))
             } else {
@@ -257,7 +293,15 @@ fn overview_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(Color::Red),
         ));
     }
-    lines
+    (lines, selected_line)
+}
+
+fn overview_scroll(selected_line: usize, viewport_height: u16) -> u16 {
+    let height = viewport_height as usize;
+    selected_line
+        .saturating_add(1)
+        .saturating_sub(height)
+        .min(u16::MAX as usize) as u16
 }
 
 fn detail_lines(snapshot: &SessionSnapshot, error: Option<&str>) -> Vec<Line<'static>> {
@@ -325,7 +369,10 @@ pub(super) fn run(socket_path: &Path) -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::App;
     use carapana_daemon::{DaemonRuntime, IpcServer};
-    use carapana_protocol::{Autonomy, QueuedMessage, Selection, SessionStatus, WorkMode};
+    use carapana_protocol::{
+        AttentionItem, AttentionReason, Autonomy, QueuedMessage, Selection, SessionStatus,
+        SessionSummary, WorkMode,
+    };
     use carapana_storage::SessionRegistry;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
@@ -367,9 +414,9 @@ mod tests {
         }
     }
 
-    fn message() -> QueuedMessage {
+    fn message_with_id(id: impl Into<String>) -> QueuedMessage {
         QueuedMessage {
-            id: "queued-1".into(),
+            id: id.into(),
             text: "preserve this queued item".into(),
             origin: "tui-test".into(),
             selection: Selection {
@@ -400,12 +447,63 @@ mod tests {
     }
 
     #[test]
+    fn should_keep_selected_sessions_visible_in_an_80_by_24_viewport() {
+        let directory = PrivateDir::new();
+        let mut app = App::new(&directory.0.join("unused.sock"));
+        app.sessions = (0..40)
+            .map(|index| SessionSummary {
+                session_id: format!("session-{index:02}"),
+                status: SessionStatus::Paused,
+                queued_count: 0,
+                has_active_message: false,
+                recovery_needs_revalidation: false,
+                active_work_uncertain: false,
+                attached_clients: 0,
+                updated_at_ms: index,
+            })
+            .collect();
+        app.attention = (0..10)
+            .map(|index| AttentionItem {
+                session_id: format!("session-{index:02}"),
+                reason: AttentionReason::RecoveryReview,
+                active_work_uncertain: false,
+                updated_at_ms: index,
+                event_sequence: index,
+            })
+            .collect();
+        app.selected = 39;
+
+        let (lines, selected_line) = super::overview_lines(&app);
+        let selected_line = selected_line.unwrap();
+        let scroll = super::overview_scroll(selected_line, 16) as usize;
+        assert!(selected_line >= scroll);
+        assert!(selected_line - scroll < 16);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.to_string().contains("; inspect sessions below"))
+                .count(),
+            1
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+    }
+
+    #[test]
     fn should_refresh_navigate_and_inspect_without_mutating_the_session() {
         let directory = PrivateDir::new();
         let database_path = directory.0.join("sessions.sqlite3");
         let mut registry = SessionRegistry::open(&database_path).unwrap();
         registry.create("session-1", 10).unwrap();
-        registry.enqueue("session-1", message(), 11).unwrap();
+        let queued_messages = (0..20)
+            .map(|index| message_with_id(format!("queued-{index:02}")))
+            .collect::<Vec<_>>();
+        for (index, message) in queued_messages.iter().cloned().enumerate() {
+            registry
+                .enqueue("session-1", message, 11 + index as i64)
+                .unwrap();
+        }
         registry.create("session-2", 12).unwrap();
         drop(registry);
 
@@ -447,9 +545,13 @@ mod tests {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(
             app.detail.as_ref().unwrap().queued_messages,
-            vec![message()]
+            queued_messages
         );
         assert!(app.error.is_none());
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.detail_scroll, 1);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.detail.is_none());
 
@@ -461,7 +563,7 @@ mod tests {
             session.status,
             carapana_storage::StoredSessionStatus::Paused
         );
-        assert_eq!(session.queued_messages, vec![message()]);
+        assert_eq!(session.queued_messages, queued_messages);
 
         shutdown.store(true, Ordering::Release);
         server_thread.join().unwrap();
