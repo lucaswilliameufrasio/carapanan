@@ -11,12 +11,13 @@ use std::{collections::HashMap, error::Error, fmt, path::Path};
 use std::sync::atomic::AtomicBool;
 
 use carapana_protocol::{
-    AttentionItem, AttentionReason, DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope,
-    SessionSnapshot, SessionStatus, SessionSummary,
+    AttentionItem, AttentionReason, DaemonErrorCode, DaemonRequest, DaemonResponse,
+    DaemonSessionEvent, Envelope, SessionEventBatch, SessionEventRecord, SessionSnapshot,
+    SessionStatus, SessionSummary,
 };
 use carapana_storage::{
-    MigrationError, PersistedSession, SessionRegistry, SessionStoreError, StoredSessionStatus,
-    UserDatabaseError,
+    MigrationError, PersistedSession, SessionRegistry, SessionStoreError, StoredSessionEvent,
+    StoredSessionStatus, UserDatabaseError,
 };
 
 #[cfg(unix)]
@@ -107,6 +108,9 @@ impl DaemonRuntime {
             DaemonRequest::Attach { .. } | DaemonRequest::Detach {} => DaemonResponse::Error {
                 code: DaemonErrorCode::ConnectionRequired,
             },
+            DaemonRequest::EventsAfter { .. } => DaemonResponse::Error {
+                code: DaemonErrorCode::ConnectionRequired,
+            },
         };
         Envelope::new(response)
     }
@@ -133,6 +137,49 @@ impl DaemonRuntime {
                 .then_with(|| left.session_id.cmp(&right.session_id))
         });
         Ok(items)
+    }
+
+    fn events_after(
+        &mut self,
+        session_id: &str,
+        after_sequence: i64,
+    ) -> Result<SessionEventBatch, SessionStoreError> {
+        const EVENT_PAGE_SIZE: u16 = 16;
+        let (records, next_sequence, has_more) =
+            self.registry
+                .session_events_after(session_id, after_sequence, EVENT_PAGE_SIZE)?;
+        let events = records
+            .into_iter()
+            .map(|record| SessionEventRecord {
+                sequence: record.sequence,
+                occurred_at_ms: record.occurred_at_ms,
+                event: match record.event {
+                    StoredSessionEvent::Created { .. } => DaemonSessionEvent::Created,
+                    StoredSessionEvent::MessageQueued { message } => {
+                        DaemonSessionEvent::MessageQueued { message }
+                    }
+                    StoredSessionEvent::MessageStarted { message_id } => {
+                        DaemonSessionEvent::MessageStarted { message_id }
+                    }
+                    StoredSessionEvent::Paused => DaemonSessionEvent::Paused,
+                    StoredSessionEvent::Completed {
+                        message_id,
+                        outcome,
+                    } => DaemonSessionEvent::Completed {
+                        message_id,
+                        outcome,
+                    },
+                    StoredSessionEvent::RecoveredPaused { active_message_id } => {
+                        DaemonSessionEvent::RecoveredPaused { active_message_id }
+                    }
+                },
+            })
+            .collect();
+        Ok(SessionEventBatch {
+            events,
+            next_sequence,
+            has_more,
+        })
     }
 
     fn attach(&mut self, session_id: &str) -> Envelope<DaemonResponse> {

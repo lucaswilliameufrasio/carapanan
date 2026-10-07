@@ -143,6 +143,7 @@ pub enum DaemonRequest {
     ListSessions {},
     ListAttention {},
     Attach { session_id: String },
+    EventsAfter { after_sequence: i64 },
     Detach {},
 }
 
@@ -193,6 +194,42 @@ pub enum AttentionReason {
     RecoveryReview,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionEventRecord {
+    pub sequence: i64,
+    pub occurred_at_ms: i64,
+    pub event: DaemonSessionEvent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DaemonSessionEvent {
+    Created,
+    MessageQueued {
+        message: QueuedMessage,
+    },
+    MessageStarted {
+        message_id: String,
+    },
+    Paused,
+    Completed {
+        message_id: String,
+        outcome: Outcome,
+    },
+    RecoveredPaused {
+        active_message_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionEventBatch {
+    pub events: Vec<SessionEventRecord>,
+    pub next_sequence: i64,
+    pub has_more: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
@@ -209,6 +246,7 @@ pub enum DaemonErrorCode {
     NotAttached,
     AlreadyAttached,
     ConnectionRequired,
+    InvalidEventCursor,
 }
 
 /// Response envelope payload. Attachment returns the full session snapshot; IPC errors
@@ -218,6 +256,7 @@ pub enum DaemonErrorCode {
 pub enum DaemonResponse {
     Sessions { sessions: Vec<SessionSummary> },
     Attention { items: Vec<AttentionItem> },
+    Events { batch: Box<SessionEventBatch> },
     Attached { snapshot: Box<SessionSnapshot> },
     Detached { remaining_attached_clients: u64 },
     Error { code: DaemonErrorCode },
