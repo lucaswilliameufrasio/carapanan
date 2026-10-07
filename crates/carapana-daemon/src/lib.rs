@@ -1,6 +1,9 @@
 //! Safe startup orchestration for the future local daemon.
 //!
-//! This crate deliberately does not provide a listener, provider, or tool runner.
+//! This crate provides a local read-only IPC listener, but no provider or tool runner.
+
+#[cfg(unix)]
+mod ipc;
 
 use std::{error::Error, fmt, path::Path};
 
@@ -10,6 +13,9 @@ use carapana_protocol::{
 use carapana_storage::{
     MigrationError, PersistedSession, SessionRegistry, SessionStoreError, UserDatabaseError,
 };
+
+#[cfg(unix)]
+pub use ipc::{IpcError, IpcServer, request as ipc_request};
 
 #[derive(Debug)]
 pub enum DaemonStartupError {
