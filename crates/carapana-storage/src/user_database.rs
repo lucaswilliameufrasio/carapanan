@@ -245,7 +245,7 @@ mod tests {
     use super::{Platform, UserDatabaseError, open_database_at, resolve_data_directory};
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
         time::SystemTime,
     };
@@ -407,5 +407,25 @@ mod tests {
         );
         assert!(!external.join("private").exists());
         assert!(!external.join("private/sessions.sqlite3").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_refuse_relative_and_parent_traversal_database_paths() {
+        let root = TestDirectory::new();
+        let relative_path = Path::new("relative/sessions.sqlite3");
+        assert!(matches!(
+            open_database_at(relative_path),
+            Err(UserDatabaseError::UnsafePath(_))
+        ));
+
+        let intermediate = root.0.join("intermediate");
+        fs::create_dir(&intermediate).unwrap();
+        let traversal_path = intermediate.join("../sessions.sqlite3");
+        assert!(matches!(
+            open_database_at(&traversal_path),
+            Err(UserDatabaseError::UnsafePath(_))
+        ));
+        assert!(!root.0.join("sessions.sqlite3").exists());
     }
 }
