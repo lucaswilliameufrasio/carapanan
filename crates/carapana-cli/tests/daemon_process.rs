@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use carapana_protocol::{Autonomy, QueuedMessage, Selection, WorkMode};
 use carapana_storage::{SessionRegistry, StoredSessionStatus};
@@ -67,6 +67,7 @@ impl Drop for PrivateDir {
 fn start_daemon(directory: &PrivateDir) -> (std::process::Child, PathBuf) {
     let home = directory.0.join("home");
     let data_home = directory.0.join("xdg");
+    fs::create_dir_all(&home).unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_carapana"))
         .arg("daemon")
         .env("HOME", home)
@@ -75,7 +76,22 @@ fn start_daemon(directory: &PrivateDir) -> (std::process::Child, PathBuf) {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    (child, data_home.join("carapana/daemon.sock"))
+    (child, user_data_directory(directory).join("daemon.sock"))
+}
+
+fn user_data_directory(directory: &PrivateDir) -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        return directory.0.join("xdg/carapana");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return directory
+            .0
+            .join("home/Library/Application Support/Carapana");
+    }
+    #[allow(unreachable_code)]
+    directory.0.join("xdg/carapana")
 }
 
 fn stop_with_signal(
@@ -163,7 +179,7 @@ fn message(id: &str, text: &str) -> QueuedMessage {
 }
 
 fn seed_interrupted_and_paused_sessions(directory: &PrivateDir) {
-    let data_directory = directory.0.join("xdg/carapana");
+    let data_directory = user_data_directory(directory);
     fs::create_dir_all(&data_directory).unwrap();
     fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
     let database_path = data_directory.join("sessions.sqlite3");
@@ -331,7 +347,7 @@ fn should_refuse_public_database_directory_without_recovering_or_serving() {
     let directory = PrivateDir::new();
     seed_interrupted_and_paused_sessions(&directory);
 
-    let data_directory = directory.0.join("xdg/carapana");
+    let data_directory = user_data_directory(&directory);
     let database_path = data_directory.join("sessions.sqlite3");
     let registry = SessionRegistry::open(&database_path).unwrap();
     let before = registry.get("interrupted").unwrap();
@@ -393,7 +409,7 @@ fn should_refuse_database_symlink_without_recovering_or_serving() {
     use std::os::unix::fs::symlink;
 
     let directory = PrivateDir::new();
-    let data_directory = directory.0.join("xdg/carapana");
+    let data_directory = user_data_directory(&directory);
     fs::create_dir_all(&data_directory).unwrap();
     fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
 
@@ -468,7 +484,7 @@ fn should_refuse_database_symlink_without_recovering_or_serving() {
 #[test]
 fn should_refuse_a_newer_database_schema_without_rewriting_or_serving() {
     let directory = PrivateDir::new();
-    let data_directory = directory.0.join("xdg/carapana");
+    let data_directory = user_data_directory(&directory);
     fs::create_dir_all(&data_directory).unwrap();
     fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
     let database_path = data_directory.join("sessions.sqlite3");

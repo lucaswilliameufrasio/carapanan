@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use carapana_protocol::{Autonomy, QueuedMessage, Selection, WorkMode};
 use carapana_storage::SessionRegistry;
