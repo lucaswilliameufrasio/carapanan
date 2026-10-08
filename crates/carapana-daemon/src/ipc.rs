@@ -551,7 +551,7 @@ mod tests {
         io::{Cursor, Write},
         os::unix::fs::PermissionsExt,
         os::unix::net::UnixStream,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
@@ -656,6 +656,25 @@ mod tests {
                 .is_symlink()
         );
         assert!(!private_child.join("daemon.sock").exists());
+    }
+
+    #[test]
+    fn should_refuse_relative_and_parent_traversal_socket_paths() {
+        let directory = PrivateDir::new();
+        let relative_path = Path::new("relative/daemon.sock");
+        assert!(matches!(
+            IpcServer::bind(relative_path),
+            Err(IpcError::UnsafeSocketPath(_))
+        ));
+
+        let intermediate = directory.0.join("intermediate");
+        fs::create_dir(&intermediate).unwrap();
+        let traversal_path = intermediate.join("../daemon.sock");
+        assert!(matches!(
+            IpcServer::bind(&traversal_path),
+            Err(IpcError::UnsafeSocketPath(_))
+        ));
+        assert!(!directory.0.join("daemon.sock").exists());
     }
 
     #[test]
