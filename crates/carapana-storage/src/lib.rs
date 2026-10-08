@@ -15,7 +15,8 @@ pub use session_store::{
 pub use user_database::{UserDatabaseError, open_user_database, user_database_path};
 pub use workspace::{
     MAX_WORKSPACE_FILE_HASH_BYTES, WorkspaceFileMetadata, WorkspaceFileMetadataError,
-    WorkspaceMetadata, WorkspaceMetadataError,
+    WorkspaceFileValidation, WorkspaceFileValidationStatus, WorkspaceMetadata,
+    WorkspaceMetadataError, WorkspaceValidationReport,
 };
 
 /// Per-user index and lifecycle facade over the user's single SQLite database.
@@ -86,6 +87,13 @@ impl SessionRegistry {
 
     pub fn validate_workspace_files(&self, session_id: &str) -> Result<(), SessionStoreError> {
         self.database.validate_workspace_files(session_id)
+    }
+
+    pub fn review_workspace_files(
+        &self,
+        session_id: &str,
+    ) -> Result<WorkspaceValidationReport, SessionStoreError> {
+        self.database.review_workspace_files(session_id)
     }
 
     pub fn get(&self, session_id: &str) -> Result<PersistedSession, SessionStoreError> {
@@ -260,6 +268,13 @@ impl Database {
 
     pub fn validate_workspace_files(&self, session_id: &str) -> Result<(), SessionStoreError> {
         session_store::validate_workspace_files(self, session_id)
+    }
+
+    pub fn review_workspace_files(
+        &self,
+        session_id: &str,
+    ) -> Result<WorkspaceValidationReport, SessionStoreError> {
+        session_store::review_workspace_files(self, session_id)
     }
 
     /// Load from the snapshot, falling back to replaying the event log if needed.

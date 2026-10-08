@@ -5,8 +5,9 @@ use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Database, WorkspaceFileMetadata, WorkspaceFileMetadataError, WorkspaceMetadata,
-    WorkspaceMetadataError,
+    Database, WorkspaceFileMetadata, WorkspaceFileMetadataError, WorkspaceFileValidation,
+    WorkspaceFileValidationStatus, WorkspaceMetadata, WorkspaceMetadataError,
+    WorkspaceValidationReport,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +368,59 @@ pub(super) fn validate_workspace_files(
             .map_err(SessionStoreError::WorkspaceFileMetadata)?;
     }
     Ok(())
+}
+
+pub(super) fn review_workspace_files(
+    database: &Database,
+    session_id: &str,
+) -> Result<WorkspaceValidationReport, SessionStoreError> {
+    let session = database.load_session(session_id)?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
+    workspace
+        .verify_current()
+        .map_err(SessionStoreError::WorkspaceMetadata)?;
+
+    let mut files = Vec::with_capacity(session.workspace_files.len());
+    for observation in &session.workspace_files {
+        let status = match observation.verify_current(workspace) {
+            Ok(()) => WorkspaceFileValidationStatus::Unchanged,
+            Err(WorkspaceFileMetadataError::Workspace(error)) => {
+                return Err(SessionStoreError::WorkspaceMetadata(error));
+            }
+            Err(error) => workspace_file_validation_status(&error),
+        };
+        files.push(WorkspaceFileValidation {
+            relative_path: observation.relative_path(),
+            status,
+        });
+    }
+    Ok(WorkspaceValidationReport { files })
+}
+
+fn workspace_file_validation_status(
+    error: &WorkspaceFileMetadataError,
+) -> WorkspaceFileValidationStatus {
+    match error {
+        WorkspaceFileMetadataError::Workspace(_) => WorkspaceFileValidationStatus::Unavailable,
+        WorkspaceFileMetadataError::Io(error) => io_validation_status(error),
+        WorkspaceFileMetadataError::Changed(_) => WorkspaceFileValidationStatus::Changed,
+        WorkspaceFileMetadataError::InvalidRelativePath(_)
+        | WorkspaceFileMetadataError::UnsafePath(_)
+        | WorkspaceFileMetadataError::NotRegularFile(_)
+        | WorkspaceFileMetadataError::SensitivePath(_) => WorkspaceFileValidationStatus::Unsafe,
+        WorkspaceFileMetadataError::FileTooLarge(_) => WorkspaceFileValidationStatus::TooLarge,
+    }
+}
+
+fn io_validation_status(error: &std::io::Error) -> WorkspaceFileValidationStatus {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => WorkspaceFileValidationStatus::Missing,
+        std::io::ErrorKind::PermissionDenied => WorkspaceFileValidationStatus::Unreadable,
+        _ => WorkspaceFileValidationStatus::Unavailable,
+    }
 }
 
 pub(super) fn load_session(
@@ -987,8 +1041,8 @@ fn validate_timestamp(timestamp_ms: i64) -> Result<(), SessionStoreError> {
 mod tests {
     use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus};
     use crate::{
-        Database, SessionRegistry, WorkspaceFileMetadataError, WorkspaceMetadata,
-        WorkspaceMetadataError,
+        Database, SessionRegistry, WorkspaceFileMetadataError, WorkspaceFileValidationStatus,
+        WorkspaceMetadata, WorkspaceMetadataError,
     };
     use carapana_protocol::{Autonomy, Outcome, QueuedMessage, Selection, WorkMode};
     use rusqlite::params;
@@ -1260,6 +1314,99 @@ mod tests {
         );
         let serialized = serde_json::to_string(&session.workspace_files[0]).unwrap();
         assert!(!serialized.contains("local bytes stay local"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_report_each_explicit_workspace_file_without_changing_recovery_state() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        for file_name in ["hashed.txt", "changed.txt", "stat.txt", "missing.txt"] {
+            fs::write(workspace.0.join(file_name), format!("original {file_name}")).unwrap();
+        }
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let mut database = Database::open(&path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+        database
+            .observe_workspace_file_with_hash("session-1", "hashed.txt", 11)
+            .unwrap();
+        database
+            .observe_workspace_file_with_hash("session-1", "changed.txt", 13)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "stat.txt", 14)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "missing.txt", 15)
+            .unwrap();
+        database
+            .enqueue_message("session-1", message("active"), 16)
+            .unwrap();
+        database.start_next_message("session-1", 17).unwrap();
+        fs::write(workspace.0.join("changed.txt"), b"changed contents").unwrap();
+        fs::remove_file(workspace.0.join("missing.txt")).unwrap();
+        drop(database);
+
+        let mut database = Database::open(&path.0).unwrap();
+        database.recover_active_sessions(20).unwrap();
+        let before_review = database.load_session("session-1").unwrap();
+        let report = database.review_workspace_files("session-1").unwrap();
+
+        assert_eq!(report.files.len(), 4);
+        assert_eq!(
+            report.files[0].status,
+            WorkspaceFileValidationStatus::Unchanged
+        );
+        assert_eq!(
+            report.files[1].status,
+            WorkspaceFileValidationStatus::Changed
+        );
+        assert_eq!(
+            report.files[2].status,
+            WorkspaceFileValidationStatus::Unchanged
+        );
+        assert_eq!(
+            report.files[3].status,
+            WorkspaceFileValidationStatus::Missing
+        );
+        let after_review = database.load_session("session-1").unwrap();
+        assert_eq!(after_review.status, StoredSessionStatus::Paused);
+        assert!(after_review.recovery_needs_revalidation);
+        assert_eq!(after_review.event_sequence, before_review.event_sequence);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fail_closed_when_workspace_identity_changes_before_review() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(workspace.0.join("source.txt"), b"original").unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let mut database = Database::open(&path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "source.txt", 11)
+            .unwrap();
+
+        let moved_workspace = workspace.0.with_extension("moved");
+        fs::rename(&workspace.0, &moved_workspace).unwrap();
+        fs::create_dir(&workspace.0).unwrap();
+
+        assert!(matches!(
+            database.review_workspace_files("session-1"),
+            Err(SessionStoreError::WorkspaceMetadata(
+                WorkspaceMetadataError::IdentityChanged(_)
+            ))
+        ));
+        assert_eq!(
+            database.load_session("session-1").unwrap().event_sequence,
+            2
+        );
+        fs::remove_dir_all(moved_workspace).unwrap();
     }
 
     #[cfg(unix)]
