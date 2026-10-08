@@ -136,9 +136,40 @@ fn home_or_error(home: Option<PathBuf>) -> Result<PathBuf, UserDatabaseError> {
 }
 
 #[cfg(unix)]
+fn reject_symlink_components(path: &Path) -> Result<(), UserDatabaseError> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(UserDatabaseError::UnsafePath(path.to_owned()));
+    }
+
+    let mut component_path = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => component_path.push(component.as_os_str()),
+            Component::Normal(name) => component_path.push(name),
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(UserDatabaseError::UnsafePath(path.to_owned()));
+            }
+        }
+
+        match fs::symlink_metadata(&component_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(UserDatabaseError::UnsafePath(component_path));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 
+    reject_symlink_components(path)?;
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.file_type().is_dir() || metadata.mode() & 0o077 != 0 {
@@ -150,6 +181,7 @@ fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
                 .parent()
                 .ok_or_else(|| UserDatabaseError::UnsafePath(path.to_owned()))?;
             fs::create_dir_all(parent)?;
+            reject_symlink_components(path)?;
             match fs::DirBuilder::new().mode(0o700).create(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -348,5 +380,32 @@ mod tests {
             open_database_at(&database_link),
             Err(UserDatabaseError::UnsafePath(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_refuse_a_symlink_in_a_database_directory_ancestor() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = TestDirectory::new();
+        let external = root.0.join("external");
+        let linked_parent = root.0.join("linked-parent");
+        fs::create_dir(&external).unwrap();
+        fs::set_permissions(&external, fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(&external, &linked_parent).unwrap();
+
+        let database_path = linked_parent.join("private/sessions.sqlite3");
+        assert!(matches!(
+            open_database_at(&database_path),
+            Err(UserDatabaseError::UnsafePath(_))
+        ));
+        assert!(
+            fs::symlink_metadata(&linked_parent)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!external.join("private").exists());
+        assert!(!external.join("private/sessions.sqlite3").exists());
     }
 }
