@@ -90,6 +90,37 @@ impl From<UserDatabaseError> for IpcError {
     }
 }
 
+fn validate_socket_path_ancestors(path: &Path) -> Result<(), IpcError> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(IpcError::UnsafeSocketPath(path.to_owned()));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| IpcError::UnsafeSocketPath(path.to_owned()))?;
+
+    let mut component_path = PathBuf::new();
+    for component in parent.components() {
+        match component {
+            Component::RootDir => component_path.push(component.as_os_str()),
+            Component::Normal(name) => component_path.push(name),
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(IpcError::UnsafeSocketPath(path.to_owned()));
+            }
+        }
+
+        match fs::symlink_metadata(&component_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(IpcError::UnsafeSocketPath(component_path));
+            }
+            Ok(_) => {}
+            Err(_) => return Err(IpcError::UnsafeSocketPath(component_path)),
+        }
+    }
+    Ok(())
+}
+
 /// Single-process local socket listener for the versioned session API.
 ///
 /// Existing paths (including stale sockets) are never removed on startup. The caller
@@ -113,6 +144,7 @@ impl IpcServer {
     /// Bind only inside an existing owner-private directory (no group/other access).
     pub fn bind(path: impl AsRef<Path>) -> Result<Self, IpcError> {
         let path = path.as_ref().to_owned();
+        validate_socket_path_ancestors(&path)?;
         let parent = path
             .parent()
             .ok_or_else(|| IpcError::UnsafeSocketPath(path.clone()))?;
@@ -595,6 +627,35 @@ mod tests {
             Err(IpcError::UnsafeSocketPath(_))
         ));
         assert_eq!(fs::read(existing).unwrap(), b"keep me");
+    }
+
+    #[test]
+    fn should_refuse_socket_paths_with_symlinked_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let directory = PrivateDir::new();
+        let external = directory.0.join("external");
+        let private_child = external.join("private-child");
+        fs::create_dir(&external).unwrap();
+        fs::set_permissions(&external, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(&private_child).unwrap();
+        fs::set_permissions(&private_child, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let linked_parent = directory.0.join("linked-parent");
+        symlink(&external, &linked_parent).unwrap();
+        let socket_path = linked_parent.join("private-child/daemon.sock");
+
+        assert!(matches!(
+            IpcServer::bind(&socket_path),
+            Err(IpcError::UnsafeSocketPath(_))
+        ));
+        assert!(
+            fs::symlink_metadata(&linked_parent)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!private_child.join("daemon.sock").exists());
     }
 
     #[test]
