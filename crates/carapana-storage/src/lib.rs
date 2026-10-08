@@ -14,7 +14,8 @@ pub use session_store::{
 };
 pub use user_database::{UserDatabaseError, open_user_database, user_database_path};
 pub use workspace::{
-    WorkspaceFileMetadata, WorkspaceFileMetadataError, WorkspaceMetadata, WorkspaceMetadataError,
+    MAX_WORKSPACE_FILE_HASH_BYTES, WorkspaceFileMetadata, WorkspaceFileMetadataError,
+    WorkspaceMetadata, WorkspaceMetadataError,
 };
 
 /// Per-user index and lifecycle facade over the user's single SQLite database.
@@ -71,6 +72,16 @@ impl SessionRegistry {
     ) -> Result<PersistedSession, SessionStoreError> {
         self.database
             .observe_workspace_file(session_id, relative_path, now_ms)
+    }
+
+    pub fn observe_workspace_file_with_hash(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database
+            .observe_workspace_file_with_hash(session_id, relative_path, now_ms)
     }
 
     pub fn validate_workspace_files(&self, session_id: &str) -> Result<(), SessionStoreError> {
@@ -133,7 +144,7 @@ impl SessionRegistry {
     }
 }
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE sessions (
@@ -236,6 +247,15 @@ impl Database {
         now_ms: i64,
     ) -> Result<PersistedSession, SessionStoreError> {
         session_store::observe_workspace_file(self, session_id, relative_path, now_ms)
+    }
+
+    pub fn observe_workspace_file_with_hash(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::observe_workspace_file_with_hash(self, session_id, relative_path, now_ms)
     }
 
     pub fn validate_workspace_files(&self, session_id: &str) -> Result<(), SessionStoreError> {
@@ -359,6 +379,9 @@ impl Database {
             2 => {
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
+            3 => {
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
             SCHEMA_VERSION => {}
             other => return Err(MigrationError::UnsupportedSchemaVersion(other)),
         }
@@ -476,6 +499,29 @@ mod tests {
         );
         let rebuilt = database.rebuild_snapshot("legacy-session").unwrap();
         assert!(rebuilt.workspace.is_none());
+    }
+
+    #[test]
+    fn should_migrate_version_three_sessions_before_hash_metadata_is_read() {
+        let path = TestDatabase::new();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database.create_session("legacy-session", 10).unwrap();
+            database
+                .connection
+                .pragma_update(None, "user_version", 3)
+                .unwrap();
+        }
+
+        let database = Database::open(&path.0).unwrap();
+        assert_eq!(database.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            database
+                .load_session("legacy-session")
+                .unwrap()
+                .event_sequence,
+            1
+        );
     }
 
     #[test]
