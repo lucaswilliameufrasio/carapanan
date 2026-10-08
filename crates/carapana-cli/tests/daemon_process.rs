@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use carapana_protocol::{Autonomy, QueuedMessage, Selection, WorkMode};
-use carapana_storage::SessionRegistry;
+use carapana_storage::{SessionRegistry, StoredSessionStatus};
 use std::{
     fs,
     io::Read,
@@ -294,4 +294,66 @@ fn should_recover_only_interrupted_work_before_serving_real_cli_requests() {
     let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
     assert!(status.success(), "daemon did not stop cleanly: {stderr}");
     assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_refuse_public_database_directory_without_recovering_or_serving() {
+    let directory = PrivateDir::new();
+    seed_interrupted_and_paused_sessions(&directory);
+
+    let data_directory = directory.0.join("xdg/carapana");
+    let database_path = data_directory.join("sessions.sqlite3");
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let before = registry.get("interrupted").unwrap();
+    assert_eq!(before.status, StoredSessionStatus::Active);
+    let before_sequence = before.event_sequence;
+    drop(registry);
+
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o755)).unwrap();
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = daemon.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            panic!("daemon did not reject the public database directory");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    daemon
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+
+    assert!(
+        !status.success(),
+        "daemon accepted a public database directory"
+    );
+    assert!(
+        stderr.contains("non-private or unexpected database path"),
+        "daemon did not report the unsafe path: {stderr}"
+    );
+    assert!(
+        !socket.exists(),
+        "daemon created a socket for unsafe storage"
+    );
+    assert_eq!(
+        fs::metadata(&data_directory).unwrap().permissions().mode() & 0o777,
+        0o755,
+        "daemon should not silently change operator-owned permissions"
+    );
+
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let after = registry.get("interrupted").unwrap();
+    assert_eq!(after.status, StoredSessionStatus::Active);
+    assert_eq!(after.active_message, before.active_message);
+    assert_eq!(after.queued_messages, before.queued_messages);
+    assert_eq!(after.event_sequence, before_sequence);
+    assert!(!after.recovery_needs_revalidation);
+    assert!(!after.active_work_uncertain);
 }
