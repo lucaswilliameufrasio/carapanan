@@ -4,7 +4,10 @@ use carapana_protocol::{Outcome, QueuedMessage};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-use crate::{Database, WorkspaceMetadata, WorkspaceMetadataError};
+use crate::{
+    Database, WorkspaceFileMetadata, WorkspaceFileMetadataError, WorkspaceMetadata,
+    WorkspaceMetadataError,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,6 +41,8 @@ pub struct PersistedSession {
     pub active_work_uncertain: bool,
     #[serde(default)]
     pub workspace: Option<WorkspaceMetadata>,
+    #[serde(default)]
+    pub workspace_files: Vec<WorkspaceFileMetadata>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub event_sequence: i64,
@@ -50,6 +55,9 @@ pub enum StoredSessionEvent {
         session_id: String,
         #[serde(default)]
         workspace: Option<WorkspaceMetadata>,
+    },
+    WorkspaceFileObserved {
+        observation: WorkspaceFileMetadata,
     },
     MessageQueued {
         message: QueuedMessage,
@@ -79,6 +87,7 @@ impl StoredSessionEvent {
     fn event_type(&self) -> &'static str {
         match self {
             Self::Created { .. } => "created",
+            Self::WorkspaceFileObserved { .. } => "workspace_file_observed",
             Self::MessageQueued { .. } => "message_queued",
             Self::MessageStarted { .. } => "message_started",
             Self::Paused => "paused",
@@ -104,6 +113,8 @@ pub enum SessionStoreError {
     RevalidationRequired,
     NoActiveMessage,
     WorkspaceMetadata(WorkspaceMetadataError),
+    WorkspaceFileMetadata(WorkspaceFileMetadataError),
+    WorkspaceNotConfigured,
 }
 
 impl fmt::Display for SessionStoreError {
@@ -137,6 +148,12 @@ impl fmt::Display for SessionStoreError {
             Self::WorkspaceMetadata(error) => {
                 write!(formatter, "invalid session workspace: {error}")
             }
+            Self::WorkspaceFileMetadata(error) => {
+                write!(formatter, "invalid session workspace file: {error}")
+            }
+            Self::WorkspaceNotConfigured => {
+                formatter.write_str("session has no configured workspace")
+            }
         }
     }
 }
@@ -147,6 +164,7 @@ impl Error for SessionStoreError {
             Self::Sqlite(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::WorkspaceMetadata(error) => Some(error),
+            Self::WorkspaceFileMetadata(error) => Some(error),
             _ => None,
         }
     }
@@ -213,6 +231,7 @@ fn create_session_with_optional_workspace(
         recovery_needs_revalidation: false,
         active_work_uncertain: false,
         workspace: workspace.clone(),
+        workspace_files: Vec::new(),
         created_at_ms: now_ms,
         updated_at_ms: now_ms,
         event_sequence: 0,
@@ -276,6 +295,56 @@ pub(super) fn enqueue_message(
     write_snapshot(&transaction, &session)?;
     transaction.commit()?;
     Ok(session)
+}
+
+pub(super) fn observe_workspace_file(
+    database: &mut Database,
+    session_id: &str,
+    relative_path: impl AsRef<std::path::Path>,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    validate_session_id(session_id)?;
+    validate_timestamp(now_ms)?;
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut session = load_session_tx(&transaction, session_id)?;
+    validate_transition_time(&session, now_ms)?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
+    let observation = workspace
+        .observe_file(relative_path)
+        .map_err(SessionStoreError::WorkspaceFileMetadata)?;
+    apply_and_persist(
+        &transaction,
+        &mut session,
+        StoredSessionEvent::WorkspaceFileObserved { observation },
+        now_ms,
+    )?;
+    transaction.commit()?;
+    Ok(session)
+}
+
+pub(super) fn validate_workspace_files(
+    database: &Database,
+    session_id: &str,
+) -> Result<(), SessionStoreError> {
+    let session = database.load_session(session_id)?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
+    workspace
+        .verify_current()
+        .map_err(SessionStoreError::WorkspaceMetadata)?;
+    for observation in &session.workspace_files {
+        observation
+            .verify_current(workspace)
+            .map_err(SessionStoreError::WorkspaceFileMetadata)?;
+    }
+    Ok(())
 }
 
 pub(super) fn load_session(
@@ -720,6 +789,7 @@ fn apply_event(
                 recovery_needs_revalidation: false,
                 active_work_uncertain: false,
                 workspace,
+                workspace_files: Vec::new(),
                 created_at_ms: occurred_at_ms,
                 updated_at_ms: occurred_at_ms,
                 event_sequence: sequence,
@@ -774,6 +844,19 @@ fn apply_to_session(
         return Err(SessionStoreError::InvalidEventHistory);
     }
     match event {
+        StoredSessionEvent::WorkspaceFileObserved { observation } => {
+            if session.workspace.is_none() {
+                return Err(SessionStoreError::WorkspaceNotConfigured);
+            }
+            observation
+                .validate_path()
+                .map_err(SessionStoreError::WorkspaceFileMetadata)?;
+            let path = observation.relative_path();
+            session
+                .workspace_files
+                .retain(|current| current.relative_path() != path);
+            session.workspace_files.push(observation.clone());
+        }
         StoredSessionEvent::MessageQueued { message }
             if !message.id.trim().is_empty()
                 && session
@@ -881,7 +964,10 @@ fn validate_timestamp(timestamp_ms: i64) -> Result<(), SessionStoreError> {
 #[cfg(test)]
 mod tests {
     use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus};
-    use crate::{Database, SessionRegistry, WorkspaceMetadata, WorkspaceMetadataError};
+    use crate::{
+        Database, SessionRegistry, WorkspaceFileMetadataError, WorkspaceMetadata,
+        WorkspaceMetadataError,
+    };
     use carapana_protocol::{Autonomy, Outcome, QueuedMessage, Selection, WorkMode};
     use rusqlite::params;
     use std::{
@@ -1052,6 +1138,73 @@ mod tests {
         assert_eq!(loaded.workspace, Some(metadata.clone()));
         let rebuilt = database.rebuild_snapshot("session-1").unwrap();
         assert_eq!(rebuilt.workspace, Some(metadata));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_persist_and_revalidate_explicit_workspace_file_observations_after_reopen() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        let file = workspace.0.join("src/main.rs");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"stat-only observation").unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database
+                .create_session_with_workspace("session-1", metadata, 10)
+                .unwrap();
+            let session = database
+                .observe_workspace_file("session-1", "src/main.rs", 11)
+                .unwrap();
+            assert_eq!(session.workspace_files.len(), 1);
+            assert_eq!(
+                session.workspace_files[0].relative_path(),
+                PathBuf::from("src/main.rs")
+            );
+        }
+
+        let mut database = Database::open(&path.0).unwrap();
+        database.validate_workspace_files("session-1").unwrap();
+        let loaded = database.load_session("session-1").unwrap();
+        assert_eq!(loaded.workspace_files.len(), 1);
+        assert!(matches!(
+            database.session_events("session-1").unwrap().last(),
+            Some(StoredSessionEvent::WorkspaceFileObserved { .. })
+        ));
+        let rebuilt = database.rebuild_snapshot("session-1").unwrap();
+        assert_eq!(rebuilt.workspace_files, loaded.workspace_files);
+
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            database.validate_workspace_files("session-1"),
+            Err(SessionStoreError::WorkspaceFileMetadata(
+                WorkspaceFileMetadataError::Changed(_)
+            ))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_record_file_observations_for_sessions_without_a_workspace() {
+        let path = TestDatabase::new();
+        let mut database = Database::open(&path.0).unwrap();
+        database.create_session("session-1", 10).unwrap();
+
+        assert!(matches!(
+            database.observe_workspace_file("session-1", "src/main.rs", 11),
+            Err(SessionStoreError::WorkspaceNotConfigured)
+        ));
+        assert!(matches!(
+            database.validate_workspace_files("session-1"),
+            Err(SessionStoreError::WorkspaceNotConfigured)
+        ));
+        assert_eq!(
+            database.load_session("session-1").unwrap().event_sequence,
+            1
+        );
     }
 
     #[cfg(unix)]

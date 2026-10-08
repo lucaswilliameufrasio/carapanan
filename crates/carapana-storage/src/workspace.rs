@@ -190,6 +190,10 @@ impl WorkspaceMetadata {
 }
 
 impl WorkspaceFileMetadata {
+    pub(crate) fn validate_path(&self) -> Result<(), WorkspaceFileMetadataError> {
+        validate_relative_path(&self.relative_path())
+    }
+
     pub fn capture(
         workspace: &WorkspaceMetadata,
         relative_path: impl AsRef<Path>,

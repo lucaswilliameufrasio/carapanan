@@ -63,6 +63,20 @@ impl SessionRegistry {
         self.database.enqueue_message(session_id, message, now_ms)
     }
 
+    pub fn observe_workspace_file(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database
+            .observe_workspace_file(session_id, relative_path, now_ms)
+    }
+
+    pub fn validate_workspace_files(&self, session_id: &str) -> Result<(), SessionStoreError> {
+        self.database.validate_workspace_files(session_id)
+    }
+
     pub fn get(&self, session_id: &str) -> Result<PersistedSession, SessionStoreError> {
         self.database.load_session(session_id)
     }
@@ -119,7 +133,7 @@ impl SessionRegistry {
     }
 }
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE sessions (
@@ -215,6 +229,19 @@ impl Database {
         session_store::enqueue_message(self, session_id, message, now_ms)
     }
 
+    pub fn observe_workspace_file(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::observe_workspace_file(self, session_id, relative_path, now_ms)
+    }
+
+    pub fn validate_workspace_files(&self, session_id: &str) -> Result<(), SessionStoreError> {
+        session_store::validate_workspace_files(self, session_id)
+    }
+
     /// Load from the snapshot, falling back to replaying the event log if needed.
     pub fn load_session(&self, session_id: &str) -> Result<PersistedSession, SessionStoreError> {
         session_store::load_session(self, session_id)
@@ -297,7 +324,7 @@ impl Database {
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version != 0 && version != 1 && version != SCHEMA_VERSION {
+        if version != 0 && !(1..=SCHEMA_VERSION).contains(&version) {
             return Err(MigrationError::UnsupportedSchemaVersion(version));
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -327,6 +354,9 @@ impl Database {
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             1 => {
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            2 => {
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             SCHEMA_VERSION => {}
