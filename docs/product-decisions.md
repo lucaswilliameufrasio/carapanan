@@ -138,6 +138,11 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
   `.ssh`/`.aws`, nomes contendo `secret`/`credential` (sem diferenciar maiúsculas) e extensões
   `.pem`/`.key`. Não recursar, seguir symlinks, persistir conteúdo ou enviar bytes para IPC,
   logs, modelo ou memória; persistir apenas o digest. Fingerprint não autoriza retomada sozinho.
+- Revisão read-only revalida somente os paths explicitamente registrados e reporta cada um
+  independentemente (`unchanged`, `changed`, `missing`, `unreadable`, `unsafe`, `too large`,
+  `unavailable`). Falha da raiz é global/fail-closed. A revisão não altera sessão, fila ou
+  workspace e não limpa a exigência de revalidação; detalhes do relatório não são enviados pelo
+  IPC nesta fatia.
 - Conflitos com alterações do operador exigem confirmação, inclusive em Yolo.
 - `Parar` interrompe o agente, cancela comandos e encerra processos temporários iniciados
   para o trabalho, com supervisão e encerramento seguro (dev server, API local, serviço de teste).

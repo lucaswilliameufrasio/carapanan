@@ -36,6 +36,28 @@ pub struct WorkspaceFileMetadata {
     content_sha256: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceFileValidationStatus {
+    Unchanged,
+    Changed,
+    Missing,
+    Unreadable,
+    Unsafe,
+    TooLarge,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceFileValidation {
+    pub relative_path: PathBuf,
+    pub status: WorkspaceFileValidationStatus,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceValidationReport {
+    pub files: Vec<WorkspaceFileValidation>,
+}
+
 #[derive(Debug)]
 pub enum WorkspaceMetadataError {
     UnsupportedPlatform,
