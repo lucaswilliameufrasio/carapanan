@@ -279,6 +279,17 @@ fn should_recover_only_interrupted_work_before_serving_real_cli_requests() {
     );
     assert_eq!(detail["events"]["has_more"], false);
 
+    let invalid_event_query = run_cli(
+        &directory,
+        &["show", "interrupted", "--events-after", "999", "--json"],
+    );
+    assert!(!invalid_event_query.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_event_query.stderr).contains("InvalidEventCursor"),
+        "CLI did not surface the invalid cursor error: {}",
+        String::from_utf8_lossy(&invalid_event_query.stderr)
+    );
+
     let sessions_after_show = run_cli(&directory, &["sessions", "--json"]);
     assert!(sessions_after_show.status.success());
     let sessions_after_show: serde_json::Value =
@@ -290,6 +301,25 @@ fn should_recover_only_interrupted_work_before_serving_real_cli_requests() {
         .find(|session| session["session_id"] == "interrupted")
         .unwrap();
     assert_eq!(recovered_after_show["attached_clients"], 0);
+
+    let valid_event_query = run_cli(
+        &directory,
+        &["show", "interrupted", "--events-after", "0", "--json"],
+    );
+    assert!(valid_event_query.status.success());
+    let valid_event_query: serde_json::Value =
+        serde_json::from_slice(&valid_event_query.stdout).unwrap();
+    assert_eq!(
+        valid_event_query["snapshot"]["event_sequence"],
+        snapshot["event_sequence"]
+    );
+    assert_eq!(
+        valid_event_query["events"]["events"]
+            .as_array()
+            .unwrap()
+            .len(),
+        events.len()
+    );
 
     let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
     assert!(status.success(), "daemon did not stop cleanly: {stderr}");
