@@ -150,11 +150,10 @@ impl DaemonRuntime {
                 .session_events_after(session_id, after_sequence, EVENT_PAGE_SIZE)?;
         let events = records
             .into_iter()
-            .map(|record| SessionEventRecord {
-                sequence: record.sequence,
-                occurred_at_ms: record.occurred_at_ms,
-                event: match record.event {
+            .filter_map(|record| {
+                let event = match record.event {
                     StoredSessionEvent::Created { .. } => DaemonSessionEvent::Created,
+                    StoredSessionEvent::WorkspaceFileObserved { .. } => return None,
                     StoredSessionEvent::MessageQueued { message } => {
                         DaemonSessionEvent::MessageQueued { message }
                     }
@@ -172,7 +171,12 @@ impl DaemonRuntime {
                     StoredSessionEvent::RecoveredPaused { active_message_id } => {
                         DaemonSessionEvent::RecoveredPaused { active_message_id }
                     }
-                },
+                };
+                Some(SessionEventRecord {
+                    sequence: record.sequence,
+                    occurred_at_ms: record.occurred_at_ms,
+                    event,
+                })
             })
             .collect();
         Ok(SessionEventBatch {
@@ -387,7 +391,7 @@ mod tests {
         Autonomy, DaemonRequest, DaemonResponse, Envelope, QueuedMessage, Selection, SessionStatus,
         WorkMode,
     };
-    use carapana_storage::{SessionRegistry, StoredSessionStatus};
+    use carapana_storage::{SessionRegistry, StoredSessionStatus, WorkspaceMetadata};
     use std::{
         fs,
         path::PathBuf,
@@ -505,6 +509,38 @@ mod tests {
         assert!(sessions[0].has_active_message);
         assert!(sessions[0].recovery_needs_revalidation);
         assert!(sessions[0].active_work_uncertain);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_expose_workspace_file_metadata_in_ipc_event_pages() {
+        let database = TestDatabase::new();
+        let directory = TestDirectory::new();
+        let workspace_path = directory.0.join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        fs::write(workspace_path.join("private-name.txt"), b"private contents").unwrap();
+        {
+            let mut registry = SessionRegistry::open(&database.0).unwrap();
+            registry
+                .create_with_workspace(
+                    "session-1",
+                    WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                    10,
+                )
+                .unwrap();
+            registry
+                .observe_workspace_file("session-1", "private-name.txt", 11)
+                .unwrap();
+        }
+
+        let mut runtime = DaemonRuntime::open(&database.0, 20).unwrap();
+        let batch = runtime.events_after("session-1", 0).unwrap();
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.events[0].sequence, 1);
+        assert_eq!(batch.next_sequence, 2);
+        let serialized = serde_json::to_string(&batch).unwrap();
+        assert!(!serialized.contains("private-name.txt"));
+        assert!(!serialized.contains("private contents"));
     }
 
     #[test]
