@@ -482,6 +482,68 @@ fn should_refuse_database_symlink_without_recovering_or_serving() {
 }
 
 #[test]
+fn should_refuse_a_symlinked_database_path_ancestor_without_mutating_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let directory = PrivateDir::new();
+    let home = directory.0.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let external = directory.0.join("external");
+    fs::create_dir(&external).unwrap();
+    fs::set_permissions(&external, fs::Permissions::from_mode(0o700)).unwrap();
+
+    #[cfg(target_os = "linux")]
+    symlink(&external, directory.0.join("xdg")).unwrap();
+    #[cfg(target_os = "macos")]
+    symlink(&external, home.join("Library")).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = daemon.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            panic!("daemon did not reject the symlinked database path ancestor");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    daemon
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+
+    assert!(
+        !status.success(),
+        "daemon accepted a symlinked path ancestor"
+    );
+    assert!(stderr.contains("refusing to use a non-private or unexpected database path"));
+    assert!(
+        !socket.exists(),
+        "daemon created a socket through the symlink"
+    );
+    assert_eq!(fs::read_dir(&external).unwrap().count(), 0);
+    #[cfg(target_os = "linux")]
+    assert!(
+        fs::symlink_metadata(directory.0.join("xdg"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    #[cfg(target_os = "macos")]
+    assert!(
+        fs::symlink_metadata(home.join("Library"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
 fn should_refuse_a_newer_database_schema_without_rewriting_or_serving() {
     let directory = PrivateDir::new();
     let data_directory = user_data_directory(&directory);
