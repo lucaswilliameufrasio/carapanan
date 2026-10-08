@@ -131,8 +131,13 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
 - Retomada revalida permissões e arquivos. Após espera longa, invalidar leituras antigas,
   reler arquivos afetados, conferir diff e adaptar o plano.
 - Verificação metadata-only (identidade, tipo, permissões, tamanho e timestamps) não prova
-  que o conteúdo permaneceu igual e nunca libera retomada sozinha. Estratégia de leitura/hash,
-  limite de tamanho e tratamento de arquivos secretos precisam de decisão própria.
+  que o conteúdo permaneceu igual e nunca libera retomada sozinha. O fingerprint limitado abaixo
+  é a única leitura/hash aprovada nesta fatia; expansão exige decisão própria.
+- Fingerprint de conteúdo aprovado somente para paths relativos explicitamente selecionados:
+  SHA-256 local de arquivos regulares até 1 MiB. Negar nomes iniciados por `.env`, componentes
+  `.ssh`/`.aws`, nomes contendo `secret`/`credential` (sem diferenciar maiúsculas) e extensões
+  `.pem`/`.key`. Não recursar, seguir symlinks, persistir conteúdo ou enviar bytes para IPC,
+  logs, modelo ou memória; persistir apenas o digest. Fingerprint não autoriza retomada sozinho.
 - Conflitos com alterações do operador exigem confirmação, inclusive em Yolo.
 - `Parar` interrompe o agente, cancela comandos e encerra processos temporários iniciados
   para o trabalho, com supervisão e encerramento seguro (dev server, API local, serviço de teste).

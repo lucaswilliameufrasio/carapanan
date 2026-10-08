@@ -529,7 +529,7 @@ mod tests {
                 )
                 .unwrap();
             registry
-                .observe_workspace_file("session-1", "private-name.txt", 11)
+                .observe_workspace_file_with_hash("session-1", "private-name.txt", 11)
                 .unwrap();
         }
 
@@ -541,6 +541,7 @@ mod tests {
         let serialized = serde_json::to_string(&batch).unwrap();
         assert!(!serialized.contains("private-name.txt"));
         assert!(!serialized.contains("private contents"));
+        assert!(!serialized.contains("content_sha256"));
     }
 
     #[test]

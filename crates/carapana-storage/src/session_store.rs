@@ -303,6 +303,25 @@ pub(super) fn observe_workspace_file(
     relative_path: impl AsRef<std::path::Path>,
     now_ms: i64,
 ) -> Result<PersistedSession, SessionStoreError> {
+    record_workspace_file(database, session_id, relative_path, now_ms, false)
+}
+
+pub(super) fn observe_workspace_file_with_hash(
+    database: &mut Database,
+    session_id: &str,
+    relative_path: impl AsRef<std::path::Path>,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    record_workspace_file(database, session_id, relative_path, now_ms, true)
+}
+
+fn record_workspace_file(
+    database: &mut Database,
+    session_id: &str,
+    relative_path: impl AsRef<std::path::Path>,
+    now_ms: i64,
+    with_hash: bool,
+) -> Result<PersistedSession, SessionStoreError> {
     validate_session_id(session_id)?;
     validate_timestamp(now_ms)?;
     let transaction = database
@@ -314,9 +333,12 @@ pub(super) fn observe_workspace_file(
         .workspace
         .as_ref()
         .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
-    let observation = workspace
-        .observe_file(relative_path)
-        .map_err(SessionStoreError::WorkspaceFileMetadata)?;
+    let observation = if with_hash {
+        workspace.observe_file_with_hash(relative_path)
+    } else {
+        workspace.observe_file(relative_path)
+    }
+    .map_err(SessionStoreError::WorkspaceFileMetadata)?;
     apply_and_persist(
         &transaction,
         &mut session,
@@ -1205,6 +1227,39 @@ mod tests {
             database.load_session("session-1").unwrap().event_sequence,
             1
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_persist_only_the_hash_for_an_explicitly_hashed_workspace_file() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(workspace.0.join("source.txt"), b"local bytes stay local").unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database
+                .create_session_with_workspace("session-1", metadata, 10)
+                .unwrap();
+            let session = database
+                .observe_workspace_file_with_hash("session-1", "source.txt", 11)
+                .unwrap();
+            assert_eq!(
+                session.workspace_files[0].content_sha256(),
+                Some("bc7149276653552cf844e69f831e43200135b29dd7f9401c6d0910b65665b08c")
+            );
+        }
+
+        let database = Database::open(&path.0).unwrap();
+        database.validate_workspace_files("session-1").unwrap();
+        let session = database.load_session("session-1").unwrap();
+        assert_eq!(session.workspace_files.len(), 1);
+        assert_eq!(
+            session.workspace_files[0].content_sha256(),
+            Some("bc7149276653552cf844e69f831e43200135b29dd7f9401c6d0910b65665b08c")
+        );
+        let serialized = serde_json::to_string(&session.workspace_files[0]).unwrap();
+        assert!(!serialized.contains("local bytes stay local"));
     }
 
     #[cfg(unix)]
