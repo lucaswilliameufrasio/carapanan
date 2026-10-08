@@ -13,7 +13,9 @@ pub use session_store::{
     StoredSessionStatus,
 };
 pub use user_database::{UserDatabaseError, open_user_database, user_database_path};
-pub use workspace::{WorkspaceMetadata, WorkspaceMetadataError};
+pub use workspace::{
+    WorkspaceFileMetadata, WorkspaceFileMetadataError, WorkspaceMetadata, WorkspaceMetadataError,
+};
 
 /// Per-user index and lifecycle facade over the user's single SQLite database.
 pub struct SessionRegistry {

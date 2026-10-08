@@ -130,6 +130,9 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
 - Não repetir automaticamente push/deploy/operação com resultado incerto; verificar antes.
 - Retomada revalida permissões e arquivos. Após espera longa, invalidar leituras antigas,
   reler arquivos afetados, conferir diff e adaptar o plano.
+- Verificação metadata-only (identidade, tipo, permissões, tamanho e timestamps) não prova
+  que o conteúdo permaneceu igual e nunca libera retomada sozinha. Estratégia de leitura/hash,
+  limite de tamanho e tratamento de arquivos secretos precisam de decisão própria.
 - Conflitos com alterações do operador exigem confirmação, inclusive em Yolo.
 - `Parar` interrompe o agente, cancela comandos e encerra processos temporários iniciados
   para o trabalho, com supervisão e encerramento seguro (dev server, API local, serviço de teste).
