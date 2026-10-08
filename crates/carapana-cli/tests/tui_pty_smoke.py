@@ -25,8 +25,11 @@ with tempfile.TemporaryDirectory(prefix="carapana-tui-pty-") as temporary:
     data_home = root / "xdg"
     home.mkdir()
     data_home.mkdir()
-    carapana_data = data_home / "carapana"
-    carapana_data.mkdir(mode=0o700)
+    if sys.platform == "darwin":
+        carapana_data = home / "Library" / "Application Support" / "Carapana"
+    else:
+        carapana_data = data_home / "carapana"
+    carapana_data.mkdir(mode=0o700, parents=True)
     shutil.copy2(database_path, carapana_data / "sessions.sqlite3")
     environment = os.environ.copy()
     environment.update(
@@ -43,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="carapana-tui-pty-") as temporary:
     )
     tui = None
     master = slave = None
-    socket_path = data_home / "carapana" / "daemon.sock"
+    socket_path = carapana_data / "daemon.sock"
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not socket_path.exists():
