@@ -187,6 +187,12 @@ Pasta-limite é o diretório de abertura, não a raiz Git. Abrir em `repo/backen
 libera ações destrutivas automaticamente em `repo/frontend`. Mostrar o limite;
 ampliá-lo exige escolha explícita do operador.
 
+Para recovery, persistir a identidade da pasta-limite como caminho absoluto e o par
+device/inode observado no filesystem. Não canonicalizar nem seguir symlinks ao capturar
+ou revalidar essa identidade. Se o caminho deixar de existir, contiver symlink ou apontar
+para outra identidade, manter a sessão pausada. Esse registro é metadado, não autorização;
+não habilita retomada nem amplia permissões.
+
 ### Worktrees e alterações anteriores
 
 - Worktree é escolha do operador, não obrigação.

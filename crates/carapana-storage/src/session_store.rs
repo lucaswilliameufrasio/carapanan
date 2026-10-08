@@ -4,7 +4,7 @@ use carapana_protocol::{Outcome, QueuedMessage};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-use crate::Database;
+use crate::{Database, WorkspaceMetadata, WorkspaceMetadataError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +36,8 @@ pub struct PersistedSession {
     pub recovery_needs_revalidation: bool,
     #[serde(default)]
     pub active_work_uncertain: bool,
+    #[serde(default)]
+    pub workspace: Option<WorkspaceMetadata>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub event_sequence: i64,
@@ -46,6 +48,8 @@ pub struct PersistedSession {
 pub enum StoredSessionEvent {
     Created {
         session_id: String,
+        #[serde(default)]
+        workspace: Option<WorkspaceMetadata>,
     },
     MessageQueued {
         message: QueuedMessage,
@@ -99,6 +103,7 @@ pub enum SessionStoreError {
     InvalidTransition,
     RevalidationRequired,
     NoActiveMessage,
+    WorkspaceMetadata(WorkspaceMetadataError),
 }
 
 impl fmt::Display for SessionStoreError {
@@ -129,6 +134,9 @@ impl fmt::Display for SessionStoreError {
                 formatter.write_str("session state must be revalidated before advancing")
             }
             Self::NoActiveMessage => formatter.write_str("session has no active message"),
+            Self::WorkspaceMetadata(error) => {
+                write!(formatter, "invalid session workspace: {error}")
+            }
         }
     }
 }
@@ -138,6 +146,7 @@ impl Error for SessionStoreError {
         match self {
             Self::Sqlite(error) => Some(error),
             Self::Json(error) => Some(error),
+            Self::WorkspaceMetadata(error) => Some(error),
             _ => None,
         }
     }
@@ -158,6 +167,27 @@ impl From<serde_json::Error> for SessionStoreError {
 pub(super) fn create_session(
     database: &mut Database,
     session_id: &str,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    create_session_with_optional_workspace(database, session_id, None, now_ms)
+}
+
+pub(super) fn create_session_with_workspace(
+    database: &mut Database,
+    session_id: &str,
+    workspace: WorkspaceMetadata,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    workspace
+        .verify_current()
+        .map_err(SessionStoreError::WorkspaceMetadata)?;
+    create_session_with_optional_workspace(database, session_id, Some(workspace), now_ms)
+}
+
+fn create_session_with_optional_workspace(
+    database: &mut Database,
+    session_id: &str,
+    workspace: Option<WorkspaceMetadata>,
     now_ms: i64,
 ) -> Result<PersistedSession, SessionStoreError> {
     validate_session_id(session_id)?;
@@ -182,6 +212,7 @@ pub(super) fn create_session(
         active_message: None,
         recovery_needs_revalidation: false,
         active_work_uncertain: false,
+        workspace: workspace.clone(),
         created_at_ms: now_ms,
         updated_at_ms: now_ms,
         event_sequence: 0,
@@ -195,6 +226,7 @@ pub(super) fn create_session(
         &mut session,
         StoredSessionEvent::Created {
             session_id: session_id.to_owned(),
+            workspace,
         },
         now_ms,
     )?;
@@ -677,6 +709,7 @@ fn apply_event(
             None,
             StoredSessionEvent::Created {
                 session_id: created_id,
+                workspace,
             },
         ) if created_id == session_id && sequence == 1 => {
             *session = Some(PersistedSession {
@@ -686,6 +719,7 @@ fn apply_event(
                 active_message: None,
                 recovery_needs_revalidation: false,
                 active_work_uncertain: false,
+                workspace,
                 created_at_ms: occurred_at_ms,
                 updated_at_ms: occurred_at_ms,
                 event_sequence: sequence,
@@ -847,7 +881,7 @@ fn validate_timestamp(timestamp_ms: i64) -> Result<(), SessionStoreError> {
 #[cfg(test)]
 mod tests {
     use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus};
-    use crate::{Database, SessionRegistry};
+    use crate::{Database, SessionRegistry, WorkspaceMetadata, WorkspaceMetadataError};
     use carapana_protocol::{Autonomy, Outcome, QueuedMessage, Selection, WorkMode};
     use rusqlite::params;
     use std::{
@@ -864,6 +898,8 @@ mod tests {
 
     struct TestDatabase(PathBuf);
 
+    struct TestWorkspace(PathBuf);
+
     impl TestDatabase {
         fn new() -> Self {
             let nonce = SystemTime::now()
@@ -875,6 +911,23 @@ mod tests {
 
         fn with_timestamp(nonce: u128) -> Self {
             Self(test_database_path(nonce))
+        }
+    }
+
+    impl TestWorkspace {
+        fn new() -> Self {
+            static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(0);
+            let nonce = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let id = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "carapana-session-workspace-{}-{nonce}-{id}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
         }
     }
 
@@ -902,6 +955,12 @@ mod tests {
             let _ = fs::remove_file(&self.0);
             let _ = fs::remove_file(self.0.with_extension("sqlite3-wal"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3-shm"));
+        }
+    }
+
+    impl Drop for TestWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
         }
     }
 
@@ -954,7 +1013,8 @@ mod tests {
             database.session_events("session-1").unwrap(),
             vec![
                 StoredSessionEvent::Created {
-                    session_id: "session-1".into()
+                    session_id: "session-1".into(),
+                    workspace: None,
                 },
                 StoredSessionEvent::MessageQueued {
                     message: message("m1")
@@ -964,6 +1024,55 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_persist_workspace_identity_in_event_history_and_rebuilt_snapshot() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            let created = database
+                .create_session_with_workspace("session-1", metadata.clone(), 10)
+                .unwrap();
+            assert_eq!(created.workspace, Some(metadata.clone()));
+            assert!(matches!(
+                database.session_events("session-1").unwrap().first(),
+                Some(StoredSessionEvent::Created {
+                    workspace: Some(saved),
+                    ..
+                }) if saved == &metadata
+            ));
+        }
+
+        let mut database = Database::open(&path.0).unwrap();
+        let loaded = database.load_session("session-1").unwrap();
+        assert_eq!(loaded.workspace, Some(metadata.clone()));
+        let rebuilt = database.rebuild_snapshot("session-1").unwrap();
+        assert_eq!(rebuilt.workspace, Some(metadata));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_refuse_to_create_a_session_from_stale_workspace_identity() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        let moved_workspace = workspace.0.with_extension("moved");
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        fs::rename(&workspace.0, &moved_workspace).unwrap();
+        fs::create_dir(&workspace.0).unwrap();
+
+        let mut database = Database::open(&path.0).unwrap();
+        assert!(matches!(
+            database.create_session_with_workspace("session-1", metadata, 10),
+            Err(SessionStoreError::WorkspaceMetadata(
+                WorkspaceMetadataError::IdentityChanged(_)
+            ))
+        ));
+        assert!(database.list_sessions().unwrap().is_empty());
+        fs::remove_dir_all(moved_workspace).unwrap();
     }
 
     #[test]
@@ -1017,7 +1126,8 @@ mod tests {
         assert_eq!(
             database.session_events("session-1").unwrap(),
             vec![StoredSessionEvent::Created {
-                session_id: "session-1".into()
+                session_id: "session-1".into(),
+                workspace: None,
             }]
         );
     }
