@@ -464,3 +464,74 @@ fn should_refuse_database_symlink_without_recovering_or_serving() {
     assert!(!after.recovery_needs_revalidation);
     assert!(!after.active_work_uncertain);
 }
+
+#[test]
+fn should_refuse_a_newer_database_schema_without_rewriting_or_serving() {
+    let directory = PrivateDir::new();
+    let data_directory = directory.0.join("xdg/carapana");
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+
+    let seed = Command::new("python3")
+        .args([
+            "-c",
+            "import sqlite3, sys; connection = sqlite3.connect(sys.argv[1]); connection.execute('PRAGMA user_version = 99'); connection.close()",
+        ])
+        .arg(&database_path)
+        .status()
+        .unwrap();
+    assert!(
+        seed.success(),
+        "could not create the future-schema SQLite fixture"
+    );
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = daemon.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            panic!("daemon did not reject the newer database schema");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    daemon
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+
+    assert!(!status.success(), "daemon accepted a newer database schema");
+    assert!(
+        stderr.contains("unsupported SQLite schema version: 99"),
+        "daemon did not report the unsupported schema: {stderr}"
+    );
+    assert!(
+        !socket.exists(),
+        "daemon created a socket for an unsupported database schema"
+    );
+    assert_eq!(
+        fs::metadata(&database_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let inspect = Command::new("python3")
+        .args([
+            "-c",
+            "import sqlite3, sys; connection = sqlite3.connect(sys.argv[1]); print(connection.execute('PRAGMA user_version').fetchone()[0]); print(connection.execute('PRAGMA journal_mode').fetchone()[0]); connection.close()",
+        ])
+        .arg(&database_path)
+        .output()
+        .unwrap();
+    assert!(inspect.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&inspect.stdout).trim(),
+        "99\ndelete"
+    );
+}
