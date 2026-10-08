@@ -357,3 +357,80 @@ fn should_refuse_public_database_directory_without_recovering_or_serving() {
     assert!(!after.recovery_needs_revalidation);
     assert!(!after.active_work_uncertain);
 }
+
+#[test]
+fn should_refuse_database_symlink_without_recovering_or_serving() {
+    use std::os::unix::fs::symlink;
+
+    let directory = PrivateDir::new();
+    let data_directory = directory.0.join("xdg/carapana");
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let database_path = directory.0.join("external.sqlite3");
+    let mut registry = SessionRegistry::open(&database_path).unwrap();
+    registry.create("external-session", 10).unwrap();
+    registry
+        .enqueue(
+            "external-session",
+            message("active-message", "must not be recovered through a link"),
+            11,
+        )
+        .unwrap();
+    registry.start_next("external-session", 12).unwrap();
+    let before = registry.get("external-session").unwrap();
+    let before_sequence = before.event_sequence;
+    drop(registry);
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let linked_database = data_directory.join("sessions.sqlite3");
+    symlink(&database_path, &linked_database).unwrap();
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = daemon.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            panic!("daemon did not reject the symlinked database path");
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    daemon
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+
+    assert!(
+        !status.success(),
+        "daemon followed a symlinked database path"
+    );
+    assert!(
+        stderr.contains("non-private or unexpected database path"),
+        "daemon did not report the unsafe path: {stderr}"
+    );
+    assert!(
+        !socket.exists(),
+        "daemon created a socket for a symlinked database"
+    );
+    assert!(
+        fs::symlink_metadata(&linked_database)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "daemon replaced or removed the operator's symlink"
+    );
+
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let after = registry.get("external-session").unwrap();
+    assert_eq!(after.status, StoredSessionStatus::Active);
+    assert_eq!(after.active_message, before.active_message);
+    assert_eq!(after.queued_messages, before.queued_messages);
+    assert_eq!(after.event_sequence, before_sequence);
+    assert!(!after.recovery_needs_revalidation);
+    assert!(!after.active_work_uncertain);
+}
