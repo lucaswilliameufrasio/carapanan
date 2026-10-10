@@ -141,8 +141,9 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
 - Revisão read-only revalida somente os paths explicitamente registrados e reporta cada um
   independentemente (`unchanged`, `changed`, `missing`, `unreadable`, `unsafe`, `too large`,
   `unavailable`). Falha da raiz é global/fail-closed. A revisão não altera sessão, fila ou
-  workspace e não limpa a exigência de revalidação; detalhes do relatório não são enviados pelo
-  IPC nesta fatia.
+  workspace e não limpa a exigência de revalidação. Pelo socket Unix privado do mesmo usuário,
+  é permitido expor somente path relativo + status ao CLI/TUI; nunca conteúdo, digest, metadata
+  stat ou path absoluto. A visualização não confirma conflitos nem libera retomada.
 - Conflitos com alterações do operador exigem confirmação, inclusive em Yolo.
 - `Parar` interrompe o agente, cancela comandos e encerra processos temporários iniciados
   para o trabalho, com supervisão e encerramento seguro (dev server, API local, serviço de teste).

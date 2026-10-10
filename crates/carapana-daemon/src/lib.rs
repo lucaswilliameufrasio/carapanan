@@ -13,11 +13,12 @@ use std::sync::atomic::AtomicBool;
 use carapana_protocol::{
     AttentionItem, AttentionReason, DaemonErrorCode, DaemonRequest, DaemonResponse,
     DaemonSessionEvent, Envelope, SessionEventBatch, SessionEventRecord, SessionSnapshot,
-    SessionStatus, SessionSummary,
+    SessionStatus, SessionSummary, WorkspaceFileReview, WorkspaceFileReviewItem,
+    WorkspaceFileReviewStatus,
 };
 use carapana_storage::{
     MigrationError, PersistedSession, SessionRegistry, SessionStoreError, StoredSessionEvent,
-    StoredSessionStatus, UserDatabaseError,
+    StoredSessionStatus, UserDatabaseError, WorkspaceFileValidationStatus,
 };
 
 #[cfg(unix)]
@@ -105,6 +106,17 @@ impl DaemonRuntime {
                     code: DaemonErrorCode::StorageUnavailable,
                 },
             },
+            DaemonRequest::ReviewWorkspace { session_id } => {
+                match self.review_workspace(&session_id) {
+                    Ok(review) => DaemonResponse::WorkspaceReview { review },
+                    Err(SessionStoreError::SessionNotFound) => DaemonResponse::Error {
+                        code: DaemonErrorCode::SessionNotFound,
+                    },
+                    Err(_) => DaemonResponse::Error {
+                        code: DaemonErrorCode::WorkspaceReviewUnavailable,
+                    },
+                }
+            }
             DaemonRequest::Attach { .. } | DaemonRequest::Detach {} => DaemonResponse::Error {
                 code: DaemonErrorCode::ConnectionRequired,
             },
@@ -137,6 +149,33 @@ impl DaemonRuntime {
                 .then_with(|| left.session_id.cmp(&right.session_id))
         });
         Ok(items)
+    }
+
+    fn review_workspace(&self, session_id: &str) -> Result<WorkspaceFileReview, SessionStoreError> {
+        let report = self.registry.review_workspace_files(session_id)?;
+        let files = report
+            .files
+            .into_iter()
+            .map(|file| WorkspaceFileReviewItem {
+                path: file.relative_path.to_string_lossy().into_owned(),
+                status: match file.status {
+                    WorkspaceFileValidationStatus::Unchanged => {
+                        WorkspaceFileReviewStatus::Unchanged
+                    }
+                    WorkspaceFileValidationStatus::Changed => WorkspaceFileReviewStatus::Changed,
+                    WorkspaceFileValidationStatus::Missing => WorkspaceFileReviewStatus::Missing,
+                    WorkspaceFileValidationStatus::Unreadable => {
+                        WorkspaceFileReviewStatus::Unreadable
+                    }
+                    WorkspaceFileValidationStatus::Unsafe => WorkspaceFileReviewStatus::Unsafe,
+                    WorkspaceFileValidationStatus::TooLarge => WorkspaceFileReviewStatus::TooLarge,
+                    WorkspaceFileValidationStatus::Unavailable => {
+                        WorkspaceFileReviewStatus::Unavailable
+                    }
+                },
+            })
+            .collect();
+        Ok(WorkspaceFileReview { files })
     }
 
     fn events_after(
@@ -389,7 +428,7 @@ mod tests {
     use super::{DaemonService, DaemonServiceError, IpcError, IpcServer};
     use carapana_protocol::{
         Autonomy, DaemonRequest, DaemonResponse, Envelope, QueuedMessage, Selection, SessionStatus,
-        WorkMode,
+        WorkMode, WorkspaceFileReviewStatus,
     };
     use carapana_storage::{SessionRegistry, StoredSessionStatus, WorkspaceMetadata};
     use std::{
@@ -542,6 +581,69 @@ mod tests {
         assert!(!serialized.contains("private-name.txt"));
         assert!(!serialized.contains("private contents"));
         assert!(!serialized.contains("content_sha256"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_return_only_explicit_workspace_path_and_review_status_over_ipc_contract() {
+        let database = TestDatabase::new();
+        let directory = TestDirectory::new();
+        let workspace_path = directory.0.join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        fs::write(workspace_path.join("review.txt"), b"private contents").unwrap();
+        let workspace = WorkspaceMetadata::capture(&workspace_path).unwrap();
+        {
+            let mut registry = SessionRegistry::open(&database.0).unwrap();
+            registry
+                .create_with_workspace("session-1", workspace, 10)
+                .unwrap();
+            registry
+                .observe_workspace_file_with_hash("session-1", "review.txt", 11)
+                .unwrap();
+            registry.create("without-workspace", 12).unwrap();
+        }
+        fs::write(
+            workspace_path.join("review.txt"),
+            b"changed private contents",
+        )
+        .unwrap();
+
+        let mut runtime = DaemonRuntime::open(&database.0, 20).unwrap();
+        let response = runtime.handle(Envelope::new(DaemonRequest::ReviewWorkspace {
+            session_id: "session-1".into(),
+        }));
+        let DaemonResponse::WorkspaceReview { review } = response.payload else {
+            panic!("workspace review should return a report");
+        };
+        assert_eq!(review.files.len(), 1);
+        assert_eq!(review.files[0].path, "review.txt");
+        assert_eq!(review.files[0].status, WorkspaceFileReviewStatus::Changed);
+        let serialized = serde_json::to_string(&review).unwrap();
+        assert!(!serialized.contains("private contents"));
+        assert!(!serialized.contains("content_sha256"));
+        assert!(!serialized.contains("mtime"));
+        assert!(!serialized.contains(workspace_path.to_string_lossy().as_ref()));
+
+        assert_eq!(
+            runtime
+                .handle(Envelope::new(DaemonRequest::ReviewWorkspace {
+                    session_id: "missing-session".into(),
+                }))
+                .payload,
+            DaemonResponse::Error {
+                code: carapana_protocol::DaemonErrorCode::SessionNotFound,
+            }
+        );
+        assert_eq!(
+            runtime
+                .handle(Envelope::new(DaemonRequest::ReviewWorkspace {
+                    session_id: "without-workspace".into(),
+                }))
+                .payload,
+            DaemonResponse::Error {
+                code: carapana_protocol::DaemonErrorCode::WorkspaceReviewUnavailable,
+            }
+        );
     }
 
     #[test]

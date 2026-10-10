@@ -252,6 +252,49 @@ fn should_round_trip_derived_recovery_attention_without_free_form_details() {
 }
 
 #[test]
+fn should_expose_only_relative_paths_and_statuses_in_workspace_review_contract() {
+    let request = Envelope::new(DaemonRequest::ReviewWorkspace {
+        session_id: "session-1".into(),
+    });
+    let request_json = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        request_json,
+        r#"{"protocol":1,"payload":{"type":"review_workspace","session_id":"session-1"}}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&request_json).unwrap(),
+        request
+    );
+
+    let response = Envelope::new(DaemonResponse::WorkspaceReview {
+        review: WorkspaceFileReview {
+            files: vec![WorkspaceFileReviewItem {
+                path: "src/main.rs".into(),
+                status: WorkspaceFileReviewStatus::Changed,
+            }],
+        },
+    });
+    let response_json = serde_json::to_string(&response).unwrap();
+    assert_eq!(
+        response_json,
+        r#"{"protocol":1,"payload":{"type":"workspace_review","review":{"files":[{"path":"src/main.rs","status":"changed"}]}}}"#
+    );
+    assert!(!response_json.contains("digest"));
+    assert!(!response_json.contains("metadata"));
+    assert!(!response_json.contains("contents"));
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(&response_json).unwrap(),
+        response
+    );
+    assert!(
+        serde_json::from_str::<WorkspaceFileReviewItem>(
+            r#"{"path":"src/main.rs","status":"changed","content_sha256":"not-allowed"}"#
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn should_round_trip_bounded_incremental_session_event_batches() {
     let batch = SessionEventBatch {
         events: vec![SessionEventRecord {

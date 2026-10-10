@@ -1039,7 +1039,7 @@ fn validate_timestamp(timestamp_ms: i64) -> Result<(), SessionStoreError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus};
+    use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus, io_validation_status};
     use crate::{
         Database, SessionRegistry, WorkspaceFileMetadataError, WorkspaceFileValidationStatus,
         WorkspaceMetadata, WorkspaceMetadataError,
@@ -1140,6 +1140,22 @@ mod tests {
                 variant: "default".into(),
             },
         }
+    }
+
+    #[test]
+    fn should_map_workspace_review_io_errors_to_closed_statuses() {
+        assert_eq!(
+            io_validation_status(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+            WorkspaceFileValidationStatus::Missing
+        );
+        assert_eq!(
+            io_validation_status(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            WorkspaceFileValidationStatus::Unreadable
+        );
+        assert_eq!(
+            io_validation_status(&std::io::Error::from(std::io::ErrorKind::InvalidData)),
+            WorkspaceFileValidationStatus::Unavailable
+        );
     }
 
     #[test]
@@ -1318,6 +1334,309 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn should_reject_sensitive_hash_requests_before_persisting_observations() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        let sensitive_paths = [
+            ".env",
+            ".env.local",
+            ".ENV.production",
+            ".ssh/id_rsa",
+            ".aws/credentials",
+            ".SSH/known_hosts",
+            ".AWS/config",
+            "contains-secret.txt",
+            "my-credential.json",
+            "contains-SECRET.txt",
+            "my-CREDENTIAL.json",
+            "certificate.pem",
+            "private.key",
+            "certificate.PEM",
+            "private.KEY",
+        ];
+        for sensitive_path in sensitive_paths.iter().copied() {
+            let file = workspace.0.join(sensitive_path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, b"synthetic fixture data only").unwrap();
+        }
+        fs::write(workspace.0.join("safe.txt"), b"safe fixture data").unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let mut database = Database::open(&path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+
+        for sensitive_path in sensitive_paths {
+            assert!(matches!(
+                database.observe_workspace_file_with_hash(
+                    "session-1",
+                    sensitive_path,
+                    11,
+                ),
+                Err(SessionStoreError::WorkspaceFileMetadata(
+                    WorkspaceFileMetadataError::SensitivePath(path)
+                )) if path.as_path() == std::path::Path::new(sensitive_path)
+            ));
+            let session = database.load_session("session-1").unwrap();
+            assert_eq!(session.event_sequence, 1);
+            assert!(session.workspace_files.is_empty());
+            assert_eq!(database.session_events("session-1").unwrap().len(), 1);
+        }
+
+        let accepted = database
+            .observe_workspace_file_with_hash("session-1", "safe.txt", 20)
+            .unwrap();
+        assert_eq!(accepted.event_sequence, 2);
+        assert_eq!(accepted.workspace_files.len(), 1);
+        assert_eq!(
+            accepted.workspace_files[0].relative_path(),
+            PathBuf::from("safe.txt")
+        );
+        let expected_hash = accepted.workspace_files[0]
+            .content_sha256()
+            .unwrap()
+            .to_owned();
+        assert!(matches!(
+            database.session_events("session-1").unwrap().last(),
+            Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                if observation.relative_path().as_path() == std::path::Path::new("safe.txt")
+        ));
+        drop(database);
+
+        let reopened = Database::open(&path.0).unwrap();
+        let loaded = reopened.load_session("session-1").unwrap();
+        assert_eq!(loaded.event_sequence, 2);
+        assert_eq!(loaded.workspace_files.len(), 1);
+        assert_eq!(
+            loaded.workspace_files[0].relative_path(),
+            PathBuf::from("safe.txt")
+        );
+        assert_eq!(
+            loaded.workspace_files[0].content_sha256(),
+            Some(expected_hash.as_str())
+        );
+        let events = reopened.session_events("session-1").unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events.last(),
+            Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                if observation.relative_path().as_path() == std::path::Path::new("safe.txt")
+        ));
+        reopened.validate_workspace_files("session-1").unwrap();
+        assert_eq!(
+            reopened.load_session("session-1").unwrap().event_sequence,
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_reject_hashes_when_workspace_root_contains_sensitive_components() {
+        let database_path = TestDatabase::new();
+        let fixture = TestWorkspace::new();
+        let mut database = Database::open(&database_path.0).unwrap();
+
+        for (index, sensitive_component) in [
+            ".SSH",
+            ".AWS",
+            ".ENV.workspace",
+            "workspace-SECRET",
+            "workspace-CREDENTIAL",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let workspace_path = fixture.0.join(sensitive_component).join("project");
+            fs::create_dir_all(&workspace_path).unwrap();
+            fs::write(workspace_path.join("safe.txt"), b"synthetic safe fixture").unwrap();
+
+            let session_id = format!("session-{index}");
+            let metadata = WorkspaceMetadata::capture(&workspace_path).unwrap();
+            database
+                .create_session_with_workspace(&session_id, metadata, 10)
+                .unwrap();
+
+            let stat_only = database
+                .observe_workspace_file(&session_id, "safe.txt", 11)
+                .unwrap();
+            assert_eq!(stat_only.event_sequence, 2);
+            assert_eq!(stat_only.workspace_files.len(), 1);
+            assert_eq!(stat_only.workspace_files[0].content_sha256(), None);
+
+            assert!(matches!(
+                database.observe_workspace_file_with_hash(&session_id, "safe.txt", 12),
+                Err(SessionStoreError::WorkspaceFileMetadata(
+                    WorkspaceFileMetadataError::SensitivePath(path)
+                )) if path.as_path() == std::path::Path::new("safe.txt")
+            ));
+            let session = database.load_session(&session_id).unwrap();
+            assert_eq!(session.event_sequence, 2);
+            assert_eq!(session.workspace_files.len(), 1);
+            assert_eq!(session.workspace_files[0].content_sha256(), None);
+            let events = database.session_events(&session_id).unwrap();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(
+                events.first(),
+                Some(StoredSessionEvent::Created { .. })
+            ));
+            assert!(matches!(
+                events.last(),
+                Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                    if observation.content_sha256().is_none()
+            ));
+
+            drop(database);
+            let mut reopened = Database::open(&database_path.0).unwrap();
+            reopened.validate_workspace_files(&session_id).unwrap();
+            assert!(matches!(
+                reopened.observe_workspace_file_with_hash(&session_id, "safe.txt", 13),
+                Err(SessionStoreError::WorkspaceFileMetadata(
+                    WorkspaceFileMetadataError::SensitivePath(path)
+                )) if path.as_path() == std::path::Path::new("safe.txt")
+            ));
+            let session = reopened.load_session(&session_id).unwrap();
+            assert_eq!(session.event_sequence, 2);
+            assert_eq!(session.workspace_files.len(), 1);
+            assert_eq!(session.workspace_files[0].content_sha256(), None);
+            let events = reopened.session_events(&session_id).unwrap();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(
+                events.last(),
+                Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                    if observation.content_sha256().is_none()
+            ));
+            database = reopened;
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_sensitive_file_observations_stat_only_and_reject_hashing() {
+        let database_path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(
+            workspace.0.join(".env.local"),
+            b"synthetic sensitive-path fixture contents",
+        )
+        .unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let mut database = Database::open(&database_path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+
+        let observed = database
+            .observe_workspace_file("session-1", ".env.local", 11)
+            .unwrap();
+        assert_eq!(observed.event_sequence, 2);
+        assert_eq!(observed.workspace_files.len(), 1);
+        assert_eq!(observed.workspace_files[0].content_sha256(), None);
+        let serialized = serde_json::to_string(&observed.workspace_files[0]).unwrap();
+        assert!(!serialized.contains("synthetic sensitive-path fixture contents"));
+
+        assert!(matches!(
+            database.observe_workspace_file_with_hash("session-1", ".env.local", 12),
+            Err(SessionStoreError::WorkspaceFileMetadata(
+                WorkspaceFileMetadataError::SensitivePath(path)
+            )) if path.as_path() == std::path::Path::new(".env.local")
+        ));
+        let session = database.load_session("session-1").unwrap();
+        assert_eq!(session.event_sequence, 2);
+        assert_eq!(session.workspace_files.len(), 1);
+        assert_eq!(session.workspace_files[0].content_sha256(), None);
+        let events = database.session_events("session-1").unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events.last(),
+            Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                if observation.content_sha256().is_none()
+        ));
+        drop(database);
+
+        let reopened = Database::open(&database_path.0).unwrap();
+        reopened.validate_workspace_files("session-1").unwrap();
+        let loaded = reopened.load_session("session-1").unwrap();
+        assert_eq!(loaded.event_sequence, 2);
+        assert_eq!(loaded.workspace_files.len(), 1);
+        assert_eq!(loaded.workspace_files[0].content_sha256(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_reject_workspace_escape_paths_before_persisting_hash_observations() {
+        use std::os::unix::fs::symlink;
+
+        let path = TestDatabase::new();
+        let fixture = TestWorkspace::new();
+        let workspace_path = fixture.0.join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        let outside_file = fixture.0.join("outside.txt");
+        fs::write(&outside_file, b"synthetic outside fixture").unwrap();
+        fs::write(workspace_path.join("safe.txt"), b"synthetic safe fixture").unwrap();
+        symlink(&outside_file, workspace_path.join("linked.txt")).unwrap();
+
+        let metadata = WorkspaceMetadata::capture(&workspace_path).unwrap();
+        let mut database = Database::open(&path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+
+        for relative_path in ["../outside.txt", "linked.txt"] {
+            assert!(matches!(
+                database.observe_workspace_file_with_hash("session-1", relative_path, 11),
+                Err(SessionStoreError::WorkspaceFileMetadata(
+                    WorkspaceFileMetadataError::InvalidRelativePath(_)
+                        | WorkspaceFileMetadataError::UnsafePath(_)
+                ))
+            ));
+            let session = database.load_session("session-1").unwrap();
+            assert_eq!(session.event_sequence, 1);
+            assert!(session.workspace_files.is_empty());
+            assert_eq!(database.session_events("session-1").unwrap().len(), 1);
+        }
+        assert!(matches!(
+            database.observe_workspace_file_with_hash("session-1", &outside_file, 11),
+            Err(SessionStoreError::WorkspaceFileMetadata(
+                WorkspaceFileMetadataError::InvalidRelativePath(_)
+            ))
+        ));
+        assert_eq!(
+            database.load_session("session-1").unwrap().event_sequence,
+            1
+        );
+        assert!(
+            database
+                .load_session("session-1")
+                .unwrap()
+                .workspace_files
+                .is_empty()
+        );
+        assert_eq!(database.session_events("session-1").unwrap().len(), 1);
+
+        let accepted = database
+            .observe_workspace_file_with_hash("session-1", "safe.txt", 12)
+            .unwrap();
+        assert_eq!(accepted.event_sequence, 2);
+        assert_eq!(accepted.workspace_files.len(), 1);
+        assert_eq!(
+            accepted.workspace_files[0].relative_path(),
+            PathBuf::from("safe.txt")
+        );
+        drop(database);
+
+        let reopened = Database::open(&path.0).unwrap();
+        let loaded = reopened.load_session("session-1").unwrap();
+        assert_eq!(loaded.event_sequence, 2);
+        assert_eq!(loaded.workspace_files.len(), 1);
+        assert_eq!(
+            loaded.workspace_files[0].relative_path(),
+            PathBuf::from("safe.txt")
+        );
+        assert_eq!(reopened.session_events("session-1").unwrap().len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn should_report_each_explicit_workspace_file_without_changing_recovery_state() {
         let path = TestDatabase::new();
         let workspace = TestWorkspace::new();
@@ -1375,6 +1694,103 @@ mod tests {
         assert_eq!(after_review.status, StoredSessionStatus::Paused);
         assert!(after_review.recovery_needs_revalidation);
         assert_eq!(after_review.event_sequence, before_review.event_sequence);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_review_only_explicit_paths_after_sensitive_root_changes_without_advancing_recovery() {
+        let database_path = TestDatabase::new();
+        let fixture = TestWorkspace::new();
+        let workspace_path = fixture.0.join(".SSH").join("project");
+        fs::create_dir_all(&workspace_path).unwrap();
+        fs::write(workspace_path.join("safe.txt"), b"synthetic original").unwrap();
+        fs::write(workspace_path.join("removed.txt"), b"synthetic to remove").unwrap();
+        fs::write(workspace_path.join("linked.txt"), b"synthetic link source").unwrap();
+        fs::create_dir(workspace_path.join("nested")).unwrap();
+        fs::write(
+            workspace_path.join("nested/file.txt"),
+            b"synthetic nested source",
+        )
+        .unwrap();
+        let outside_file = fixture.0.join("outside-target.txt");
+        fs::write(&outside_file, b"synthetic target must not be read").unwrap();
+        std::os::unix::fs::symlink(&outside_file, workspace_path.join("unobserved-link.txt"))
+            .unwrap();
+
+        let metadata = WorkspaceMetadata::capture(&workspace_path).unwrap();
+        let mut database = Database::open(&database_path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "safe.txt", 11)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "removed.txt", 12)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "linked.txt", 13)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "nested/file.txt", 14)
+            .unwrap();
+        database
+            .enqueue_message("session-1", message("active"), 15)
+            .unwrap();
+        database.start_next_message("session-1", 16).unwrap();
+        drop(database);
+
+        let mut database = Database::open(&database_path.0).unwrap();
+        database.recover_active_sessions(17).unwrap();
+        let before_review = database.load_session("session-1").unwrap();
+        assert_eq!(before_review.status, StoredSessionStatus::Paused);
+        assert!(before_review.recovery_needs_revalidation);
+        fs::write(
+            workspace_path.join("safe.txt"),
+            b"synthetic changed contents with a different size",
+        )
+        .unwrap();
+        fs::remove_file(workspace_path.join("removed.txt")).unwrap();
+        fs::remove_file(workspace_path.join("linked.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside_file, workspace_path.join("linked.txt")).unwrap();
+        fs::remove_file(workspace_path.join("nested/file.txt")).unwrap();
+        fs::remove_dir(workspace_path.join("nested")).unwrap();
+        fs::write(workspace_path.join("nested"), b"synthetic replacement file").unwrap();
+
+        let report = database.review_workspace_files("session-1").unwrap();
+        assert_eq!(report.files.len(), 4);
+        assert_eq!(report.files[0].relative_path, PathBuf::from("safe.txt"));
+        assert_eq!(
+            report.files[0].status,
+            WorkspaceFileValidationStatus::Changed
+        );
+        assert_eq!(report.files[1].relative_path, PathBuf::from("removed.txt"));
+        assert_eq!(
+            report.files[1].status,
+            WorkspaceFileValidationStatus::Missing
+        );
+        assert_eq!(report.files[2].relative_path, PathBuf::from("linked.txt"));
+        assert_eq!(
+            report.files[2].status,
+            WorkspaceFileValidationStatus::Unsafe
+        );
+        assert_eq!(
+            report.files[3].relative_path,
+            PathBuf::from("nested/file.txt")
+        );
+        assert_eq!(
+            report.files[3].status,
+            WorkspaceFileValidationStatus::Unsafe
+        );
+
+        let after_review = database.load_session("session-1").unwrap();
+        assert_eq!(after_review.status, StoredSessionStatus::Paused);
+        assert!(after_review.recovery_needs_revalidation);
+        assert_eq!(after_review.event_sequence, before_review.event_sequence);
+        assert_eq!(
+            database.session_events("session-1").unwrap().len(),
+            before_review.event_sequence as usize
+        );
     }
 
     #[cfg(unix)]

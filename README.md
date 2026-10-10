@@ -161,12 +161,15 @@ cargo run -p carapana-cli -- sessions --json
 cargo run -p carapana-cli -- attention
 cargo run -p carapana-cli -- show <session-id> --json
 cargo run -p carapana-cli -- show <session-id> --events-after <cursor> --json
+cargo run -p carapana-cli -- review-workspace <session-id> --json
 cargo run -p carapana-cli -- tui
 ```
 
-A TUI é read-only: ↑/↓ navega e rola detalhes, Enter abre o snapshot, `e` consulta
-eventos, `n` busca a próxima página limitada, `r` atualiza explicitamente, Esc volta
-e `q` sai. Ela não envia mensagens, aprova, retoma, executa tools ou inicia provider.
+A TUI é read-only: ↑/↓ navega e rola detalhes, Enter abre o snapshot, `v` revalida
+os arquivos explicitamente observados, `e` consulta eventos, `n` busca a próxima página
+limitada, `r` atualiza explicitamente, Esc volta e `q` sai. O relatório mostra somente
+paths relativos + status; não inclui conteúdo, digest ou metadata bruta e não autoriza
+retomada. A TUI não envia mensagens, aprova, retoma, executa tools ou inicia provider.
 SIGINT/SIGTERM encerram o daemon. A interface web/mobile acima permanece um protótipo
 com fixtures e não acessa esses dados reais.
 
