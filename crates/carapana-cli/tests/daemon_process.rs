@@ -1,11 +1,11 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use carapana_protocol::{Autonomy, QueuedMessage, Selection, WorkMode};
-use carapana_storage::{SessionRegistry, StoredSessionStatus};
+use carapana_storage::{SessionRegistry, StoredSessionStatus, WorkspaceMetadata};
 use std::{
     fs,
     io::Read,
-    os::unix::fs::PermissionsExt,
+    os::unix::{ffi::OsStringExt, fs::PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -335,6 +335,991 @@ fn should_recover_only_interrupted_work_before_serving_real_cli_requests() {
             .unwrap()
             .len(),
         events.len()
+    );
+
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_keep_recovered_work_paused_after_unchanged_cli_workspace_review() {
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    let workspace_path = directory.0.join("workspace");
+    fs::create_dir(&workspace_path).unwrap();
+    fs::write(workspace_path.join("source.txt"), b"before crash").unwrap();
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry
+            .create_with_workspace(
+                "recovery-review",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file("recovery-review", "source.txt", 11)
+            .unwrap();
+        registry
+            .enqueue(
+                "recovery-review",
+                message("active-work", "must remain paused"),
+                12,
+            )
+            .unwrap();
+        registry
+            .enqueue(
+                "recovery-review",
+                message("queued-work", "must remain queued"),
+                13,
+            )
+            .unwrap();
+        registry.start_next("recovery-review", 14).unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let before_review = registry.get("recovery-review").unwrap();
+    assert_eq!(before_review.status, StoredSessionStatus::Paused);
+    assert!(before_review.recovery_needs_revalidation);
+    assert!(before_review.active_work_uncertain);
+
+    let review_output = run_cli(
+        &directory,
+        &["review-workspace", "recovery-review", "--json"],
+    );
+    assert!(
+        review_output.status.success(),
+        "workspace review failed: {}",
+        String::from_utf8_lossy(&review_output.stderr)
+    );
+    let review_stdout =
+        String::from_utf8(review_output.stdout).expect("review JSON must be valid UTF-8");
+    let review: serde_json::Value = serde_json::from_str(&review_stdout).unwrap();
+    assert_eq!(review.as_array().unwrap().len(), 1);
+    assert_eq!(review[0]["path"], "source.txt");
+    assert_eq!(review[0]["status"], "unchanged");
+    assert_eq!(review[0].as_object().unwrap().len(), 2);
+    assert!(!review_stdout.contains("before crash"));
+
+    let repeated_review_output = run_cli(
+        &directory,
+        &["review-workspace", "recovery-review", "--json"],
+    );
+    assert!(
+        repeated_review_output.status.success(),
+        "repeated workspace review failed: {}",
+        String::from_utf8_lossy(&repeated_review_output.stderr)
+    );
+    let repeated_review: serde_json::Value =
+        serde_json::from_slice(&repeated_review_output.stdout).unwrap();
+    assert_eq!(repeated_review, review);
+
+    let inspected = run_cli(&directory, &["show", "recovery-review", "--json"]);
+    assert!(inspected.status.success());
+    let inspected: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    let snapshot = &inspected["snapshot"];
+    assert_eq!(snapshot["status"], "paused");
+    assert!(snapshot["recovery_needs_revalidation"].as_bool().unwrap());
+    assert!(snapshot["active_work_uncertain"].as_bool().unwrap());
+    assert_eq!(snapshot["active_message"]["id"], "active-work");
+    assert_eq!(snapshot["queued_messages"][0]["id"], "queued-work");
+
+    let after_review = registry.get("recovery-review").unwrap();
+    assert_eq!(after_review.status, before_review.status);
+    assert_eq!(
+        after_review.recovery_needs_revalidation,
+        before_review.recovery_needs_revalidation
+    );
+    assert_eq!(
+        after_review.active_work_uncertain,
+        before_review.active_work_uncertain
+    );
+    assert_eq!(after_review.active_message, before_review.active_message);
+    assert_eq!(after_review.queued_messages, before_review.queued_messages);
+    assert_eq!(after_review.event_sequence, before_review.event_sequence);
+    let observation = after_review
+        .workspace_files
+        .iter()
+        .find(|observation| observation.relative_path().as_path() == Path::new("source.txt"))
+        .expect("the explicit stat-only workspace observation should remain persisted");
+    assert_eq!(observation.content_sha256(), None);
+
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_fail_workspace_review_without_workspace_without_changing_recovery_state() {
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry.create("no-workspace-review", 10).unwrap();
+        registry
+            .enqueue(
+                "no-workspace-review",
+                message("active-work", "must remain paused"),
+                11,
+            )
+            .unwrap();
+        registry
+            .enqueue(
+                "no-workspace-review",
+                message("queued-work", "must remain queued"),
+                12,
+            )
+            .unwrap();
+        registry.start_next("no-workspace-review", 13).unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let mut registry = SessionRegistry::open(&database_path).unwrap();
+    let before_review = registry.get("no-workspace-review").unwrap();
+    assert_eq!(before_review.status, StoredSessionStatus::Paused);
+    assert!(before_review.recovery_needs_revalidation);
+    assert!(before_review.active_work_uncertain);
+    assert!(before_review.workspace_files.is_empty());
+    let (before_events, before_event_cursor, before_has_more) = registry
+        .session_events_after("no-workspace-review", 0, 100)
+        .unwrap();
+    assert!(!before_has_more);
+    assert_eq!(before_event_cursor, before_review.event_sequence);
+
+    let review = run_cli(
+        &directory,
+        &["review-workspace", "no-workspace-review", "--json"],
+    );
+    assert!(!review.status.success());
+    assert!(review.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&review.stderr);
+    assert!(stderr.contains("WorkspaceReviewUnavailable"));
+    assert!(!stderr.contains("WorkspaceNotConfigured"));
+    assert!(!stderr.contains("workspace"));
+
+    let inspected = run_cli(&directory, &["show", "no-workspace-review", "--json"]);
+    assert!(inspected.status.success());
+    let inspected: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    let snapshot = &inspected["snapshot"];
+    assert_eq!(snapshot["status"], "paused");
+    assert!(snapshot["recovery_needs_revalidation"].as_bool().unwrap());
+    assert!(snapshot["active_work_uncertain"].as_bool().unwrap());
+    assert_eq!(snapshot["active_message"]["id"], "active-work");
+    assert_eq!(snapshot["queued_messages"][0]["id"], "queued-work");
+
+    let after_review = registry.get("no-workspace-review").unwrap();
+    assert_eq!(after_review.status, before_review.status);
+    assert_eq!(
+        after_review.recovery_needs_revalidation,
+        before_review.recovery_needs_revalidation
+    );
+    assert_eq!(
+        after_review.active_work_uncertain,
+        before_review.active_work_uncertain
+    );
+    assert_eq!(after_review.active_message, before_review.active_message);
+    assert_eq!(after_review.queued_messages, before_review.queued_messages);
+    assert_eq!(after_review.workspace_files, before_review.workspace_files);
+    assert_eq!(after_review.event_sequence, before_review.event_sequence);
+    let (after_events, after_event_cursor, after_has_more) = registry
+        .session_events_after("no-workspace-review", 0, 100)
+        .unwrap();
+    assert!(!after_has_more);
+    assert_eq!(after_events, before_events);
+    assert_eq!(after_event_cursor, before_event_cursor);
+
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_fail_closed_without_leaking_workspace_path_when_root_identity_changes() {
+    use std::os::unix::fs::symlink;
+
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    let workspace_path = directory.0.join(".SSH/workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    fs::write(workspace_path.join("source.txt"), b"original").unwrap();
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry
+            .create_with_workspace(
+                "root-changed",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file("root-changed", "source.txt", 11)
+            .unwrap();
+        registry
+            .enqueue(
+                "root-changed",
+                message("active-work", "preserve active work"),
+                12,
+            )
+            .unwrap();
+        registry
+            .enqueue(
+                "root-changed",
+                message("queued-work", "preserve queued work"),
+                13,
+            )
+            .unwrap();
+        registry.start_next("root-changed", 14).unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let moved_workspace = workspace_path.with_extension("moved");
+    fs::rename(&workspace_path, &moved_workspace).unwrap();
+    symlink(&moved_workspace, &workspace_path).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let before_review = registry.get("root-changed").unwrap();
+    assert_eq!(before_review.status, StoredSessionStatus::Paused);
+    assert!(before_review.recovery_needs_revalidation);
+    assert!(before_review.active_work_uncertain);
+
+    let review = run_cli(&directory, &["review-workspace", "root-changed", "--json"]);
+    assert!(!review.status.success());
+    let stderr = String::from_utf8_lossy(&review.stderr);
+    assert!(stderr.contains("WorkspaceReviewUnavailable"));
+    assert!(!stderr.contains(workspace_path.to_string_lossy().as_ref()));
+    assert!(!stderr.contains(moved_workspace.to_string_lossy().as_ref()));
+    assert!(review.stdout.is_empty());
+
+    let inspected = run_cli(&directory, &["show", "root-changed", "--json"]);
+    assert!(inspected.status.success());
+    let inspected: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    let snapshot = &inspected["snapshot"];
+    assert_eq!(snapshot["status"], "paused");
+    assert!(snapshot["recovery_needs_revalidation"].as_bool().unwrap());
+    assert!(snapshot["active_work_uncertain"].as_bool().unwrap());
+    assert_eq!(snapshot["active_message"]["id"], "active-work");
+    assert_eq!(snapshot["queued_messages"][0]["id"], "queued-work");
+
+    let after_review = registry.get("root-changed").unwrap();
+    assert_eq!(after_review.status, before_review.status);
+    assert_eq!(
+        after_review.recovery_needs_revalidation,
+        before_review.recovery_needs_revalidation
+    );
+    assert_eq!(
+        after_review.active_work_uncertain,
+        before_review.active_work_uncertain
+    );
+    assert_eq!(after_review.active_message, before_review.active_message);
+    assert_eq!(after_review.queued_messages, before_review.queued_messages);
+    assert_eq!(after_review.event_sequence, before_review.event_sequence);
+
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_report_each_workspace_file_status_without_changing_recovery_state() {
+    use std::os::unix::fs::symlink;
+
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    let workspace_path = directory.0.join("workspace");
+    fs::create_dir(&workspace_path).unwrap();
+    for (name, contents) in [
+        ("unchanged.txt", b"unchanged".as_slice()),
+        ("stat-changed.txt", b"stat baseline".as_slice()),
+        ("changed.txt", b"original hash".as_slice()),
+        ("missing.txt", b"will be removed".as_slice()),
+        ("linked.txt", b"will become a symlink".as_slice()),
+        ("large.txt", b"small baseline".as_slice()),
+        ("target.txt", b"symlink target".as_slice()),
+        (
+            "unreadable.txt",
+            b"synthetic unreadable file contents".as_slice(),
+        ),
+    ] {
+        fs::write(workspace_path.join(name), contents).unwrap();
+    }
+    fs::create_dir(workspace_path.join("non-directory-parent")).unwrap();
+    fs::write(
+        workspace_path.join("non-directory-parent/file.txt"),
+        b"directory will be replaced",
+    )
+    .unwrap();
+    fs::write(
+        workspace_path.join("max-hash.txt"),
+        vec![b'm'; carapana_storage::MAX_WORKSPACE_FILE_HASH_BYTES],
+    )
+    .unwrap();
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry
+            .create_with_workspace(
+                "status-review",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file("status-review", "unchanged.txt", 11)
+            .unwrap();
+        registry
+            .observe_workspace_file("status-review", "stat-changed.txt", 12)
+            .unwrap();
+        registry
+            .observe_workspace_file_with_hash("status-review", "changed.txt", 13)
+            .unwrap();
+        registry
+            .observe_workspace_file("status-review", "missing.txt", 14)
+            .unwrap();
+        registry
+            .observe_workspace_file("status-review", "linked.txt", 15)
+            .unwrap();
+        registry
+            .observe_workspace_file_with_hash("status-review", "large.txt", 16)
+            .unwrap();
+        registry
+            .observe_workspace_file_with_hash("status-review", "max-hash.txt", 17)
+            .unwrap();
+        registry
+            .observe_workspace_file_with_hash("status-review", "unreadable.txt", 18)
+            .unwrap();
+        registry
+            .observe_workspace_file("status-review", "non-directory-parent/file.txt", 19)
+            .unwrap();
+        registry
+            .enqueue(
+                "status-review",
+                message("active-work", "preserve active work"),
+                20,
+            )
+            .unwrap();
+        registry
+            .enqueue(
+                "status-review",
+                message("queued-work", "preserve queued work"),
+                21,
+            )
+            .unwrap();
+        registry.start_next("status-review", 22).unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(
+        workspace_path.join("stat-changed.txt"),
+        b"stat metadata changed after capture",
+    )
+    .unwrap();
+    fs::write(workspace_path.join("changed.txt"), b"operator changed file").unwrap();
+    fs::remove_file(workspace_path.join("missing.txt")).unwrap();
+    fs::remove_file(workspace_path.join("linked.txt")).unwrap();
+    symlink(
+        workspace_path.join("target.txt"),
+        workspace_path.join("linked.txt"),
+    )
+    .unwrap();
+    fs::write(
+        workspace_path.join("large.txt"),
+        vec![b'x'; carapana_storage::MAX_WORKSPACE_FILE_HASH_BYTES + 1],
+    )
+    .unwrap();
+    fs::remove_dir_all(workspace_path.join("non-directory-parent")).unwrap();
+    fs::write(
+        workspace_path.join("non-directory-parent"),
+        b"a regular file replacing the observed directory",
+    )
+    .unwrap();
+    fs::set_permissions(
+        workspace_path.join("unreadable.txt"),
+        fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let mut registry = SessionRegistry::open(&database_path).unwrap();
+    let before_review = registry.get("status-review").unwrap();
+    let (before_events, before_event_cursor, before_has_more) = registry
+        .session_events_after("status-review", 0, 100)
+        .unwrap();
+    assert!(!before_has_more);
+    assert_eq!(before_event_cursor, before_review.event_sequence);
+    assert_eq!(before_review.status, StoredSessionStatus::Paused);
+    assert!(before_review.recovery_needs_revalidation);
+    assert!(before_review.active_work_uncertain);
+
+    let review_output = run_cli(&directory, &["review-workspace", "status-review", "--json"]);
+    assert!(
+        review_output.status.success(),
+        "workspace review failed: {}",
+        String::from_utf8_lossy(&review_output.stderr)
+    );
+    let review_stdout =
+        String::from_utf8(review_output.stdout).expect("review JSON must be valid UTF-8");
+    let review: serde_json::Value = serde_json::from_str(&review_stdout).unwrap();
+    let files = review.as_array().unwrap();
+    assert_eq!(files.len(), 9);
+    for (index, (path, status)) in [
+        ("unchanged.txt", "unchanged"),
+        ("stat-changed.txt", "changed"),
+        ("changed.txt", "changed"),
+        ("missing.txt", "missing"),
+        ("linked.txt", "unsafe"),
+        ("large.txt", "too_large"),
+        ("max-hash.txt", "unchanged"),
+        ("unreadable.txt", "unreadable"),
+        ("non-directory-parent/file.txt", "unsafe"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(files[index]["path"], path);
+        assert_eq!(files[index]["status"], status);
+        assert_eq!(files[index].as_object().unwrap().len(), 2);
+    }
+    assert!(!review_stdout.contains("operator changed file"));
+    assert!(!review_stdout.contains("stat metadata changed after capture"));
+    assert!(!review_stdout.contains("content_sha256"));
+    assert!(!review_stdout.contains("mtime"));
+    assert!(!review_stdout.contains("synthetic unreadable file contents"));
+    assert!(!review_stdout.contains(workspace_path.to_string_lossy().as_ref()));
+
+    assert_eq!(
+        fs::read(workspace_path.join("unchanged.txt")).unwrap(),
+        b"unchanged"
+    );
+    assert_eq!(
+        fs::read(workspace_path.join("stat-changed.txt")).unwrap(),
+        b"stat metadata changed after capture"
+    );
+    assert_eq!(
+        fs::read(workspace_path.join("changed.txt")).unwrap(),
+        b"operator changed file"
+    );
+    assert!(!workspace_path.join("missing.txt").exists());
+    let linked_metadata = fs::symlink_metadata(workspace_path.join("linked.txt")).unwrap();
+    assert!(linked_metadata.file_type().is_symlink());
+    assert_eq!(
+        fs::read_link(workspace_path.join("linked.txt")).unwrap(),
+        workspace_path.join("target.txt")
+    );
+    assert_eq!(
+        fs::read(workspace_path.join("target.txt")).unwrap(),
+        b"symlink target"
+    );
+    assert_eq!(
+        fs::metadata(workspace_path.join("large.txt"))
+            .unwrap()
+            .len(),
+        (carapana_storage::MAX_WORKSPACE_FILE_HASH_BYTES + 1) as u64
+    );
+    assert_eq!(
+        fs::metadata(workspace_path.join("unreadable.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0
+    );
+    assert_eq!(
+        fs::read(workspace_path.join("non-directory-parent")).unwrap(),
+        b"a regular file replacing the observed directory"
+    );
+
+    let after_review = registry.get("status-review").unwrap();
+    assert_eq!(after_review.status, before_review.status);
+    assert_eq!(
+        after_review.recovery_needs_revalidation,
+        before_review.recovery_needs_revalidation
+    );
+    assert_eq!(
+        after_review.active_work_uncertain,
+        before_review.active_work_uncertain
+    );
+    assert_eq!(after_review.active_message, before_review.active_message);
+    assert_eq!(after_review.queued_messages, before_review.queued_messages);
+    assert_eq!(after_review.event_sequence, before_review.event_sequence);
+    let (after_events, after_event_cursor, after_has_more) = registry
+        .session_events_after("status-review", 0, 100)
+        .unwrap();
+    assert!(!after_has_more);
+    assert_eq!(after_events, before_events);
+    assert_eq!(after_event_cursor, before_event_cursor);
+    let unreadable_digest = after_review
+        .workspace_files
+        .iter()
+        .find(|observation| observation.relative_path().as_path() == Path::new("unreadable.txt"))
+        .and_then(|observation| observation.content_sha256())
+        .expect("the explicitly hashed unreadable fixture should retain its local digest");
+    assert!(!review_stdout.contains(unreadable_digest));
+    let stat_only_observation = after_review
+        .workspace_files
+        .iter()
+        .find(|observation| observation.relative_path().as_path() == Path::new("stat-changed.txt"))
+        .expect("the stat-only fixture should remain persisted");
+    assert_eq!(stat_only_observation.content_sha256(), None);
+    let expected_digest = after_review
+        .workspace_files
+        .iter()
+        .find(|observation| observation.relative_path().as_path() == Path::new("max-hash.txt"))
+        .and_then(|observation| observation.content_sha256())
+        .expect("the explicitly hashed fixture should have a persisted digest");
+    assert!(!review_stdout.contains(expected_digest));
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_keep_sensitive_root_workspace_review_relative_and_read_only_over_daemon_cli() {
+    use std::os::unix::fs::symlink;
+
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    let workspace_path = directory.0.join(".SSH/workspace");
+    fs::create_dir_all(&workspace_path).unwrap();
+    fs::write(
+        workspace_path.join("selected.txt"),
+        b"synthetic initial contents",
+    )
+    .unwrap();
+    let external_target = directory.0.join("outside-target.txt");
+    fs::write(&external_target, b"synthetic external target contents").unwrap();
+
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry
+            .create_with_workspace(
+                "sensitive-review",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file("sensitive-review", "selected.txt", 11)
+            .unwrap();
+        registry
+            .enqueue(
+                "sensitive-review",
+                message("active-work", "preserve paused work"),
+                12,
+            )
+            .unwrap();
+        registry
+            .enqueue(
+                "sensitive-review",
+                message("queued-work", "preserve queued work"),
+                13,
+            )
+            .unwrap();
+        registry.start_next("sensitive-review", 14).unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(
+        workspace_path.join("selected.txt"),
+        b"changed synthetic private contents with a different size",
+    )
+    .unwrap();
+    symlink(&external_target, workspace_path.join("unobserved-link.txt")).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let before_review = registry.get("sensitive-review").unwrap();
+    assert_eq!(before_review.status, StoredSessionStatus::Paused);
+    assert!(before_review.recovery_needs_revalidation);
+    assert!(before_review.active_work_uncertain);
+    assert_eq!(
+        before_review.active_message,
+        Some(message("active-work", "preserve paused work"))
+    );
+    assert_eq!(
+        before_review.queued_messages,
+        vec![message("queued-work", "preserve queued work")]
+    );
+
+    let review_output = run_cli(
+        &directory,
+        &["review-workspace", "sensitive-review", "--json"],
+    );
+    assert!(
+        review_output.status.success(),
+        "workspace review failed: {}",
+        String::from_utf8_lossy(&review_output.stderr)
+    );
+    let review_stdout = String::from_utf8(review_output.stdout)
+        .expect("sensitive workspace review JSON must be valid UTF-8");
+    let review: serde_json::Value = serde_json::from_str(&review_stdout).unwrap();
+    let files = review.as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["path"], "selected.txt");
+    assert_eq!(files[0]["status"], "changed");
+    assert_eq!(files[0].as_object().unwrap().len(), 2);
+    for private_value in [
+        workspace_path.to_string_lossy().into_owned(),
+        external_target.to_string_lossy().into_owned(),
+        "synthetic initial contents".to_owned(),
+        "changed synthetic private contents".to_owned(),
+        "synthetic external target contents".to_owned(),
+        "content_sha256".to_owned(),
+        "mtime".to_owned(),
+    ] {
+        assert!(!review_stdout.contains(&private_value));
+    }
+
+    let after_review = registry.get("sensitive-review").unwrap();
+    assert_eq!(after_review.status, StoredSessionStatus::Paused);
+    assert!(after_review.recovery_needs_revalidation);
+    assert_eq!(
+        after_review.active_work_uncertain,
+        before_review.active_work_uncertain
+    );
+    assert_eq!(after_review.active_message, before_review.active_message);
+    assert_eq!(after_review.queued_messages, before_review.queued_messages);
+    assert_eq!(after_review.event_sequence, before_review.event_sequence);
+
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_report_a_missing_non_utf8_workspace_name_as_relative_valid_json() {
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    let workspace_path = directory.0.join("workspace");
+    fs::create_dir(&workspace_path).unwrap();
+
+    let relative_path = PathBuf::from(std::ffi::OsString::from_vec(vec![
+        b'n', 0xff, b'a', b'm', b'e', b'.', b't', b'x', b't',
+    ]));
+    fs::write(
+        workspace_path.join(&relative_path),
+        b"synthetic non-UTF-8 filename fixture contents",
+    )
+    .unwrap();
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry
+            .create_with_workspace(
+                "non-utf8-review",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file("non-utf8-review", &relative_path, 11)
+            .unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::remove_file(workspace_path.join(&relative_path)).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let output = run_cli(
+        &directory,
+        &["review-workspace", "non-utf8-review", "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "workspace review failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("review JSON must be valid UTF-8");
+    let review: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(review.as_array().unwrap().len(), 1);
+    assert_eq!(review[0]["path"], relative_path.to_string_lossy().as_ref());
+    assert_eq!(review[0]["status"], "missing");
+    assert_eq!(review[0].as_object().unwrap().len(), 2);
+    assert!(!stdout.contains(&workspace_path.to_string_lossy().into_owned()));
+    assert!(!stdout.contains("synthetic non-UTF-8 filename fixture contents"));
+
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let session = registry.get("non-utf8-review").unwrap();
+    assert_eq!(session.event_sequence, 2);
+    assert_eq!(session.workspace_files.len(), 1);
+    assert_eq!(session.status, StoredSessionStatus::Paused);
+
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_close_only_oversized_workspace_review_response_without_mutating_session() {
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    let workspace_path = directory.0.join("workspace");
+    let long_directory_name = "d".repeat(180);
+    let files_directory = workspace_path.join(&long_directory_name);
+    fs::create_dir_all(&files_directory).unwrap();
+    let long_file_suffix = "x".repeat(220);
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry
+            .create_with_workspace(
+                "oversized-review",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                10,
+            )
+            .unwrap();
+        for index in 0..200 {
+            let file_name = format!("item-{index:04}-{long_file_suffix}");
+            fs::write(files_directory.join(&file_name), b"selected file").unwrap();
+            registry
+                .observe_workspace_file(
+                    "oversized-review",
+                    format!("{long_directory_name}/{file_name}"),
+                    11 + index,
+                )
+                .unwrap();
+        }
+        registry
+            .enqueue(
+                "oversized-review",
+                message("active-work", "preserve active work"),
+                211,
+            )
+            .unwrap();
+        registry
+            .enqueue(
+                "oversized-review",
+                message("queued-work", "preserve queued work"),
+                212,
+            )
+            .unwrap();
+        registry.start_next("oversized-review", 213).unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let before_output = run_cli(&directory, &["show", "oversized-review", "--json"]);
+    assert!(before_output.status.success());
+    let before: serde_json::Value = serde_json::from_slice(&before_output.stdout).unwrap();
+    let before_snapshot = before["snapshot"].clone();
+    assert_eq!(before_snapshot["status"], "paused");
+    assert!(
+        before_snapshot["recovery_needs_revalidation"]
+            .as_bool()
+            .unwrap()
+    );
+    assert!(before_snapshot["active_work_uncertain"].as_bool().unwrap());
+
+    let review = run_cli(
+        &directory,
+        &["review-workspace", "oversized-review", "--json"],
+    );
+    assert!(!review.status.success());
+    assert!(review.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&review.stderr);
+    assert!(!stderr.contains(workspace_path.to_string_lossy().as_ref()));
+    assert!(!stderr.contains("item-0000"));
+    assert!(
+        daemon.try_wait().unwrap().is_none(),
+        "daemon exited on oversized response"
+    );
+
+    let after_output = run_cli(&directory, &["show", "oversized-review", "--json"]);
+    assert!(
+        after_output.status.success(),
+        "daemon did not serve a subsequent request: {}",
+        String::from_utf8_lossy(&after_output.stderr)
+    );
+    let after: serde_json::Value = serde_json::from_slice(&after_output.stdout).unwrap();
+    assert_eq!(after["snapshot"], before_snapshot);
+
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let session = registry.get("oversized-review").unwrap();
+    assert_eq!(session.status, StoredSessionStatus::Paused);
+    assert!(session.recovery_needs_revalidation);
+    assert!(session.active_work_uncertain);
+    assert_eq!(
+        session.active_message,
+        Some(message("active-work", "preserve active work"))
+    );
+    assert_eq!(
+        session.queued_messages,
+        vec![message("queued-work", "preserve queued work")]
+    );
+    assert_eq!(
+        session.event_sequence,
+        before_snapshot["event_sequence"].as_i64().unwrap()
+    );
+
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_return_complete_workspace_review_near_the_ipc_frame_limit() {
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    let workspace_path = directory.0.join("workspace");
+    let long_directory_name = "d".repeat(250);
+    let files_directory = workspace_path.join(&long_directory_name);
+    fs::create_dir_all(&files_directory).unwrap();
+    let long_file_suffix = "x".repeat(245);
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry
+            .create_with_workspace(
+                "near-limit-review",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                100,
+            )
+            .unwrap();
+        for index in 0..110 {
+            let file_name = format!("item-{index:04}-{long_file_suffix}");
+            fs::write(files_directory.join(&file_name), b"selected file").unwrap();
+            registry
+                .observe_workspace_file(
+                    "near-limit-review",
+                    format!("{long_directory_name}/{file_name}"),
+                    101 + index,
+                )
+                .unwrap();
+        }
+        registry
+            .enqueue(
+                "near-limit-review",
+                message("active-work", "preserve active work"),
+                211,
+            )
+            .unwrap();
+        registry
+            .enqueue(
+                "near-limit-review",
+                message("queued-work", "preserve queued work"),
+                212,
+            )
+            .unwrap();
+        registry.start_next("near-limit-review", 213).unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let before_output = run_cli(&directory, &["show", "near-limit-review", "--json"]);
+    assert!(before_output.status.success());
+    let before: serde_json::Value = serde_json::from_slice(&before_output.stdout).unwrap();
+    let before_snapshot = before["snapshot"].clone();
+    assert_eq!(before_snapshot["status"], "paused");
+    assert!(
+        before_snapshot["recovery_needs_revalidation"]
+            .as_bool()
+            .unwrap()
+    );
+    assert!(before_snapshot["active_work_uncertain"].as_bool().unwrap());
+
+    let review = run_cli(
+        &directory,
+        &["review-workspace", "near-limit-review", "--json"],
+    );
+    assert!(
+        review.status.success(),
+        "near-limit review failed: {}",
+        String::from_utf8_lossy(&review.stderr)
+    );
+    assert!(review.stdout.len() > 56 * 1024);
+    let files: serde_json::Value = serde_json::from_slice(&review.stdout).unwrap();
+    let files = files.as_array().unwrap();
+    assert_eq!(files.len(), 110);
+    let compact_report = serde_json::to_vec(files).unwrap();
+    assert!(compact_report.len() > 56 * 1024);
+    assert!(compact_report.len() < 64 * 1024 - 256);
+    assert_eq!(
+        files[0]["path"],
+        format!("{long_directory_name}/item-0000-{long_file_suffix}")
+    );
+    assert_eq!(
+        files[109]["path"],
+        format!("{long_directory_name}/item-0109-{long_file_suffix}")
+    );
+    assert!(files.iter().all(|file| file["status"] == "unchanged"));
+    assert!(
+        files
+            .iter()
+            .all(|file| file.as_object().is_some_and(|object| object.len() == 2))
+    );
+    assert!(!String::from_utf8_lossy(&review.stdout).contains("selected file"));
+    assert!(!String::from_utf8_lossy(&review.stdout).contains("content_sha256"));
+    assert!(
+        !String::from_utf8_lossy(&review.stdout)
+            .contains(workspace_path.to_string_lossy().as_ref())
+    );
+
+    let after_output = run_cli(&directory, &["show", "near-limit-review", "--json"]);
+    assert!(after_output.status.success());
+    let after: serde_json::Value = serde_json::from_slice(&after_output.stdout).unwrap();
+    assert_eq!(after["snapshot"], before_snapshot);
+
+    let registry = SessionRegistry::open(&database_path).unwrap();
+    let session = registry.get("near-limit-review").unwrap();
+    assert_eq!(session.status, StoredSessionStatus::Paused);
+    assert!(session.recovery_needs_revalidation);
+    assert!(session.active_work_uncertain);
+    assert_eq!(
+        session.active_message,
+        Some(message("active-work", "preserve active work"))
+    );
+    assert_eq!(
+        session.queued_messages,
+        vec![message("queued-work", "preserve queued work")]
+    );
+    assert_eq!(
+        session.event_sequence,
+        before_snapshot["event_sequence"].as_i64().unwrap()
     );
 
     let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");

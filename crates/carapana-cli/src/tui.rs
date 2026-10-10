@@ -8,7 +8,7 @@ use std::{
 use carapana_daemon::{IpcAttachment, ipc_request};
 use carapana_protocol::{
     AttentionItem, DaemonRequest, DaemonResponse, Envelope, SessionEventRecord, SessionSnapshot,
-    SessionSummary,
+    SessionSummary, WorkspaceFileReview, WorkspaceFileReviewStatus,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::{
@@ -26,6 +26,7 @@ struct App {
     attention: Vec<AttentionItem>,
     selected: usize,
     detail: Option<SessionSnapshot>,
+    workspace_review: Option<WorkspaceFileReview>,
     detail_scroll: usize,
     event_mode: bool,
     events: Vec<SessionEventRecord>,
@@ -42,6 +43,7 @@ impl App {
             attention: Vec::new(),
             selected: 0,
             detail: None,
+            workspace_review: None,
             detail_scroll: 0,
             event_mode: false,
             events: Vec::new(),
@@ -99,6 +101,7 @@ impl App {
                 match attachment.detach() {
                     Ok(_) => {
                         self.detail = Some(snapshot);
+                        self.workspace_review = None;
                         self.detail_scroll = 0;
                         self.event_mode = false;
                         self.events.clear();
@@ -141,6 +144,33 @@ impl App {
         }
     }
 
+    fn review_workspace(&mut self) {
+        let Some(session_id) = self
+            .detail
+            .as_ref()
+            .map(|snapshot| snapshot.session_id.clone())
+        else {
+            return;
+        };
+        self.workspace_review = None;
+        match ipc_request(
+            &self.socket_path,
+            Envelope::new(DaemonRequest::ReviewWorkspace { session_id }),
+        )
+        .map(|response| response.payload)
+        {
+            Ok(DaemonResponse::WorkspaceReview { review }) => {
+                self.workspace_review = Some(review);
+                self.detail_scroll = 0;
+                self.error = None;
+            }
+            Ok(other) => {
+                self.error = Some(format!("unexpected workspace review response: {other:?}"))
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('q') => true,
@@ -152,6 +182,7 @@ impl App {
                     self.detail_scroll = 0;
                     self.load_event_page();
                 } else if self.detail.is_some() {
+                    self.workspace_review = None;
                     let session_id = self.detail.as_ref().unwrap().session_id.clone();
                     match IpcAttachment::attach(&self.socket_path, session_id) {
                         Ok(attachment) => {
@@ -159,6 +190,7 @@ impl App {
                             match attachment.detach() {
                                 Ok(_) => {
                                     self.detail = Some(snapshot);
+                                    self.workspace_review = None;
                                     self.detail_scroll = 0;
                                     self.error = None;
                                 }
@@ -180,6 +212,7 @@ impl App {
                     return false;
                 }
                 self.detail = None;
+                self.workspace_review = None;
                 self.error = None;
                 false
             }
@@ -213,6 +246,10 @@ impl App {
                 } else {
                     self.error = None;
                 }
+                false
+            }
+            KeyCode::Char('v') if self.detail.is_some() && !self.event_mode => {
+                self.review_workspace();
                 false
             }
             KeyCode::Char('n') if self.event_mode && self.event_has_more => {
@@ -265,7 +302,11 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
                 app.error.as_deref(),
             )
         } else {
-            detail_lines(snapshot, app.error.as_deref())
+            detail_lines(
+                snapshot,
+                app.workspace_review.as_ref(),
+                app.error.as_deref(),
+            )
         };
         let width = usize::from(inner.width.max(1));
         let visual_height = lines
@@ -291,7 +332,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
     let footer_text = if app.event_mode {
         "↑/↓ scroll · n next page · r reload · Esc details · q quit"
     } else if app.detail.is_some() {
-        "↑/↓ scroll · e events · r refresh · Esc back · q quit"
+        "↑/↓ scroll · v review files · e events · r refresh · Esc back · q quit"
     } else {
         "↑/↓ select · Enter inspect · r refresh · q quit"
     };
@@ -386,7 +427,11 @@ fn overview_scroll(selected_line: usize, viewport_height: u16) -> u16 {
         .min(u16::MAX as usize) as u16
 }
 
-fn detail_lines(snapshot: &SessionSnapshot, error: Option<&str>) -> Vec<Line<'static>> {
+fn detail_lines(
+    snapshot: &SessionSnapshot,
+    workspace_review: Option<&WorkspaceFileReview>,
+    error: Option<&str>,
+) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(format!("Status: {:?}", snapshot.status)),
         Line::from(format!("Event sequence: {}", snapshot.event_sequence)),
@@ -418,6 +463,27 @@ fn detail_lines(snapshot: &SessionSnapshot, error: Option<&str>) -> Vec<Line<'st
             lines.push(Line::from(format!("  {} · {}", message.id, message.text)));
         }
     }
+    if let Some(review) = workspace_review {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!("Workspace review ({})", review.files.len()),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        lines.push(Line::from(
+            "  Read-only report; this does not authorize resuming.",
+        ));
+        if review.files.is_empty() {
+            lines.push(Line::from("  No explicitly observed files."));
+        } else {
+            for file in &review.files {
+                lines.push(Line::from(format!(
+                    "  {:?} · {}",
+                    file.path,
+                    workspace_review_status_label(file.status)
+                )));
+            }
+        }
+    }
     if let Some(error) = error {
         lines.push(Line::from(""));
         lines.push(Line::styled(
@@ -426,6 +492,18 @@ fn detail_lines(snapshot: &SessionSnapshot, error: Option<&str>) -> Vec<Line<'st
         ));
     }
     lines
+}
+
+fn workspace_review_status_label(status: WorkspaceFileReviewStatus) -> &'static str {
+    match status {
+        WorkspaceFileReviewStatus::Unchanged => "unchanged",
+        WorkspaceFileReviewStatus::Changed => "changed",
+        WorkspaceFileReviewStatus::Missing => "missing",
+        WorkspaceFileReviewStatus::Unreadable => "unreadable",
+        WorkspaceFileReviewStatus::Unsafe => "unsafe",
+        WorkspaceFileReviewStatus::TooLarge => "too_large",
+        WorkspaceFileReviewStatus::Unavailable => "unavailable",
+    }
 }
 
 fn event_lines(
@@ -484,18 +562,18 @@ pub(super) fn run(socket_path: &Path) -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::App;
+    use super::{App, workspace_review_status_label};
     use carapana_daemon::{DaemonRuntime, IpcServer};
     use carapana_protocol::{
         AttentionItem, AttentionReason, Autonomy, QueuedMessage, Selection, SessionStatus,
-        SessionSummary, WorkMode,
+        SessionSummary, WorkMode, WorkspaceFileReviewStatus,
     };
-    use carapana_storage::SessionRegistry;
+    use carapana_storage::{SessionRegistry, WorkspaceMetadata};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
     use std::{
         fs,
-        os::unix::fs::PermissionsExt,
+        os::unix::{ffi::OsStringExt, fs::PermissionsExt},
         path::PathBuf,
         sync::{
             Arc,
@@ -506,6 +584,23 @@ mod tests {
     };
 
     struct PrivateDir(PathBuf);
+
+    #[test]
+    fn should_keep_workspace_review_status_labels_stable() {
+        use WorkspaceFileReviewStatus as Status;
+
+        for (status, expected) in [
+            (Status::Unchanged, "unchanged"),
+            (Status::Changed, "changed"),
+            (Status::Missing, "missing"),
+            (Status::Unreadable, "unreadable"),
+            (Status::Unsafe, "unsafe"),
+            (Status::TooLarge, "too_large"),
+            (Status::Unavailable, "unavailable"),
+        ] {
+            assert_eq!(workspace_review_status_label(status), expected);
+        }
+    }
 
     impl PrivateDir {
         fn new() -> Self {
@@ -621,8 +716,49 @@ mod tests {
                 .enqueue("session-1", message, 11 + index as i64)
                 .unwrap();
         }
-        registry.create("session-2", 12).unwrap();
+        let workspace_path = directory.0.join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        fs::write(workspace_path.join("review.txt"), b"original content").unwrap();
+        fs::write(workspace_path.join("line\nbreak.txt"), b"stat-only file").unwrap();
+        fs::write(workspace_path.join("tab\tbreak.txt"), b"stat-only tab file").unwrap();
+        fs::write(
+            workspace_path.join("escape\u{1b}[31m.txt"),
+            b"stat-only control file",
+        )
+        .unwrap();
+        let non_utf8_name = std::ffi::OsString::from_vec(vec![
+            b'n', 0xff, b'a', b'm', b'e', b'.', b't', b'x', b't',
+        ]);
+        let non_utf8_path = PathBuf::from(&non_utf8_name);
+        fs::write(
+            workspace_path.join(&non_utf8_path),
+            b"synthetic TUI filename contents",
+        )
+        .unwrap();
+        registry
+            .create_with_workspace(
+                "session-2",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                8,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file_with_hash("session-2", "review.txt", 9)
+            .unwrap();
+        registry
+            .observe_workspace_file("session-2", "line\nbreak.txt", 10)
+            .unwrap();
+        registry
+            .observe_workspace_file("session-2", "tab\tbreak.txt", 11)
+            .unwrap();
+        registry
+            .observe_workspace_file("session-2", "escape\u{1b}[31m.txt", 12)
+            .unwrap();
+        registry
+            .observe_workspace_file("session-2", &non_utf8_path, 13)
+            .unwrap();
         drop(registry);
+        fs::write(workspace_path.join("review.txt"), b"changed content").unwrap();
 
         let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
         let socket_path = directory.0.join("daemon.sock");
@@ -646,6 +782,99 @@ mod tests {
         let selected_session_id = app.sessions[app.selected].session_id.clone();
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.detail.as_ref().unwrap().session_id, selected_session_id);
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        let review = app
+            .workspace_review
+            .as_ref()
+            .unwrap_or_else(|| panic!("workspace review missing: {:?}", app.error));
+        assert_eq!(review.files.len(), 5);
+        assert_eq!(review.files[0].path, "review.txt");
+        assert_eq!(review.files[0].status, WorkspaceFileReviewStatus::Changed);
+        assert_eq!(review.files[1].path, "line\nbreak.txt");
+        assert_eq!(review.files[1].status, WorkspaceFileReviewStatus::Unchanged);
+        assert_eq!(review.files[2].path, "tab\tbreak.txt");
+        assert_eq!(review.files[2].status, WorkspaceFileReviewStatus::Unchanged);
+        assert_eq!(review.files[3].path, "escape\u{1b}[31m.txt");
+        assert_eq!(review.files[3].status, WorkspaceFileReviewStatus::Unchanged);
+        let safe_non_utf8_name = non_utf8_name.to_string_lossy();
+        assert_eq!(review.files[4].path, safe_non_utf8_name);
+        assert_eq!(review.files[4].status, WorkspaceFileReviewStatus::Unchanged);
+        let detail = super::detail_lines(
+            app.detail.as_ref().unwrap(),
+            app.workspace_review.as_ref(),
+            None,
+        );
+        assert!(
+            detail
+                .iter()
+                .any(|line| line.to_string().contains("review.txt"))
+        );
+        assert!(
+            detail
+                .iter()
+                .any(|line| line.to_string().contains("changed"))
+        );
+        assert!(
+            detail
+                .iter()
+                .any(|line| line.to_string().contains("line\\nbreak.txt"))
+        );
+        assert!(
+            detail
+                .iter()
+                .any(|line| line.to_string().contains("tab\\tbreak.txt"))
+        );
+        assert!(
+            detail
+                .iter()
+                .any(|line| line.to_string().contains("escape\\u{1b}[31m.txt"))
+        );
+        assert!(
+            detail
+                .iter()
+                .any(|line| line.to_string().contains(safe_non_utf8_name.as_ref()))
+        );
+        assert!(
+            detail
+                .iter()
+                .all(|line| !line.to_string().contains("synthetic TUI filename contents"))
+        );
+        assert!(detail.iter().all(|line| {
+            !line
+                .to_string()
+                .contains(workspace_path.to_string_lossy().as_ref())
+        }));
+        assert!(
+            detail
+                .iter()
+                .all(|line| !line.to_string().contains('\u{1b}'))
+        );
+        assert!(
+            detail
+                .iter()
+                .any(|line| line.to_string().contains("does not authorize resuming"))
+        );
+        let mut review_terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        review_terminal
+            .draw(|frame| super::draw(frame, &app))
+            .unwrap();
+        let rendered = review_terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(rendered.contains("line\\nbreak.txt"));
+        assert!(rendered.contains("tab\\tbreak.txt"));
+        assert!(rendered.contains("escape\\u{1b}[31m.txt"));
+        assert!(rendered.contains(safe_non_utf8_name.as_ref()));
+        assert!(rendered.contains("changed"));
+        assert!(rendered.contains("unchanged"));
+        assert!(!rendered.contains('\n'));
+        assert!(!rendered.contains('\t'));
+        assert!(!rendered.contains('\u{1b}'));
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let session_one_index = app
             .sessions
@@ -698,9 +927,120 @@ mod tests {
             carapana_storage::StoredSessionStatus::Paused
         );
         assert_eq!(session.queued_messages, queued_messages);
+        let reviewed_session = registry.get("session-2").unwrap();
+        assert_eq!(reviewed_session.event_sequence, 6);
+        assert!(!reviewed_session.recovery_needs_revalidation);
 
         shutdown.store(true, Ordering::Release);
         server_thread.join().unwrap();
         assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn should_keep_recovered_session_paused_while_tui_displays_workspace_review() {
+        let directory = PrivateDir::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let workspace_path = directory.0.join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        fs::write(workspace_path.join("source.txt"), b"original contents").unwrap();
+        {
+            let mut registry = SessionRegistry::open(&database_path).unwrap();
+            registry
+                .create_with_workspace(
+                    "session-1",
+                    WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                    10,
+                )
+                .unwrap();
+            registry
+                .observe_workspace_file_with_hash("session-1", "source.txt", 11)
+                .unwrap();
+            registry
+                .enqueue("session-1", message_with_id("active-work"), 12)
+                .unwrap();
+            registry
+                .enqueue("session-1", message_with_id("queued-work"), 13)
+                .unwrap();
+            registry.start_next("session-1", 14).unwrap();
+        }
+        fs::write(workspace_path.join("source.txt"), b"operator edit").unwrap();
+
+        let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
+        assert_eq!(runtime.startup_recovered().len(), 1);
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+        });
+
+        let mut app = App::new(&socket_path);
+        app.refresh();
+        assert_eq!(app.attention.len(), 1);
+        assert!(app.sessions[0].recovery_needs_revalidation);
+        assert!(app.sessions[0].active_work_uncertain);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let snapshot = app.detail.as_ref().unwrap();
+        assert_eq!(snapshot.status, SessionStatus::Paused);
+        assert!(snapshot.recovery_needs_revalidation);
+        assert!(snapshot.active_work_uncertain);
+        assert_eq!(snapshot.active_message.as_ref().unwrap().id, "active-work");
+        assert_eq!(snapshot.queued_messages[0].id, "queued-work");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        assert_eq!(
+            app.workspace_review.as_ref().unwrap().files[0].status,
+            WorkspaceFileReviewStatus::Changed
+        );
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        let snapshot = app.detail.as_ref().unwrap();
+        assert_eq!(snapshot.status, SessionStatus::Paused);
+        assert!(snapshot.recovery_needs_revalidation);
+        assert!(snapshot.active_work_uncertain);
+        assert_eq!(snapshot.active_message.as_ref().unwrap().id, "active-work");
+        assert_eq!(snapshot.queued_messages[0].id, "queued-work");
+
+        let detail = super::detail_lines(snapshot, None, None);
+        assert!(detail.iter().any(|line| {
+            line.to_string()
+                .contains("Recovery needs revalidation: true")
+        }));
+        assert!(
+            detail
+                .iter()
+                .any(|line| line.to_string().contains("Active work uncertain: true"))
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(rendered.contains("v review files"));
+        assert!(!rendered.contains("resume"));
+
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        let registry = SessionRegistry::open(&database_path).unwrap();
+        let session = registry.get("session-1").unwrap();
+        assert_eq!(
+            session.status,
+            carapana_storage::StoredSessionStatus::Paused
+        );
+        assert!(session.recovery_needs_revalidation);
+        assert!(session.active_work_uncertain);
+        assert_eq!(session.active_message, Some(message_with_id("active-work")));
+        assert_eq!(
+            session.queued_messages,
+            vec![message_with_id("queued-work")]
+        );
+        assert_eq!(session.event_sequence, 6);
     }
 }

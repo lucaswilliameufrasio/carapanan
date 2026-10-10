@@ -38,6 +38,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Review explicitly observed workspace files without changing the session.
+    ReviewWorkspace {
+        session_id: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect a session snapshot and optionally read events after a cursor.
     Show {
         session_id: String,
@@ -136,6 +142,40 @@ fn run_client(
                 }
             }
         }
+        Commands::ReviewWorkspace { session_id, json } => {
+            let response = ipc_request(
+                path,
+                Envelope::new(DaemonRequest::ReviewWorkspace { session_id }),
+            )?;
+            let DaemonResponse::WorkspaceReview { review } = response.payload else {
+                return Err(format!(
+                    "daemon returned unexpected response: {:?}",
+                    response.payload
+                )
+                .into());
+            };
+            if json {
+                serde_json::to_writer_pretty(&mut *output, &review.files)?;
+                writeln!(output)?;
+            } else {
+                writeln!(
+                    output,
+                    "Read-only report; this does not authorize resuming."
+                )?;
+                if review.files.is_empty() {
+                    writeln!(output, "No explicitly observed workspace files.")?;
+                } else {
+                    for file in review.files {
+                        writeln!(
+                            output,
+                            "{:?}\t{}",
+                            file.path,
+                            review_status_label(file.status)
+                        )?;
+                    }
+                }
+            }
+        }
         Commands::Show {
             session_id,
             json,
@@ -185,6 +225,21 @@ fn run_client(
 }
 
 #[cfg(unix)]
+fn review_status_label(status: carapana_protocol::WorkspaceFileReviewStatus) -> &'static str {
+    use carapana_protocol::WorkspaceFileReviewStatus;
+
+    match status {
+        WorkspaceFileReviewStatus::Unchanged => "unchanged",
+        WorkspaceFileReviewStatus::Changed => "changed",
+        WorkspaceFileReviewStatus::Missing => "missing",
+        WorkspaceFileReviewStatus::Unreadable => "unreadable",
+        WorkspaceFileReviewStatus::Unsafe => "unsafe",
+        WorkspaceFileReviewStatus::TooLarge => "too_large",
+        WorkspaceFileReviewStatus::Unavailable => "unavailable",
+    }
+}
+
+#[cfg(unix)]
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
         Commands::Daemon => run_daemon(),
@@ -210,10 +265,10 @@ fn main() -> ExitCode {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{Commands, run_client};
+    use super::{Commands, review_status_label, run_client};
     use carapana_daemon::{DaemonRuntime, IpcServer};
     use carapana_protocol::{Autonomy, QueuedMessage, Selection, WorkMode};
-    use carapana_storage::SessionRegistry;
+    use carapana_storage::{SessionRegistry, WorkspaceMetadata};
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
@@ -263,6 +318,23 @@ mod tests {
                 model: "mock-model".into(),
                 variant: "default".into(),
             },
+        }
+    }
+
+    #[test]
+    fn should_keep_workspace_review_json_status_names_stable() {
+        use carapana_protocol::WorkspaceFileReviewStatus as Status;
+
+        for (status, expected) in [
+            (Status::Unchanged, "unchanged"),
+            (Status::Changed, "changed"),
+            (Status::Missing, "missing"),
+            (Status::Unreadable, "unreadable"),
+            (Status::Unsafe, "unsafe"),
+            (Status::TooLarge, "too_large"),
+            (Status::Unavailable, "unavailable"),
+        ] {
+            assert_eq!(review_status_label(status), expected);
         }
     }
 
@@ -329,5 +401,125 @@ mod tests {
         shutdown.store(true, Ordering::Release);
         server_thread.join().unwrap();
         assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn should_display_workspace_review_paths_and_statuses_without_mutating_recovery() {
+        let directory = PrivateDir::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let workspace_path = directory.0.join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        fs::write(workspace_path.join("review.txt"), b"private file contents").unwrap();
+        fs::write(
+            workspace_path.join("line\nbreak.txt"),
+            b"another private file",
+        )
+        .unwrap();
+        fs::write(
+            workspace_path.join("tab\tbreak.txt"),
+            b"tabbed private file",
+        )
+        .unwrap();
+        fs::write(
+            workspace_path.join("escape\u{1b}[31m.txt"),
+            b"control private file",
+        )
+        .unwrap();
+        {
+            let mut registry = SessionRegistry::open(&database_path).unwrap();
+            registry
+                .create_with_workspace(
+                    "session-1",
+                    WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                    10,
+                )
+                .unwrap();
+            registry
+                .observe_workspace_file_with_hash("session-1", "review.txt", 11)
+                .unwrap();
+            registry
+                .observe_workspace_file("session-1", "line\nbreak.txt", 12)
+                .unwrap();
+            registry
+                .observe_workspace_file("session-1", "tab\tbreak.txt", 13)
+                .unwrap();
+            registry
+                .observe_workspace_file("session-1", "escape\u{1b}[31m.txt", 14)
+                .unwrap();
+        }
+        fs::write(
+            workspace_path.join("review.txt"),
+            b"changed private file contents",
+        )
+        .unwrap();
+
+        let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+        });
+
+        let mut json_output = Vec::new();
+        run_client(
+            Commands::ReviewWorkspace {
+                session_id: "session-1".into(),
+                json: true,
+            },
+            &socket_path,
+            &mut json_output,
+        )
+        .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&json_output).unwrap();
+        assert_eq!(report.as_array().unwrap().len(), 4);
+        assert_eq!(report[0]["path"], "review.txt");
+        assert_eq!(report[0]["status"], "changed");
+        assert_eq!(report[1]["path"], "line\nbreak.txt");
+        assert_eq!(report[1]["status"], "unchanged");
+        assert_eq!(report[2]["path"], "tab\tbreak.txt");
+        assert_eq!(report[2]["status"], "unchanged");
+        assert_eq!(report[3]["path"], "escape\u{1b}[31m.txt");
+        assert_eq!(report[3]["status"], "unchanged");
+        assert!(
+            !json_output
+                .windows(b"private file contents".len())
+                .any(|window| window == b"private file contents")
+        );
+        assert!(!String::from_utf8_lossy(&json_output).contains("content_sha256"));
+        assert!(
+            !String::from_utf8_lossy(&json_output).contains(&*workspace_path.to_string_lossy())
+        );
+
+        let mut text_output = Vec::new();
+        run_client(
+            Commands::ReviewWorkspace {
+                session_id: "session-1".into(),
+                json: false,
+            },
+            &socket_path,
+            &mut text_output,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(text_output).unwrap(),
+            "Read-only report; this does not authorize resuming.\n\"review.txt\"\tchanged\n\"line\\nbreak.txt\"\tunchanged\n\"tab\\tbreak.txt\"\tunchanged\n\"escape\\u{1b}[31m.txt\"\tunchanged\n"
+        );
+        assert!(!String::from_utf8_lossy(&json_output).contains('\u{1b}'));
+        assert!(!String::from_utf8_lossy(&json_output).contains("private file contents"));
+
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        let registry = SessionRegistry::open(&database_path).unwrap();
+        let session = registry.get("session-1").unwrap();
+        assert_eq!(session.event_sequence, 5);
+        assert!(!session.recovery_needs_revalidation);
+        assert_eq!(
+            session.status,
+            carapana_storage::StoredSessionStatus::Paused
+        );
     }
 }

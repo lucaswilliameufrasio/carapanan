@@ -498,9 +498,12 @@ impl ClientConnection {
                     }),
                 }
             }
-            (_, request @ (DaemonRequest::ListSessions {} | DaemonRequest::ListAttention {})) => {
-                runtime.handle(Envelope::new(request))
-            }
+            (
+                _,
+                request @ (DaemonRequest::ListSessions {}
+                | DaemonRequest::ListAttention {}
+                | DaemonRequest::ReviewWorkspace { .. }),
+            ) => runtime.handle(Envelope::new(request)),
         }
     }
 }

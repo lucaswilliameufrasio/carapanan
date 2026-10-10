@@ -142,6 +142,7 @@ pub struct ContractError {
 pub enum DaemonRequest {
     ListSessions {},
     ListAttention {},
+    ReviewWorkspace { session_id: String },
     Attach { session_id: String },
     EventsAfter { after_sequence: i64 },
     Detach {},
@@ -186,6 +187,33 @@ pub struct AttentionItem {
     pub active_work_uncertain: bool,
     pub updated_at_ms: i64,
     pub event_sequence: i64,
+}
+
+/// One explicitly observed relative path and its current recovery-review status.
+/// This contract deliberately excludes file content, hashes, and raw stat metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceFileReviewItem {
+    pub path: String,
+    pub status: WorkspaceFileReviewStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceFileReviewStatus {
+    Unchanged,
+    Changed,
+    Missing,
+    Unreadable,
+    Unsafe,
+    TooLarge,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceFileReview {
+    pub files: Vec<WorkspaceFileReviewItem>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,6 +275,7 @@ pub enum DaemonErrorCode {
     AlreadyAttached,
     ConnectionRequired,
     InvalidEventCursor,
+    WorkspaceReviewUnavailable,
 }
 
 /// Response envelope payload. Attachment returns the full session snapshot; IPC errors
@@ -256,6 +285,7 @@ pub enum DaemonErrorCode {
 pub enum DaemonResponse {
     Sessions { sessions: Vec<SessionSummary> },
     Attention { items: Vec<AttentionItem> },
+    WorkspaceReview { review: WorkspaceFileReview },
     Events { batch: Box<SessionEventBatch> },
     Attached { snapshot: Box<SessionSnapshot> },
     Detached { remaining_attached_clients: u64 },
