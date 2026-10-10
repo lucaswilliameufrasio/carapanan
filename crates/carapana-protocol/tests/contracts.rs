@@ -137,6 +137,7 @@ fn should_version_read_only_daemon_session_listing_and_reject_unknown_fields() {
             has_active_message: true,
             recovery_needs_revalidation: true,
             active_work_uncertain: true,
+            attached_clients: 0,
             updated_at_ms: 42,
         }],
     });
@@ -160,7 +161,179 @@ fn should_version_read_only_daemon_session_listing_and_reject_unknown_fields() {
         );
     }
     assert!(serde_json::from_str::<SessionSummary>(
-        r#"{"session_id":"s","status":"paused","queued_count":0,"has_active_message":false,"recovery_needs_revalidation":false,"active_work_uncertain":false,"updated_at_ms":0,"prompt":"not allowed"}"#
+        r#"{"session_id":"s","status":"paused","queued_count":0,"has_active_message":false,"recovery_needs_revalidation":false,"active_work_uncertain":false,"attached_clients":0,"updated_at_ms":0,"prompt":"not allowed"}"#
     )
     .is_err());
+}
+
+#[test]
+fn should_model_connection_scoped_attach_with_a_full_reconnect_snapshot() {
+    let attach = Envelope::new(DaemonRequest::Attach {
+        session_id: "session-1".into(),
+    });
+    let attach_json = serde_json::to_string(&attach).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&attach_json).unwrap(),
+        attach
+    );
+    assert!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(
+            r#"{"protocol":1,"payload":{"type":"detach","session_id":"spoofed"}}"#
+        )
+        .is_err()
+    );
+
+    let response = Envelope::new(DaemonResponse::Attached {
+        snapshot: Box::new(SessionSnapshot {
+            session_id: "session-1".into(),
+            status: SessionStatus::Paused,
+            queued_messages: vec![QueuedMessage {
+                id: "queued-1".into(),
+                text: "preserve this queued message".into(),
+                origin: "tui".into(),
+                selection: Selection {
+                    profile: "ask".into(),
+                    work: WorkMode::Plan,
+                    autonomy: Autonomy::Ask,
+                    provider: "mock".into(),
+                    model: "mock-model".into(),
+                    variant: "default".into(),
+                },
+            }],
+            active_message: None,
+            recovery_needs_revalidation: false,
+            active_work_uncertain: false,
+            attached_clients: 1,
+            created_at_ms: 10,
+            updated_at_ms: 11,
+            event_sequence: 2,
+        }),
+    });
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains("preserve this queued message"));
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(&json).unwrap(),
+        response
+    );
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(
+            r#"{"protocol":1,"payload":{"type":"detach"}}"#
+        )
+        .unwrap()
+        .payload,
+        DaemonRequest::Detach {}
+    );
+}
+
+#[test]
+fn should_round_trip_derived_recovery_attention_without_free_form_details() {
+    let request = Envelope::new(DaemonRequest::ListAttention {});
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&serde_json::to_string(&request).unwrap())
+            .unwrap(),
+        request
+    );
+
+    let response = Envelope::new(DaemonResponse::Attention {
+        items: vec![AttentionItem {
+            session_id: "session-1".into(),
+            reason: AttentionReason::RecoveryReview,
+            active_work_uncertain: true,
+            updated_at_ms: 20,
+            event_sequence: 4,
+        }],
+    });
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(!json.contains("secret"));
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(&json).unwrap(),
+        response
+    );
+}
+
+#[test]
+fn should_expose_only_relative_paths_and_statuses_in_workspace_review_contract() {
+    let request = Envelope::new(DaemonRequest::ReviewWorkspace {
+        session_id: "session-1".into(),
+    });
+    let request_json = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        request_json,
+        r#"{"protocol":1,"payload":{"type":"review_workspace","session_id":"session-1"}}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&request_json).unwrap(),
+        request
+    );
+
+    let response = Envelope::new(DaemonResponse::WorkspaceReview {
+        review: WorkspaceFileReview {
+            files: vec![WorkspaceFileReviewItem {
+                path: "src/main.rs".into(),
+                status: WorkspaceFileReviewStatus::Changed,
+            }],
+        },
+    });
+    let response_json = serde_json::to_string(&response).unwrap();
+    assert_eq!(
+        response_json,
+        r#"{"protocol":1,"payload":{"type":"workspace_review","review":{"files":[{"path":"src/main.rs","status":"changed"}]}}}"#
+    );
+    assert!(!response_json.contains("digest"));
+    assert!(!response_json.contains("metadata"));
+    assert!(!response_json.contains("contents"));
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(&response_json).unwrap(),
+        response
+    );
+    assert!(
+        serde_json::from_str::<WorkspaceFileReviewItem>(
+            r#"{"path":"src/main.rs","status":"changed","content_sha256":"not-allowed"}"#
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn should_round_trip_bounded_incremental_session_event_batches() {
+    let batch = SessionEventBatch {
+        events: vec![SessionEventRecord {
+            sequence: 3,
+            occurred_at_ms: 42,
+            event: DaemonSessionEvent::MessageQueued {
+                message: QueuedMessage {
+                    id: "queued-3".into(),
+                    text: "new message".into(),
+                    origin: "tui".into(),
+                    selection: Selection {
+                        profile: "ask".into(),
+                        work: WorkMode::Plan,
+                        autonomy: Autonomy::Ask,
+                        provider: "mock".into(),
+                        model: "mock-model".into(),
+                        variant: "default".into(),
+                    },
+                },
+            },
+        }],
+        next_sequence: 3,
+        has_more: true,
+    };
+    let request = Envelope::new(DaemonRequest::EventsAfter { after_sequence: 2 });
+    let response = Envelope::new(DaemonResponse::Events {
+        batch: Box::new(batch),
+    });
+    for json in [
+        serde_json::to_string(&request).unwrap(),
+        serde_json::to_string(&response).unwrap(),
+    ] {
+        assert!(json.len() < 64 * 1024);
+    }
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonResponse>>(
+            &serde_json::to_string(&response).unwrap()
+        )
+        .unwrap(),
+        response
+    );
 }

@@ -4,7 +4,11 @@ use carapana_protocol::{Outcome, QueuedMessage};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-use crate::Database;
+use crate::{
+    Database, WorkspaceFileMetadata, WorkspaceFileMetadataError, WorkspaceFileValidation,
+    WorkspaceFileValidationStatus, WorkspaceMetadata, WorkspaceMetadataError,
+    WorkspaceValidationReport,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,6 +40,10 @@ pub struct PersistedSession {
     pub recovery_needs_revalidation: bool,
     #[serde(default)]
     pub active_work_uncertain: bool,
+    #[serde(default)]
+    pub workspace: Option<WorkspaceMetadata>,
+    #[serde(default)]
+    pub workspace_files: Vec<WorkspaceFileMetadata>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub event_sequence: i64,
@@ -46,6 +54,11 @@ pub struct PersistedSession {
 pub enum StoredSessionEvent {
     Created {
         session_id: String,
+        #[serde(default)]
+        workspace: Option<WorkspaceMetadata>,
+    },
+    WorkspaceFileObserved {
+        observation: WorkspaceFileMetadata,
     },
     MessageQueued {
         message: QueuedMessage,
@@ -63,10 +76,19 @@ pub enum StoredSessionEvent {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredSessionEventRecord {
+    pub sequence: i64,
+    pub occurred_at_ms: i64,
+    pub event: StoredSessionEvent,
+}
+
 impl StoredSessionEvent {
     fn event_type(&self) -> &'static str {
         match self {
             Self::Created { .. } => "created",
+            Self::WorkspaceFileObserved { .. } => "workspace_file_observed",
             Self::MessageQueued { .. } => "message_queued",
             Self::MessageStarted { .. } => "message_started",
             Self::Paused => "paused",
@@ -87,9 +109,13 @@ pub enum SessionStoreError {
     InvalidMessageId,
     DuplicateMessageId,
     InvalidEventHistory,
+    InvalidEventCursor,
     InvalidTransition,
     RevalidationRequired,
     NoActiveMessage,
+    WorkspaceMetadata(WorkspaceMetadataError),
+    WorkspaceFileMetadata(WorkspaceFileMetadataError),
+    WorkspaceNotConfigured,
 }
 
 impl fmt::Display for SessionStoreError {
@@ -110,6 +136,9 @@ impl fmt::Display for SessionStoreError {
             Self::InvalidEventHistory => {
                 formatter.write_str("session event history is inconsistent")
             }
+            Self::InvalidEventCursor => {
+                formatter.write_str("session event cursor is outside the event history")
+            }
             Self::InvalidTransition => {
                 formatter.write_str("session transition is not valid in the current state")
             }
@@ -117,6 +146,15 @@ impl fmt::Display for SessionStoreError {
                 formatter.write_str("session state must be revalidated before advancing")
             }
             Self::NoActiveMessage => formatter.write_str("session has no active message"),
+            Self::WorkspaceMetadata(error) => {
+                write!(formatter, "invalid session workspace: {error}")
+            }
+            Self::WorkspaceFileMetadata(error) => {
+                write!(formatter, "invalid session workspace file: {error}")
+            }
+            Self::WorkspaceNotConfigured => {
+                formatter.write_str("session has no configured workspace")
+            }
         }
     }
 }
@@ -126,6 +164,8 @@ impl Error for SessionStoreError {
         match self {
             Self::Sqlite(error) => Some(error),
             Self::Json(error) => Some(error),
+            Self::WorkspaceMetadata(error) => Some(error),
+            Self::WorkspaceFileMetadata(error) => Some(error),
             _ => None,
         }
     }
@@ -146,6 +186,27 @@ impl From<serde_json::Error> for SessionStoreError {
 pub(super) fn create_session(
     database: &mut Database,
     session_id: &str,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    create_session_with_optional_workspace(database, session_id, None, now_ms)
+}
+
+pub(super) fn create_session_with_workspace(
+    database: &mut Database,
+    session_id: &str,
+    workspace: WorkspaceMetadata,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    workspace
+        .verify_current()
+        .map_err(SessionStoreError::WorkspaceMetadata)?;
+    create_session_with_optional_workspace(database, session_id, Some(workspace), now_ms)
+}
+
+fn create_session_with_optional_workspace(
+    database: &mut Database,
+    session_id: &str,
+    workspace: Option<WorkspaceMetadata>,
     now_ms: i64,
 ) -> Result<PersistedSession, SessionStoreError> {
     validate_session_id(session_id)?;
@@ -170,6 +231,8 @@ pub(super) fn create_session(
         active_message: None,
         recovery_needs_revalidation: false,
         active_work_uncertain: false,
+        workspace: workspace.clone(),
+        workspace_files: Vec::new(),
         created_at_ms: now_ms,
         updated_at_ms: now_ms,
         event_sequence: 0,
@@ -183,6 +246,7 @@ pub(super) fn create_session(
         &mut session,
         StoredSessionEvent::Created {
             session_id: session_id.to_owned(),
+            workspace,
         },
         now_ms,
     )?;
@@ -234,6 +298,131 @@ pub(super) fn enqueue_message(
     Ok(session)
 }
 
+pub(super) fn observe_workspace_file(
+    database: &mut Database,
+    session_id: &str,
+    relative_path: impl AsRef<std::path::Path>,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    record_workspace_file(database, session_id, relative_path, now_ms, false)
+}
+
+pub(super) fn observe_workspace_file_with_hash(
+    database: &mut Database,
+    session_id: &str,
+    relative_path: impl AsRef<std::path::Path>,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    record_workspace_file(database, session_id, relative_path, now_ms, true)
+}
+
+fn record_workspace_file(
+    database: &mut Database,
+    session_id: &str,
+    relative_path: impl AsRef<std::path::Path>,
+    now_ms: i64,
+    with_hash: bool,
+) -> Result<PersistedSession, SessionStoreError> {
+    validate_session_id(session_id)?;
+    validate_timestamp(now_ms)?;
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut session = load_session_tx(&transaction, session_id)?;
+    validate_transition_time(&session, now_ms)?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
+    let observation = if with_hash {
+        workspace.observe_file_with_hash(relative_path)
+    } else {
+        workspace.observe_file(relative_path)
+    }
+    .map_err(SessionStoreError::WorkspaceFileMetadata)?;
+    apply_and_persist(
+        &transaction,
+        &mut session,
+        StoredSessionEvent::WorkspaceFileObserved { observation },
+        now_ms,
+    )?;
+    transaction.commit()?;
+    Ok(session)
+}
+
+pub(super) fn validate_workspace_files(
+    database: &Database,
+    session_id: &str,
+) -> Result<(), SessionStoreError> {
+    let session = database.load_session(session_id)?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
+    workspace
+        .verify_current()
+        .map_err(SessionStoreError::WorkspaceMetadata)?;
+    for observation in &session.workspace_files {
+        observation
+            .verify_current(workspace)
+            .map_err(SessionStoreError::WorkspaceFileMetadata)?;
+    }
+    Ok(())
+}
+
+pub(super) fn review_workspace_files(
+    database: &Database,
+    session_id: &str,
+) -> Result<WorkspaceValidationReport, SessionStoreError> {
+    let session = database.load_session(session_id)?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
+    workspace
+        .verify_current()
+        .map_err(SessionStoreError::WorkspaceMetadata)?;
+
+    let mut files = Vec::with_capacity(session.workspace_files.len());
+    for observation in &session.workspace_files {
+        let status = match observation.verify_current(workspace) {
+            Ok(()) => WorkspaceFileValidationStatus::Unchanged,
+            Err(WorkspaceFileMetadataError::Workspace(error)) => {
+                return Err(SessionStoreError::WorkspaceMetadata(error));
+            }
+            Err(error) => workspace_file_validation_status(&error),
+        };
+        files.push(WorkspaceFileValidation {
+            relative_path: observation.relative_path(),
+            status,
+        });
+    }
+    Ok(WorkspaceValidationReport { files })
+}
+
+fn workspace_file_validation_status(
+    error: &WorkspaceFileMetadataError,
+) -> WorkspaceFileValidationStatus {
+    match error {
+        WorkspaceFileMetadataError::Workspace(_) => WorkspaceFileValidationStatus::Unavailable,
+        WorkspaceFileMetadataError::Io(error) => io_validation_status(error),
+        WorkspaceFileMetadataError::Changed(_) => WorkspaceFileValidationStatus::Changed,
+        WorkspaceFileMetadataError::InvalidRelativePath(_)
+        | WorkspaceFileMetadataError::UnsafePath(_)
+        | WorkspaceFileMetadataError::NotRegularFile(_)
+        | WorkspaceFileMetadataError::SensitivePath(_) => WorkspaceFileValidationStatus::Unsafe,
+        WorkspaceFileMetadataError::FileTooLarge(_) => WorkspaceFileValidationStatus::TooLarge,
+    }
+}
+
+fn io_validation_status(error: &std::io::Error) -> WorkspaceFileValidationStatus {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => WorkspaceFileValidationStatus::Missing,
+        std::io::ErrorKind::PermissionDenied => WorkspaceFileValidationStatus::Unreadable,
+        _ => WorkspaceFileValidationStatus::Unavailable,
+    }
+}
+
 pub(super) fn load_session(
     database: &Database,
     session_id: &str,
@@ -278,6 +467,74 @@ pub(super) fn session_events(
         return Err(SessionStoreError::SessionNotFound);
     }
     read_events(&database.connection, session_id)
+}
+
+pub(super) fn session_events_after(
+    database: &mut Database,
+    session_id: &str,
+    after_sequence: i64,
+    limit: u16,
+) -> Result<(Vec<StoredSessionEventRecord>, i64, bool), SessionStoreError> {
+    validate_session_id(session_id)?;
+    if after_sequence < 0 || limit == 0 {
+        return Err(SessionStoreError::InvalidEventCursor);
+    }
+
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)?;
+    let current_sequence = transaction
+        .query_row(
+            "SELECT event_sequence FROM session_snapshots WHERE session_id = ?1",
+            [session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .ok_or(SessionStoreError::SessionNotFound)?;
+    if after_sequence > current_sequence {
+        return Err(SessionStoreError::InvalidEventCursor);
+    }
+
+    let (records, has_more) = {
+        let fetch_limit = i64::from(limit) + 1;
+        let mut statement = transaction.prepare(
+            "SELECT sequence, occurred_at_ms, event_type, payload_json FROM session_events WHERE session_id = ?1 AND sequence > ?2 ORDER BY sequence LIMIT ?3",
+        )?;
+        let mut rows = statement.query(params![session_id, after_sequence, fetch_limit])?;
+        let mut records = Vec::new();
+        let mut expected_sequence = after_sequence
+            .checked_add(1)
+            .ok_or(SessionStoreError::InvalidEventCursor)?;
+        while let Some(row) = rows.next()? {
+            let sequence: i64 = row.get(0)?;
+            let occurred_at_ms: i64 = row.get(1)?;
+            let event_type: String = row.get(2)?;
+            let payload: String = row.get(3)?;
+            if sequence != expected_sequence {
+                return Err(SessionStoreError::InvalidEventHistory);
+            }
+            let event: StoredSessionEvent = serde_json::from_str(&payload)?;
+            if event.event_type() != event_type {
+                return Err(SessionStoreError::InvalidEventHistory);
+            }
+            records.push(StoredSessionEventRecord {
+                sequence,
+                occurred_at_ms,
+                event,
+            });
+            expected_sequence = expected_sequence
+                .checked_add(1)
+                .ok_or(SessionStoreError::InvalidEventHistory)?;
+        }
+        let has_more = records.len() > usize::from(limit);
+        records.truncate(usize::from(limit));
+        (records, has_more)
+    };
+    let next_sequence = records
+        .last()
+        .map_or(after_sequence, |record| record.sequence);
+    transaction.commit()?;
+    Ok((records, next_sequence, has_more))
 }
 
 pub(super) fn rebuild_snapshot(
@@ -597,6 +854,7 @@ fn apply_event(
             None,
             StoredSessionEvent::Created {
                 session_id: created_id,
+                workspace,
             },
         ) if created_id == session_id && sequence == 1 => {
             *session = Some(PersistedSession {
@@ -606,6 +864,8 @@ fn apply_event(
                 active_message: None,
                 recovery_needs_revalidation: false,
                 active_work_uncertain: false,
+                workspace,
+                workspace_files: Vec::new(),
                 created_at_ms: occurred_at_ms,
                 updated_at_ms: occurred_at_ms,
                 event_sequence: sequence,
@@ -660,6 +920,19 @@ fn apply_to_session(
         return Err(SessionStoreError::InvalidEventHistory);
     }
     match event {
+        StoredSessionEvent::WorkspaceFileObserved { observation } => {
+            if session.workspace.is_none() {
+                return Err(SessionStoreError::WorkspaceNotConfigured);
+            }
+            observation
+                .validate_path()
+                .map_err(SessionStoreError::WorkspaceFileMetadata)?;
+            let path = observation.relative_path();
+            session
+                .workspace_files
+                .retain(|current| current.relative_path() != path);
+            session.workspace_files.push(observation.clone());
+        }
         StoredSessionEvent::MessageQueued { message }
             if !message.id.trim().is_empty()
                 && session
@@ -766,8 +1039,11 @@ fn validate_timestamp(timestamp_ms: i64) -> Result<(), SessionStoreError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus};
-    use crate::{Database, SessionRegistry};
+    use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus, io_validation_status};
+    use crate::{
+        Database, SessionRegistry, WorkspaceFileMetadataError, WorkspaceFileValidationStatus,
+        WorkspaceMetadata, WorkspaceMetadataError,
+    };
     use carapana_protocol::{Autonomy, Outcome, QueuedMessage, Selection, WorkMode};
     use rusqlite::params;
     use std::{
@@ -784,6 +1060,8 @@ mod tests {
 
     struct TestDatabase(PathBuf);
 
+    struct TestWorkspace(PathBuf);
+
     impl TestDatabase {
         fn new() -> Self {
             let nonce = SystemTime::now()
@@ -795,6 +1073,23 @@ mod tests {
 
         fn with_timestamp(nonce: u128) -> Self {
             Self(test_database_path(nonce))
+        }
+    }
+
+    impl TestWorkspace {
+        fn new() -> Self {
+            static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(0);
+            let nonce = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let id = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "carapana-session-workspace-{}-{nonce}-{id}",
+                std::process::id()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
         }
     }
 
@@ -825,6 +1120,12 @@ mod tests {
         }
     }
 
+    impl Drop for TestWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn message(id: &str) -> QueuedMessage {
         QueuedMessage {
             id: id.into(),
@@ -839,6 +1140,22 @@ mod tests {
                 variant: "default".into(),
             },
         }
+    }
+
+    #[test]
+    fn should_map_workspace_review_io_errors_to_closed_statuses() {
+        assert_eq!(
+            io_validation_status(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+            WorkspaceFileValidationStatus::Missing
+        );
+        assert_eq!(
+            io_validation_status(&std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            WorkspaceFileValidationStatus::Unreadable
+        );
+        assert_eq!(
+            io_validation_status(&std::io::Error::from(std::io::ErrorKind::InvalidData)),
+            WorkspaceFileValidationStatus::Unavailable
+        );
     }
 
     #[test]
@@ -874,7 +1191,8 @@ mod tests {
             database.session_events("session-1").unwrap(),
             vec![
                 StoredSessionEvent::Created {
-                    session_id: "session-1".into()
+                    session_id: "session-1".into(),
+                    workspace: None,
                 },
                 StoredSessionEvent::MessageQueued {
                     message: message("m1")
@@ -884,6 +1202,648 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_persist_workspace_identity_in_event_history_and_rebuilt_snapshot() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            let created = database
+                .create_session_with_workspace("session-1", metadata.clone(), 10)
+                .unwrap();
+            assert_eq!(created.workspace, Some(metadata.clone()));
+            assert!(matches!(
+                database.session_events("session-1").unwrap().first(),
+                Some(StoredSessionEvent::Created {
+                    workspace: Some(saved),
+                    ..
+                }) if saved == &metadata
+            ));
+        }
+
+        let mut database = Database::open(&path.0).unwrap();
+        let loaded = database.load_session("session-1").unwrap();
+        assert_eq!(loaded.workspace, Some(metadata.clone()));
+        let rebuilt = database.rebuild_snapshot("session-1").unwrap();
+        assert_eq!(rebuilt.workspace, Some(metadata));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_persist_and_revalidate_explicit_workspace_file_observations_after_reopen() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        let file = workspace.0.join("src/main.rs");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"stat-only observation").unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database
+                .create_session_with_workspace("session-1", metadata, 10)
+                .unwrap();
+            let session = database
+                .observe_workspace_file("session-1", "src/main.rs", 11)
+                .unwrap();
+            assert_eq!(session.workspace_files.len(), 1);
+            assert_eq!(
+                session.workspace_files[0].relative_path(),
+                PathBuf::from("src/main.rs")
+            );
+        }
+
+        let mut database = Database::open(&path.0).unwrap();
+        database.validate_workspace_files("session-1").unwrap();
+        let loaded = database.load_session("session-1").unwrap();
+        assert_eq!(loaded.workspace_files.len(), 1);
+        assert!(matches!(
+            database.session_events("session-1").unwrap().last(),
+            Some(StoredSessionEvent::WorkspaceFileObserved { .. })
+        ));
+        let rebuilt = database.rebuild_snapshot("session-1").unwrap();
+        assert_eq!(rebuilt.workspace_files, loaded.workspace_files);
+
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            database.validate_workspace_files("session-1"),
+            Err(SessionStoreError::WorkspaceFileMetadata(
+                WorkspaceFileMetadataError::Changed(_)
+            ))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_record_file_observations_for_sessions_without_a_workspace() {
+        let path = TestDatabase::new();
+        let mut database = Database::open(&path.0).unwrap();
+        database.create_session("session-1", 10).unwrap();
+
+        assert!(matches!(
+            database.observe_workspace_file("session-1", "src/main.rs", 11),
+            Err(SessionStoreError::WorkspaceNotConfigured)
+        ));
+        assert!(matches!(
+            database.validate_workspace_files("session-1"),
+            Err(SessionStoreError::WorkspaceNotConfigured)
+        ));
+        assert_eq!(
+            database.load_session("session-1").unwrap().event_sequence,
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_persist_only_the_hash_for_an_explicitly_hashed_workspace_file() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(workspace.0.join("source.txt"), b"local bytes stay local").unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database
+                .create_session_with_workspace("session-1", metadata, 10)
+                .unwrap();
+            let session = database
+                .observe_workspace_file_with_hash("session-1", "source.txt", 11)
+                .unwrap();
+            assert_eq!(
+                session.workspace_files[0].content_sha256(),
+                Some("bc7149276653552cf844e69f831e43200135b29dd7f9401c6d0910b65665b08c")
+            );
+        }
+
+        let database = Database::open(&path.0).unwrap();
+        database.validate_workspace_files("session-1").unwrap();
+        let session = database.load_session("session-1").unwrap();
+        assert_eq!(session.workspace_files.len(), 1);
+        assert_eq!(
+            session.workspace_files[0].content_sha256(),
+            Some("bc7149276653552cf844e69f831e43200135b29dd7f9401c6d0910b65665b08c")
+        );
+        let serialized = serde_json::to_string(&session.workspace_files[0]).unwrap();
+        assert!(!serialized.contains("local bytes stay local"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_reject_sensitive_hash_requests_before_persisting_observations() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        let sensitive_paths = [
+            ".env",
+            ".env.local",
+            ".ENV.production",
+            ".ssh/id_rsa",
+            ".aws/credentials",
+            ".SSH/known_hosts",
+            ".AWS/config",
+            "contains-secret.txt",
+            "my-credential.json",
+            "contains-SECRET.txt",
+            "my-CREDENTIAL.json",
+            "certificate.pem",
+            "private.key",
+            "certificate.PEM",
+            "private.KEY",
+        ];
+        for sensitive_path in sensitive_paths.iter().copied() {
+            let file = workspace.0.join(sensitive_path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, b"synthetic fixture data only").unwrap();
+        }
+        fs::write(workspace.0.join("safe.txt"), b"safe fixture data").unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let mut database = Database::open(&path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+
+        for sensitive_path in sensitive_paths {
+            assert!(matches!(
+                database.observe_workspace_file_with_hash(
+                    "session-1",
+                    sensitive_path,
+                    11,
+                ),
+                Err(SessionStoreError::WorkspaceFileMetadata(
+                    WorkspaceFileMetadataError::SensitivePath(path)
+                )) if path.as_path() == std::path::Path::new(sensitive_path)
+            ));
+            let session = database.load_session("session-1").unwrap();
+            assert_eq!(session.event_sequence, 1);
+            assert!(session.workspace_files.is_empty());
+            assert_eq!(database.session_events("session-1").unwrap().len(), 1);
+        }
+
+        let accepted = database
+            .observe_workspace_file_with_hash("session-1", "safe.txt", 20)
+            .unwrap();
+        assert_eq!(accepted.event_sequence, 2);
+        assert_eq!(accepted.workspace_files.len(), 1);
+        assert_eq!(
+            accepted.workspace_files[0].relative_path(),
+            PathBuf::from("safe.txt")
+        );
+        let expected_hash = accepted.workspace_files[0]
+            .content_sha256()
+            .unwrap()
+            .to_owned();
+        assert!(matches!(
+            database.session_events("session-1").unwrap().last(),
+            Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                if observation.relative_path().as_path() == std::path::Path::new("safe.txt")
+        ));
+        drop(database);
+
+        let reopened = Database::open(&path.0).unwrap();
+        let loaded = reopened.load_session("session-1").unwrap();
+        assert_eq!(loaded.event_sequence, 2);
+        assert_eq!(loaded.workspace_files.len(), 1);
+        assert_eq!(
+            loaded.workspace_files[0].relative_path(),
+            PathBuf::from("safe.txt")
+        );
+        assert_eq!(
+            loaded.workspace_files[0].content_sha256(),
+            Some(expected_hash.as_str())
+        );
+        let events = reopened.session_events("session-1").unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events.last(),
+            Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                if observation.relative_path().as_path() == std::path::Path::new("safe.txt")
+        ));
+        reopened.validate_workspace_files("session-1").unwrap();
+        assert_eq!(
+            reopened.load_session("session-1").unwrap().event_sequence,
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_reject_hashes_when_workspace_root_contains_sensitive_components() {
+        let database_path = TestDatabase::new();
+        let fixture = TestWorkspace::new();
+        let mut database = Database::open(&database_path.0).unwrap();
+
+        for (index, sensitive_component) in [
+            ".SSH",
+            ".AWS",
+            ".ENV.workspace",
+            "workspace-SECRET",
+            "workspace-CREDENTIAL",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let workspace_path = fixture.0.join(sensitive_component).join("project");
+            fs::create_dir_all(&workspace_path).unwrap();
+            fs::write(workspace_path.join("safe.txt"), b"synthetic safe fixture").unwrap();
+
+            let session_id = format!("session-{index}");
+            let metadata = WorkspaceMetadata::capture(&workspace_path).unwrap();
+            database
+                .create_session_with_workspace(&session_id, metadata, 10)
+                .unwrap();
+
+            let stat_only = database
+                .observe_workspace_file(&session_id, "safe.txt", 11)
+                .unwrap();
+            assert_eq!(stat_only.event_sequence, 2);
+            assert_eq!(stat_only.workspace_files.len(), 1);
+            assert_eq!(stat_only.workspace_files[0].content_sha256(), None);
+
+            assert!(matches!(
+                database.observe_workspace_file_with_hash(&session_id, "safe.txt", 12),
+                Err(SessionStoreError::WorkspaceFileMetadata(
+                    WorkspaceFileMetadataError::SensitivePath(path)
+                )) if path.as_path() == std::path::Path::new("safe.txt")
+            ));
+            let session = database.load_session(&session_id).unwrap();
+            assert_eq!(session.event_sequence, 2);
+            assert_eq!(session.workspace_files.len(), 1);
+            assert_eq!(session.workspace_files[0].content_sha256(), None);
+            let events = database.session_events(&session_id).unwrap();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(
+                events.first(),
+                Some(StoredSessionEvent::Created { .. })
+            ));
+            assert!(matches!(
+                events.last(),
+                Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                    if observation.content_sha256().is_none()
+            ));
+
+            drop(database);
+            let mut reopened = Database::open(&database_path.0).unwrap();
+            reopened.validate_workspace_files(&session_id).unwrap();
+            assert!(matches!(
+                reopened.observe_workspace_file_with_hash(&session_id, "safe.txt", 13),
+                Err(SessionStoreError::WorkspaceFileMetadata(
+                    WorkspaceFileMetadataError::SensitivePath(path)
+                )) if path.as_path() == std::path::Path::new("safe.txt")
+            ));
+            let session = reopened.load_session(&session_id).unwrap();
+            assert_eq!(session.event_sequence, 2);
+            assert_eq!(session.workspace_files.len(), 1);
+            assert_eq!(session.workspace_files[0].content_sha256(), None);
+            let events = reopened.session_events(&session_id).unwrap();
+            assert_eq!(events.len(), 2);
+            assert!(matches!(
+                events.last(),
+                Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                    if observation.content_sha256().is_none()
+            ));
+            database = reopened;
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_keep_sensitive_file_observations_stat_only_and_reject_hashing() {
+        let database_path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(
+            workspace.0.join(".env.local"),
+            b"synthetic sensitive-path fixture contents",
+        )
+        .unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let mut database = Database::open(&database_path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+
+        let observed = database
+            .observe_workspace_file("session-1", ".env.local", 11)
+            .unwrap();
+        assert_eq!(observed.event_sequence, 2);
+        assert_eq!(observed.workspace_files.len(), 1);
+        assert_eq!(observed.workspace_files[0].content_sha256(), None);
+        let serialized = serde_json::to_string(&observed.workspace_files[0]).unwrap();
+        assert!(!serialized.contains("synthetic sensitive-path fixture contents"));
+
+        assert!(matches!(
+            database.observe_workspace_file_with_hash("session-1", ".env.local", 12),
+            Err(SessionStoreError::WorkspaceFileMetadata(
+                WorkspaceFileMetadataError::SensitivePath(path)
+            )) if path.as_path() == std::path::Path::new(".env.local")
+        ));
+        let session = database.load_session("session-1").unwrap();
+        assert_eq!(session.event_sequence, 2);
+        assert_eq!(session.workspace_files.len(), 1);
+        assert_eq!(session.workspace_files[0].content_sha256(), None);
+        let events = database.session_events("session-1").unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events.last(),
+            Some(StoredSessionEvent::WorkspaceFileObserved { observation })
+                if observation.content_sha256().is_none()
+        ));
+        drop(database);
+
+        let reopened = Database::open(&database_path.0).unwrap();
+        reopened.validate_workspace_files("session-1").unwrap();
+        let loaded = reopened.load_session("session-1").unwrap();
+        assert_eq!(loaded.event_sequence, 2);
+        assert_eq!(loaded.workspace_files.len(), 1);
+        assert_eq!(loaded.workspace_files[0].content_sha256(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_reject_workspace_escape_paths_before_persisting_hash_observations() {
+        use std::os::unix::fs::symlink;
+
+        let path = TestDatabase::new();
+        let fixture = TestWorkspace::new();
+        let workspace_path = fixture.0.join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        let outside_file = fixture.0.join("outside.txt");
+        fs::write(&outside_file, b"synthetic outside fixture").unwrap();
+        fs::write(workspace_path.join("safe.txt"), b"synthetic safe fixture").unwrap();
+        symlink(&outside_file, workspace_path.join("linked.txt")).unwrap();
+
+        let metadata = WorkspaceMetadata::capture(&workspace_path).unwrap();
+        let mut database = Database::open(&path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+
+        for relative_path in ["../outside.txt", "linked.txt"] {
+            assert!(matches!(
+                database.observe_workspace_file_with_hash("session-1", relative_path, 11),
+                Err(SessionStoreError::WorkspaceFileMetadata(
+                    WorkspaceFileMetadataError::InvalidRelativePath(_)
+                        | WorkspaceFileMetadataError::UnsafePath(_)
+                ))
+            ));
+            let session = database.load_session("session-1").unwrap();
+            assert_eq!(session.event_sequence, 1);
+            assert!(session.workspace_files.is_empty());
+            assert_eq!(database.session_events("session-1").unwrap().len(), 1);
+        }
+        assert!(matches!(
+            database.observe_workspace_file_with_hash("session-1", &outside_file, 11),
+            Err(SessionStoreError::WorkspaceFileMetadata(
+                WorkspaceFileMetadataError::InvalidRelativePath(_)
+            ))
+        ));
+        assert_eq!(
+            database.load_session("session-1").unwrap().event_sequence,
+            1
+        );
+        assert!(
+            database
+                .load_session("session-1")
+                .unwrap()
+                .workspace_files
+                .is_empty()
+        );
+        assert_eq!(database.session_events("session-1").unwrap().len(), 1);
+
+        let accepted = database
+            .observe_workspace_file_with_hash("session-1", "safe.txt", 12)
+            .unwrap();
+        assert_eq!(accepted.event_sequence, 2);
+        assert_eq!(accepted.workspace_files.len(), 1);
+        assert_eq!(
+            accepted.workspace_files[0].relative_path(),
+            PathBuf::from("safe.txt")
+        );
+        drop(database);
+
+        let reopened = Database::open(&path.0).unwrap();
+        let loaded = reopened.load_session("session-1").unwrap();
+        assert_eq!(loaded.event_sequence, 2);
+        assert_eq!(loaded.workspace_files.len(), 1);
+        assert_eq!(
+            loaded.workspace_files[0].relative_path(),
+            PathBuf::from("safe.txt")
+        );
+        assert_eq!(reopened.session_events("session-1").unwrap().len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_report_each_explicit_workspace_file_without_changing_recovery_state() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        for file_name in ["hashed.txt", "changed.txt", "stat.txt", "missing.txt"] {
+            fs::write(workspace.0.join(file_name), format!("original {file_name}")).unwrap();
+        }
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let mut database = Database::open(&path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+        database
+            .observe_workspace_file_with_hash("session-1", "hashed.txt", 11)
+            .unwrap();
+        database
+            .observe_workspace_file_with_hash("session-1", "changed.txt", 13)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "stat.txt", 14)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "missing.txt", 15)
+            .unwrap();
+        database
+            .enqueue_message("session-1", message("active"), 16)
+            .unwrap();
+        database.start_next_message("session-1", 17).unwrap();
+        fs::write(workspace.0.join("changed.txt"), b"changed contents").unwrap();
+        fs::remove_file(workspace.0.join("missing.txt")).unwrap();
+        drop(database);
+
+        let mut database = Database::open(&path.0).unwrap();
+        database.recover_active_sessions(20).unwrap();
+        let before_review = database.load_session("session-1").unwrap();
+        let report = database.review_workspace_files("session-1").unwrap();
+
+        assert_eq!(report.files.len(), 4);
+        assert_eq!(
+            report.files[0].status,
+            WorkspaceFileValidationStatus::Unchanged
+        );
+        assert_eq!(
+            report.files[1].status,
+            WorkspaceFileValidationStatus::Changed
+        );
+        assert_eq!(
+            report.files[2].status,
+            WorkspaceFileValidationStatus::Unchanged
+        );
+        assert_eq!(
+            report.files[3].status,
+            WorkspaceFileValidationStatus::Missing
+        );
+        let after_review = database.load_session("session-1").unwrap();
+        assert_eq!(after_review.status, StoredSessionStatus::Paused);
+        assert!(after_review.recovery_needs_revalidation);
+        assert_eq!(after_review.event_sequence, before_review.event_sequence);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_review_only_explicit_paths_after_sensitive_root_changes_without_advancing_recovery() {
+        let database_path = TestDatabase::new();
+        let fixture = TestWorkspace::new();
+        let workspace_path = fixture.0.join(".SSH").join("project");
+        fs::create_dir_all(&workspace_path).unwrap();
+        fs::write(workspace_path.join("safe.txt"), b"synthetic original").unwrap();
+        fs::write(workspace_path.join("removed.txt"), b"synthetic to remove").unwrap();
+        fs::write(workspace_path.join("linked.txt"), b"synthetic link source").unwrap();
+        fs::create_dir(workspace_path.join("nested")).unwrap();
+        fs::write(
+            workspace_path.join("nested/file.txt"),
+            b"synthetic nested source",
+        )
+        .unwrap();
+        let outside_file = fixture.0.join("outside-target.txt");
+        fs::write(&outside_file, b"synthetic target must not be read").unwrap();
+        std::os::unix::fs::symlink(&outside_file, workspace_path.join("unobserved-link.txt"))
+            .unwrap();
+
+        let metadata = WorkspaceMetadata::capture(&workspace_path).unwrap();
+        let mut database = Database::open(&database_path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "safe.txt", 11)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "removed.txt", 12)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "linked.txt", 13)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "nested/file.txt", 14)
+            .unwrap();
+        database
+            .enqueue_message("session-1", message("active"), 15)
+            .unwrap();
+        database.start_next_message("session-1", 16).unwrap();
+        drop(database);
+
+        let mut database = Database::open(&database_path.0).unwrap();
+        database.recover_active_sessions(17).unwrap();
+        let before_review = database.load_session("session-1").unwrap();
+        assert_eq!(before_review.status, StoredSessionStatus::Paused);
+        assert!(before_review.recovery_needs_revalidation);
+        fs::write(
+            workspace_path.join("safe.txt"),
+            b"synthetic changed contents with a different size",
+        )
+        .unwrap();
+        fs::remove_file(workspace_path.join("removed.txt")).unwrap();
+        fs::remove_file(workspace_path.join("linked.txt")).unwrap();
+        std::os::unix::fs::symlink(&outside_file, workspace_path.join("linked.txt")).unwrap();
+        fs::remove_file(workspace_path.join("nested/file.txt")).unwrap();
+        fs::remove_dir(workspace_path.join("nested")).unwrap();
+        fs::write(workspace_path.join("nested"), b"synthetic replacement file").unwrap();
+
+        let report = database.review_workspace_files("session-1").unwrap();
+        assert_eq!(report.files.len(), 4);
+        assert_eq!(report.files[0].relative_path, PathBuf::from("safe.txt"));
+        assert_eq!(
+            report.files[0].status,
+            WorkspaceFileValidationStatus::Changed
+        );
+        assert_eq!(report.files[1].relative_path, PathBuf::from("removed.txt"));
+        assert_eq!(
+            report.files[1].status,
+            WorkspaceFileValidationStatus::Missing
+        );
+        assert_eq!(report.files[2].relative_path, PathBuf::from("linked.txt"));
+        assert_eq!(
+            report.files[2].status,
+            WorkspaceFileValidationStatus::Unsafe
+        );
+        assert_eq!(
+            report.files[3].relative_path,
+            PathBuf::from("nested/file.txt")
+        );
+        assert_eq!(
+            report.files[3].status,
+            WorkspaceFileValidationStatus::Unsafe
+        );
+
+        let after_review = database.load_session("session-1").unwrap();
+        assert_eq!(after_review.status, StoredSessionStatus::Paused);
+        assert!(after_review.recovery_needs_revalidation);
+        assert_eq!(after_review.event_sequence, before_review.event_sequence);
+        assert_eq!(
+            database.session_events("session-1").unwrap().len(),
+            before_review.event_sequence as usize
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fail_closed_when_workspace_identity_changes_before_review() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(workspace.0.join("source.txt"), b"original").unwrap();
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let mut database = Database::open(&path.0).unwrap();
+        database
+            .create_session_with_workspace("session-1", metadata, 10)
+            .unwrap();
+        database
+            .observe_workspace_file("session-1", "source.txt", 11)
+            .unwrap();
+
+        let moved_workspace = workspace.0.with_extension("moved");
+        fs::rename(&workspace.0, &moved_workspace).unwrap();
+        fs::create_dir(&workspace.0).unwrap();
+
+        assert!(matches!(
+            database.review_workspace_files("session-1"),
+            Err(SessionStoreError::WorkspaceMetadata(
+                WorkspaceMetadataError::IdentityChanged(_)
+            ))
+        ));
+        assert_eq!(
+            database.load_session("session-1").unwrap().event_sequence,
+            2
+        );
+        fs::remove_dir_all(moved_workspace).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_refuse_to_create_a_session_from_stale_workspace_identity() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        let moved_workspace = workspace.0.with_extension("moved");
+        let metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        fs::rename(&workspace.0, &moved_workspace).unwrap();
+        fs::create_dir(&workspace.0).unwrap();
+
+        let mut database = Database::open(&path.0).unwrap();
+        assert!(matches!(
+            database.create_session_with_workspace("session-1", metadata, 10),
+            Err(SessionStoreError::WorkspaceMetadata(
+                WorkspaceMetadataError::IdentityChanged(_)
+            ))
+        ));
+        assert!(database.list_sessions().unwrap().is_empty());
+        fs::remove_dir_all(moved_workspace).unwrap();
     }
 
     #[test]
@@ -937,7 +1897,8 @@ mod tests {
         assert_eq!(
             database.session_events("session-1").unwrap(),
             vec![StoredSessionEvent::Created {
-                session_id: "session-1".into()
+                session_id: "session-1".into(),
+                workspace: None,
             }]
         );
     }
@@ -1186,6 +2147,48 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].session_id, "older");
         assert_eq!(active[0].active_message, Some(message("m1")));
+    }
+
+    #[test]
+    fn should_read_bounded_contiguous_event_pages_after_a_valid_sequence_cursor() {
+        let path = TestDatabase::new();
+        let mut registry = SessionRegistry::open(&path.0).unwrap();
+        registry.create("session-1", 10).unwrap();
+        registry.enqueue("session-1", message("m1"), 11).unwrap();
+        registry.enqueue("session-1", message("m2"), 12).unwrap();
+        registry.enqueue("session-1", message("m3"), 13).unwrap();
+
+        let (first_page, first_cursor, first_has_more) =
+            registry.session_events_after("session-1", 0, 2).unwrap();
+        assert_eq!(
+            first_page
+                .iter()
+                .map(|record| record.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(first_page[0].occurred_at_ms, 10);
+        assert!(matches!(
+            first_page[1].event,
+            StoredSessionEvent::MessageQueued { .. }
+        ));
+        assert_eq!(first_cursor, 2);
+        assert!(first_has_more);
+
+        let (second_page, second_cursor, second_has_more) = registry
+            .session_events_after("session-1", first_cursor, 2)
+            .unwrap();
+        assert_eq!(
+            second_page
+                .iter()
+                .map(|record| record.sequence)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert_eq!(second_cursor, 4);
+        assert!(!second_has_more);
+        assert!(registry.session_events_after("session-1", 5, 1).is_err());
+        assert!(registry.session_events_after("session-1", 0, 0).is_err());
     }
 
     #[test]

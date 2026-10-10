@@ -130,6 +130,20 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
 - Não repetir automaticamente push/deploy/operação com resultado incerto; verificar antes.
 - Retomada revalida permissões e arquivos. Após espera longa, invalidar leituras antigas,
   reler arquivos afetados, conferir diff e adaptar o plano.
+- Verificação metadata-only (identidade, tipo, permissões, tamanho e timestamps) não prova
+  que o conteúdo permaneceu igual e nunca libera retomada sozinha. O fingerprint limitado abaixo
+  é a única leitura/hash aprovada nesta fatia; expansão exige decisão própria.
+- Fingerprint de conteúdo aprovado somente para paths relativos explicitamente selecionados:
+  SHA-256 local de arquivos regulares até 1 MiB. Negar nomes iniciados por `.env`, componentes
+  `.ssh`/`.aws`, nomes contendo `secret`/`credential` (sem diferenciar maiúsculas) e extensões
+  `.pem`/`.key`. Não recursar, seguir symlinks, persistir conteúdo ou enviar bytes para IPC,
+  logs, modelo ou memória; persistir apenas o digest. Fingerprint não autoriza retomada sozinho.
+- Revisão read-only revalida somente os paths explicitamente registrados e reporta cada um
+  independentemente (`unchanged`, `changed`, `missing`, `unreadable`, `unsafe`, `too large`,
+  `unavailable`). Falha da raiz é global/fail-closed. A revisão não altera sessão, fila ou
+  workspace e não limpa a exigência de revalidação. Pelo socket Unix privado do mesmo usuário,
+  é permitido expor somente path relativo + status ao CLI/TUI; nunca conteúdo, digest, metadata
+  stat ou path absoluto. A visualização não confirma conflitos nem libera retomada.
 - Conflitos com alterações do operador exigem confirmação, inclusive em Yolo.
 - `Parar` interrompe o agente, cancela comandos e encerra processos temporários iniciados
   para o trabalho, com supervisão e encerramento seguro (dev server, API local, serviço de teste).
@@ -186,6 +200,12 @@ conveniência não substitui essa comprovação.
 Pasta-limite é o diretório de abertura, não a raiz Git. Abrir em `repo/backend` não
 libera ações destrutivas automaticamente em `repo/frontend`. Mostrar o limite;
 ampliá-lo exige escolha explícita do operador.
+
+Para recovery, persistir a identidade da pasta-limite como caminho absoluto e o par
+device/inode observado no filesystem. Não canonicalizar nem seguir symlinks ao capturar
+ou revalidar essa identidade. Se o caminho deixar de existir, contiver symlink ou apontar
+para outra identidade, manter a sessão pausada. Esse registro é metadado, não autorização;
+não habilita retomada nem amplia permissões.
 
 ### Worktrees e alterações anteriores
 
