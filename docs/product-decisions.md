@@ -144,6 +144,10 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
   workspace e não limpa a exigência de revalidação. Pelo socket Unix privado do mesmo usuário,
   é permitido expor somente path relativo + status ao CLI/TUI; nunca conteúdo, digest, metadata
   stat ou path absoluto. A visualização não confirma conflitos nem libera retomada.
+- Exceção limitada à criação explícita de uma sessão: a raiz absoluta do workspace pode ser
+  enviada como input pelo socket Unix privado. O daemon não a devolve em respostas nem a registra
+  em logs/erros. Essa exceção não altera o contrato de revisão, que continua expondo somente
+  paths relativos e status.
 - Política v1 de retomada após recovery: exigir revisão read-only fresca e confirmação humana
   explícita de retomada, inclusive quando todos os paths reportam `unchanged`; metadata e
   fingerprints, isoladamente, nunca autorizam retomada. `changed`, `missing` e `too_large`
@@ -439,3 +443,17 @@ não autorizam antecipar runtime ao Delivery 0.
 
 No Delivery 0, evidências são de interação com mocks. Enforcement, integrações,
 performance e execução só são declarados validados com testes reais na etapa posterior.
+
+## PD-18 — Hibernação base e limite da supervisão de processos
+
+- Na fundação atual, hibernação é uma transição explícita do operador e altera somente o
+  estado persistido. Só pode ocorrer para sessão pausada, sem mensagem ativa e sem recovery
+  pendente; fila, seleções e histórico são preservados.
+- Acordar uma sessão hibernada sempre volta a `paused`. Nunca inicia mensagens da fila.
+- Essa transição não promete liberar working set, caches ou processos: a fundação atual não
+  possui esses recursos de runtime. Hibernação automática/reclaim só será implementada com
+  sinais de idle/pressão medidos e cleanup comprovado.
+- Supervisão efetiva só pode afetar processos criados e identificados pelo Carapanã; processos
+  anteriores ou marcados `Manter rodando` não são encerrados. Enquanto spawn/kill não estiverem
+  autorizados, não executar nenhuma operação de processo; contratos/estado inertes não implicam
+  capacidade operacional.

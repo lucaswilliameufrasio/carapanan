@@ -8,9 +8,10 @@ Local-first, model-agnostic coding-agent harness, com implementação principal 
 - [Decisões de produto e comportamento — revisão de 4 de outubro de 2026](docs/product-decisions.md)
 
 **Estado atual:** Delivery 0 (protótipo com fixtures) foi aprovado; Delivery 2 está
-em andamento. A CLI/TUI real Unix consulta o daemon; recovery só pode ser retomado com
-revalidação e confirmação explícita. O protótipo web/mobile continua isolado, com estado
-simulado: ainda não se conecta ao daemon. Não há provider real nem execução de tarefas/tools.
+em andamento. A CLI/TUI real Unix consulta o daemon; a CLI também cria sessões pausadas e
+persiste mensagens inertes na fila. Recovery só pode ser retomado com revalidação e
+confirmação explícita. O protótipo web/mobile continua isolado, com estado simulado: ainda
+não se conecta ao daemon. Não há provider real nem execução de tarefas/tools.
 
 ## Experimentar
 
@@ -153,10 +154,14 @@ explicitamente em um terminal:
 cargo run -p carapana-cli -- daemon
 ```
 
-Em outro terminal, consulte o daemon já iniciado. Os comandos de leitura não iniciam
-o daemon automaticamente:
+Em outro terminal, use o daemon já iniciado. Os comandos do cliente não iniciam o daemon
+automaticamente:
 
 ```sh
+cargo run -p carapana-cli -- create --workspace .
+cargo run -p carapana-cli -- queue <session-id> < /caminho/privado/da-entrada.json
+cargo run -p carapana-cli -- hibernate <session-id>
+cargo run -p carapana-cli -- wake <session-id>
 cargo run -p carapana-cli -- sessions --json
 cargo run -p carapana-cli -- attention
 cargo run -p carapana-cli -- show <session-id> --json
@@ -168,7 +173,38 @@ cargo run -p carapana-cli -- resume-recovered <session-id> --confirm
 cargo run -p carapana-cli -- tui
 ```
 
-A TUI inspeciona sessões e permite somente o gate explícito de recovery: `v` revalida os
+`create` exige que o operador escolha a raiz. A raiz absoluta é enviada somente como input
+ao socket Unix privado; não aparece na resposta nem nos logs. Para enfileirar uma mensagem,
+`queue <session-id>` lê um objeto JSON de stdin, sem aceitar a mensagem em argv:
+
+```json
+{
+  "text": "mensagem do operador",
+  "selection": {
+    "profile": "perfil escolhido",
+    "work": "plan",
+    "autonomy": "ask",
+    "provider": "provider escolhido",
+    "model": "modelo escolhido",
+    "variant": "variante escolhida"
+  }
+}
+```
+
+Todos os campos da seleção são explícitos; ela é apenas dado persistido, não autorização
+nem prova de que o provider está disponível. Sessões novas ficam pausadas, e mensagens
+enfileiradas não iniciam processamento. `show --json` revela o texto da fila quando pedido
+explicitamente. O texto fica persistido localmente; esta fase não detecta segredos nem o
+envia a um provider, então não cole credenciais. O limite por mensagem é 8 KiB para permanecer
+dentro do limite de frame IPC mesmo quando caracteres de controle precisam ser escapados no JSON.
+
+`hibernate` só aceita sessão pausada, sem mensagem ativa nem recovery pendente. A ação é
+explícita e registra somente o estado; não libera working set/cache/processos. `wake` sempre
+volta para `paused`, preservando a fila sem iniciar trabalho.
+
+A TUI inspeciona sessões; no detalhe, `h` hiberna uma sessão pausada ociosa e `w` acorda
+uma hibernada para `paused`, sem iniciar a fila nem alterar processos/recursos. Para recovery,
+`v` revalida os
 paths observados; `[`/`]` seleciona um path; `a` abre confirmação para reconhecer
 `changed`, `missing` ou `too_large`; `R` mostra uma revisão fresca e abre a confirmação
 final de retomada. `y` confirma e `n`/Esc cancela. `e` consulta eventos, `n` busca a

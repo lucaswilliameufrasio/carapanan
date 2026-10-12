@@ -502,6 +502,10 @@ impl ClientConnection {
                 _,
                 request @ (DaemonRequest::ListSessions {}
                 | DaemonRequest::ListAttention {}
+                | DaemonRequest::CreateSession { .. }
+                | DaemonRequest::EnqueueMessage { .. }
+                | DaemonRequest::HibernateSession { .. }
+                | DaemonRequest::WakeSession { .. }
                 | DaemonRequest::ReviewWorkspace { .. }
                 | DaemonRequest::AcknowledgeRecoveryPath { .. }
                 | DaemonRequest::ResumeRecovered { .. }),
@@ -547,8 +551,8 @@ mod tests {
     use super::{IpcError, IpcServer, MAX_FRAME_BYTES, read_json_frame, write_json_frame};
     use crate::DaemonRuntime;
     use carapana_protocol::{
-        Autonomy, DaemonRequest, DaemonResponse, Envelope, QueuedMessage, Selection, SessionStatus,
-        WorkMode,
+        Autonomy, DaemonRequest, DaemonResponse, Envelope, MAX_QUEUED_MESSAGE_BYTES,
+        MAX_SELECTION_FIELD_BYTES, QueuedMessage, Selection, SessionStatus, WorkMode,
     };
     use carapana_storage::SessionRegistry;
     use std::{
@@ -695,6 +699,27 @@ mod tests {
             write_json_frame(&mut cursor, &"x".repeat(MAX_FRAME_BYTES)),
             Err(IpcError::InvalidFrame)
         ));
+    }
+
+    #[test]
+    fn should_fit_maximum_message_and_selection_with_json_control_escaping() {
+        let selection_field = "\0".repeat(MAX_SELECTION_FIELD_BYTES);
+        let request = Envelope::new(DaemonRequest::EnqueueMessage {
+            session_id: "session-identifier".into(),
+            text: "\0".repeat(MAX_QUEUED_MESSAGE_BYTES),
+            selection: Selection {
+                profile: selection_field.clone(),
+                work: WorkMode::Plan,
+                autonomy: Autonomy::Ask,
+                provider: selection_field.clone(),
+                model: selection_field.clone(),
+                variant: selection_field,
+            },
+        });
+        let mut frame = Cursor::new(Vec::new());
+
+        write_json_frame(&mut frame, &request).unwrap();
+        assert!(frame.get_ref().len() <= MAX_FRAME_BYTES + 4);
     }
 
     #[test]

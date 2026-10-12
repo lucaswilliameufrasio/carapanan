@@ -1,7 +1,9 @@
 //! Versioned contracts. No transport, authorization or task execution.
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
+pub const MAX_QUEUED_MESSAGE_BYTES: usize = 8 * 1024;
+pub const MAX_SELECTION_FIELD_BYTES: usize = 256;
 
 fn version<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
     let value = u16::deserialize(deserializer)?;
@@ -136,17 +138,42 @@ pub struct ContractError {
     pub message_id: Option<String>,
 }
 
-/// Local daemon API for session/attention inspection and connection-scoped attachment.
+/// Local daemon API for session creation, queueing, inspection, and attachment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonRequest {
     ListSessions {},
     ListAttention {},
-    ReviewWorkspace { session_id: String },
-    AcknowledgeRecoveryPath { session_id: String, path: String },
-    ResumeRecovered { session_id: String },
-    Attach { session_id: String },
-    EventsAfter { after_sequence: i64 },
+    CreateSession {
+        workspace_path: String,
+    },
+    EnqueueMessage {
+        session_id: String,
+        text: String,
+        selection: Selection,
+    },
+    HibernateSession {
+        session_id: String,
+    },
+    WakeSession {
+        session_id: String,
+    },
+    ReviewWorkspace {
+        session_id: String,
+    },
+    AcknowledgeRecoveryPath {
+        session_id: String,
+        path: String,
+    },
+    ResumeRecovered {
+        session_id: String,
+    },
+    Attach {
+        session_id: String,
+    },
+    EventsAfter {
+        after_sequence: i64,
+    },
     Detach {},
 }
 
@@ -239,6 +266,8 @@ pub enum DaemonSessionEvent {
     MessageQueued {
         message: QueuedMessage,
     },
+    Hibernated,
+    Woken,
     MessageStarted {
         message_id: String,
     },
@@ -290,6 +319,10 @@ pub enum DaemonErrorCode {
     RecoveryAcknowledgmentRequired,
     RecoveryAcknowledgmentStale,
     RecoveryBlocked,
+    WorkspaceCreationRejected,
+    InvalidQueuedMessage,
+    HibernationBlocked,
+    SessionNotHibernated,
 }
 
 /// Response envelope payload. Attachment returns the full session snapshot; IPC errors
@@ -299,6 +332,19 @@ pub enum DaemonErrorCode {
 pub enum DaemonResponse {
     Sessions {
         sessions: Vec<SessionSummary>,
+    },
+    SessionCreated {
+        session_id: String,
+    },
+    MessageQueued {
+        session_id: String,
+        message_id: String,
+    },
+    SessionHibernated {
+        session_id: String,
+    },
+    SessionWoken {
+        session_id: String,
     },
     Attention {
         items: Vec<AttentionItem>,

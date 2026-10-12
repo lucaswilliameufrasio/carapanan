@@ -162,6 +162,22 @@ impl SessionRegistry {
             .complete_active_message(session_id, outcome, now_ms)
     }
 
+    pub fn hibernate(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.hibernate_session(session_id, now_ms)
+    }
+
+    pub fn wake_hibernated(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.wake_hibernated_session(session_id, now_ms)
+    }
+
     pub fn recover_after_restart(
         &mut self,
         now_ms: i64,
@@ -170,7 +186,7 @@ impl SessionRegistry {
     }
 }
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE sessions (
@@ -379,6 +395,22 @@ impl Database {
         session_store::complete_active_message(self, session_id, outcome, now_ms)
     }
 
+    pub fn hibernate_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::hibernate_session(self, session_id, now_ms)
+    }
+
+    pub fn wake_hibernated_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::wake_hibernated_session(self, session_id, now_ms)
+    }
+
     /// Recover all active sessions into a paused state. No work is resumed or repeated.
     pub fn recover_active_sessions(
         &mut self,
@@ -432,6 +464,10 @@ impl Database {
             3 => {
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
+            // Version 5 adds hibernation events; older binaries must reject them before replay.
+            4 => {
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
             SCHEMA_VERSION => {}
             other => return Err(MigrationError::UnsupportedSchemaVersion(other)),
         }
@@ -443,7 +479,9 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{Database, MigrationError, SCHEMA_VERSION, StoredSessionEvent};
+    use super::{
+        Database, MigrationError, SCHEMA_VERSION, StoredSessionEvent, StoredSessionStatus,
+    };
     use rusqlite::Connection;
     use std::{fs, path::PathBuf, time::SystemTime};
 
@@ -572,6 +610,25 @@ mod tests {
                 .event_sequence,
             1
         );
+    }
+
+    #[test]
+    fn should_migrate_version_four_before_hibernation_events_are_written() {
+        let path = TestDatabase::new();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database.create_session("legacy-session", 10).unwrap();
+            database
+                .connection
+                .pragma_update(None, "user_version", 4)
+                .unwrap();
+        }
+
+        let database = Database::open(&path.0).unwrap();
+        assert_eq!(database.schema_version().unwrap(), SCHEMA_VERSION);
+        let session = database.load_session("legacy-session").unwrap();
+        assert_eq!(session.status, StoredSessionStatus::Paused);
+        assert_eq!(session.event_sequence, 1);
     }
 
     #[test]

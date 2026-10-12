@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::{
     error::Error,
-    io::{self, Write},
-    path::Path,
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
     process::ExitCode,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -13,7 +13,9 @@ mod tui;
 #[cfg(unix)]
 use carapana_daemon::{DaemonService, IpcAttachment, ipc_request};
 #[cfg(unix)]
-use carapana_protocol::{DaemonRequest, DaemonResponse, Envelope};
+use carapana_protocol::{
+    DaemonRequest, DaemonResponse, Envelope, MAX_QUEUED_MESSAGE_BYTES, Selection,
+};
 #[cfg(unix)]
 use carapana_storage::user_database_path;
 
@@ -28,6 +30,18 @@ struct Cli {
 enum Commands {
     /// Run the local daemon until SIGINT or SIGTERM.
     Daemon,
+    /// Create a paused session for an explicitly selected workspace.
+    #[command(name = "create")]
+    CreateSession {
+        #[arg(long, value_name = "PATH")]
+        workspace: PathBuf,
+    },
+    /// Queue one message from JSON on stdin; this does not start processing.
+    Queue { session_id: String },
+    /// Mark an idle, paused session as hibernated without changing its queue.
+    Hibernate { session_id: String },
+    /// Wake a hibernated session into the paused state without starting work.
+    Wake { session_id: String },
     /// List persisted sessions from the running daemon.
     Sessions {
         #[arg(long)]
@@ -100,6 +114,103 @@ fn run_client(
     match command {
         Commands::Daemon => unreachable!("daemon command is handled before client dispatch"),
         Commands::Tui => return tui::run(path),
+        Commands::CreateSession { workspace } => {
+            let workspace = if workspace.is_absolute() {
+                workspace
+            } else {
+                std::env::current_dir()?.join(workspace)
+            };
+            let workspace_path = workspace.to_str().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workspace path must be valid UTF-8",
+                )
+            })?;
+            let response = ipc_request(
+                path,
+                Envelope::new(DaemonRequest::CreateSession {
+                    workspace_path: workspace_path.to_owned(),
+                }),
+            )?;
+            match response.payload {
+                DaemonResponse::SessionCreated { session_id } => {
+                    writeln!(
+                        output,
+                        "Created paused session {session_id}. No provider or tools were started."
+                    )?;
+                }
+                DaemonResponse::Error { code } => {
+                    return Err(format!("daemon rejected session creation: {code:?}").into());
+                }
+                _ => return Err("daemon returned an incompatible session-creation response".into()),
+            }
+        }
+        Commands::Queue { session_id } => {
+            let (text, selection) = read_queue_input()?;
+            let response = ipc_request(
+                path,
+                Envelope::new(DaemonRequest::EnqueueMessage {
+                    session_id: session_id.clone(),
+                    text,
+                    selection,
+                }),
+            )?;
+            match response.payload {
+                DaemonResponse::MessageQueued {
+                    session_id,
+                    message_id,
+                } => {
+                    writeln!(
+                        output,
+                        "Queued message {message_id} for session {session_id}. The session remains paused; no provider or tools were started."
+                    )?;
+                }
+                DaemonResponse::Error { code } => {
+                    return Err(format!("daemon rejected message enqueue: {code:?}").into());
+                }
+                _ => return Err("daemon returned an incompatible enqueue response".into()),
+            }
+        }
+        Commands::Hibernate { session_id } => {
+            let response = ipc_request(
+                path,
+                Envelope::new(DaemonRequest::HibernateSession {
+                    session_id: session_id.clone(),
+                }),
+            )?;
+            match response.payload {
+                DaemonResponse::SessionHibernated { session_id } => {
+                    writeln!(
+                        output,
+                        "Session {session_id} hibernated. Queue and history are preserved; no resources or processes were changed."
+                    )?;
+                }
+                DaemonResponse::Error { code } => {
+                    return Err(format!("daemon refused session hibernation: {code:?}").into());
+                }
+                _ => return Err("daemon returned an incompatible hibernation response".into()),
+            }
+        }
+        Commands::Wake { session_id } => {
+            let response = ipc_request(
+                path,
+                Envelope::new(DaemonRequest::WakeSession {
+                    session_id: session_id.clone(),
+                }),
+            )?;
+            match response.payload {
+                DaemonResponse::SessionWoken { session_id } => {
+                    writeln!(
+                        output,
+                        "Session {session_id} is paused again. Queue is preserved; no work was started."
+                    )?;
+                }
+                DaemonResponse::Error { code } => {
+                    return Err(format!("daemon refused to wake session: {code:?}").into());
+                }
+                _ => return Err("daemon returned an incompatible wake response".into()),
+            }
+        }
         Commands::Sessions { json } => {
             let response = ipc_request(path, Envelope::new(DaemonRequest::ListSessions {}))?;
             let DaemonResponse::Sessions { sessions } = response.payload else {
@@ -316,6 +427,64 @@ fn run_client(
     }
     output.flush()?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn read_queue_input() -> Result<(String, Selection), Box<dyn Error>> {
+    // JSON may expand one input control byte to a six-byte escape before IPC framing.
+    const MAX_QUEUE_INPUT_BYTES: usize = MAX_QUEUED_MESSAGE_BYTES * 6 + 8 * 1024;
+
+    let mut input = Vec::new();
+    let mut stdin = io::stdin()
+        .take(u64::try_from(MAX_QUEUE_INPUT_BYTES + 1).expect("queue input bound fits u64"));
+    stdin.read_to_end(&mut input)?;
+    if input.len() > MAX_QUEUE_INPUT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "queue input exceeds the maximum size",
+        )
+        .into());
+    }
+
+    let value: serde_json::Value = serde_json::from_slice(&input).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stdin must contain a JSON object with text and selection fields",
+        )
+    })?;
+    let Some(object) = value.as_object() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "stdin must contain a JSON object with text and selection fields",
+        )
+        .into());
+    };
+    if object.len() != 2 || !object.contains_key("text") || !object.contains_key("selection") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "queue input must contain only text and selection fields",
+        )
+        .into());
+    }
+
+    let text = object
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "queue text must be a string"))?
+        .to_owned();
+    let selection_value = object.get("selection").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "queue input must contain only text and selection fields",
+        )
+    })?;
+    let selection = serde_json::from_value(selection_value.clone()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "selection must include profile, work, autonomy, provider, model, and variant",
+        )
+    })?;
+    Ok((text, selection))
 }
 
 #[cfg(unix)]

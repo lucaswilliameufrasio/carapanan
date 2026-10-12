@@ -4,7 +4,7 @@ use carapana_protocol::{Autonomy, QueuedMessage, Selection, WorkMode};
 use carapana_storage::{SessionRegistry, StoredSessionStatus, WorkspaceMetadata};
 use std::{
     fs,
-    io::Read,
+    io::{Read, Write},
     os::unix::{ffi::OsStringExt, fs::PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -215,6 +215,170 @@ fn run_cli(directory: &PrivateDir, arguments: &[&str]) -> std::process::Output {
         .env("XDG_DATA_HOME", directory.0.join("xdg"))
         .output()
         .unwrap()
+}
+
+fn run_cli_with_stdin(
+    directory: &PrivateDir,
+    arguments: &[&str],
+    input: &[u8],
+) -> std::process::Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_carapana"))
+        .args(arguments)
+        .env("HOME", directory.0.join("home"))
+        .env("XDG_DATA_HOME", directory.0.join("xdg"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn should_create_a_paused_session_and_queue_stdin_without_starting_or_echoing_work() {
+    let directory = PrivateDir::new();
+    let workspace = directory.0.join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let workspace_string = workspace.to_str().unwrap();
+    let created = Command::new(env!("CARGO_BIN_EXE_carapana"))
+        .args(["create", "--workspace", "."])
+        .current_dir(&workspace)
+        .env("HOME", directory.0.join("home"))
+        .env("XDG_DATA_HOME", directory.0.join("xdg"))
+        .output()
+        .unwrap();
+    assert!(
+        created.status.success(),
+        "session creation failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let created_stdout = String::from_utf8(created.stdout).unwrap();
+    assert!(!created_stdout.contains(workspace_string));
+    let session_id = created_stdout
+        .strip_prefix("Created paused session ")
+        .and_then(|line| line.strip_suffix(". No provider or tools were started.\n"))
+        .expect("creation should return only the generated session id")
+        .to_owned();
+
+    let prompt = "private prompt marker must not be echoed by queue";
+    let input = format!(
+        r#"{{"text":"{prompt}","selection":{{"profile":"operator-choice","work":"plan","autonomy":"ask","provider":"operator-choice","model":"operator-choice","variant":"default"}}}}"#
+    );
+    let queued = run_cli_with_stdin(&directory, &["queue", &session_id], input.as_bytes());
+    assert!(
+        queued.status.success(),
+        "queue failed: {}",
+        String::from_utf8_lossy(&queued.stderr)
+    );
+    let queued_stdout = String::from_utf8(queued.stdout).unwrap();
+    assert!(queued_stdout.contains("remains paused"));
+    assert!(queued_stdout.contains("no provider or tools were started."));
+    assert!(!queued_stdout.contains(prompt));
+    assert!(!String::from_utf8_lossy(&queued.stderr).contains(prompt));
+
+    let inspected = run_cli(
+        &directory,
+        &["show", &session_id, "--events-after", "0", "--json"],
+    );
+    assert!(
+        inspected.status.success(),
+        "session inspection failed: {}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let inspected: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    assert_eq!(inspected["snapshot"]["status"], "paused");
+    assert!(inspected["snapshot"]["active_message"].is_null());
+    assert_eq!(
+        inspected["snapshot"]["queued_messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(inspected["snapshot"]["queued_messages"][0]["text"], prompt);
+    let events = inspected["events"]["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["event"]["type"], "message_queued");
+    assert!(
+        events
+            .iter()
+            .all(|event| event["event"]["type"] != "message_started")
+    );
+
+    let hibernated = run_cli(&directory, &["hibernate", &session_id]);
+    assert!(
+        hibernated.status.success(),
+        "hibernation failed: {}",
+        String::from_utf8_lossy(&hibernated.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&hibernated.stdout)
+            .contains("no resources or processes were changed")
+    );
+
+    let hibernated_state = run_cli(
+        &directory,
+        &["show", &session_id, "--events-after", "0", "--json"],
+    );
+    assert!(hibernated_state.status.success());
+    let hibernated_state: serde_json::Value =
+        serde_json::from_slice(&hibernated_state.stdout).unwrap();
+    assert_eq!(hibernated_state["snapshot"]["status"], "hibernated");
+    assert_eq!(
+        hibernated_state["snapshot"]["queued_messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        hibernated_state["events"]["events"][2]["event"]["type"],
+        "hibernated"
+    );
+
+    let woken = run_cli(&directory, &["wake", &session_id]);
+    assert!(
+        woken.status.success(),
+        "wake failed: {}",
+        String::from_utf8_lossy(&woken.stderr)
+    );
+    assert!(String::from_utf8_lossy(&woken.stdout).contains("no work was started"));
+
+    let woken_state = run_cli(
+        &directory,
+        &["show", &session_id, "--events-after", "0", "--json"],
+    );
+    assert!(woken_state.status.success());
+    let woken_state: serde_json::Value = serde_json::from_slice(&woken_state.stdout).unwrap();
+    assert_eq!(woken_state["snapshot"]["status"], "paused");
+    assert_eq!(
+        woken_state["snapshot"]["queued_messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(woken_state["events"]["events"].as_array().unwrap().len(), 4);
+    assert_eq!(woken_state["events"]["events"][3]["event"]["type"], "woken");
+
+    let invalid_workspace = directory.0.join("workspace-that-does-not-exist");
+    let rejected = Command::new(env!("CARGO_BIN_EXE_carapana"))
+        .args(["create", "--workspace"])
+        .arg(&invalid_workspace)
+        .env("HOME", directory.0.join("home"))
+        .env("XDG_DATA_HOME", directory.0.join("xdg"))
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        !String::from_utf8_lossy(&rejected.stderr)
+            .contains(&invalid_workspace.to_string_lossy().to_string())
+    );
 }
 
 #[test]

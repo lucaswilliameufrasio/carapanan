@@ -5,7 +5,13 @@
 #[cfg(unix)]
 mod ipc;
 
-use std::{collections::HashMap, error::Error, fmt, path::Path};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt,
+    path::Path,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 #[cfg(unix)]
 use std::sync::atomic::AtomicBool;
@@ -14,17 +20,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use carapana_protocol::{
     AttentionItem, AttentionReason, DaemonErrorCode, DaemonRequest, DaemonResponse,
-    DaemonSessionEvent, Envelope, SessionEventBatch, SessionEventRecord, SessionSnapshot,
+    DaemonSessionEvent, Envelope, MAX_QUEUED_MESSAGE_BYTES, MAX_SELECTION_FIELD_BYTES,
+    QueuedMessage, Selection, SessionEventBatch, SessionEventRecord, SessionSnapshot,
     SessionStatus, SessionSummary, WorkspaceFileReview, WorkspaceFileReviewItem,
     WorkspaceFileReviewStatus,
 };
 use carapana_storage::{
     MigrationError, PersistedSession, SessionRegistry, SessionStoreError, StoredSessionEvent,
-    StoredSessionStatus, UserDatabaseError, WorkspaceFileValidationStatus,
+    StoredSessionStatus, UserDatabaseError, WorkspaceFileValidationStatus, WorkspaceMetadata,
 };
 
 #[cfg(unix)]
 pub use ipc::{IpcAttachment, IpcError, IpcServer, request as ipc_request};
+
+static GENERATED_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub enum DaemonStartupError {
@@ -88,7 +97,7 @@ impl DaemonRuntime {
         self.registry.list()
     }
 
-    /// Handle a one-shot query. Attach/detach are handled by persistent IPC connections.
+    /// Handle a one-shot request. Attach/detach are handled by persistent IPC connections.
     pub fn handle(&mut self, request: Envelope<DaemonRequest>) -> Envelope<DaemonResponse> {
         let response = match request.payload {
             DaemonRequest::ListSessions {} => match self.sessions() {
@@ -101,6 +110,33 @@ impl DaemonRuntime {
                 Err(_) => DaemonResponse::Error {
                     code: DaemonErrorCode::StorageUnavailable,
                 },
+            },
+            DaemonRequest::CreateSession { workspace_path } => {
+                match self.create_session(&workspace_path) {
+                    Ok(session_id) => DaemonResponse::SessionCreated { session_id },
+                    Err(code) => DaemonResponse::Error { code },
+                }
+            }
+            DaemonRequest::EnqueueMessage {
+                session_id,
+                text,
+                selection,
+            } => match self.enqueue_message(&session_id, text, selection) {
+                Ok(message_id) => DaemonResponse::MessageQueued {
+                    session_id,
+                    message_id,
+                },
+                Err(code) => DaemonResponse::Error { code },
+            },
+            DaemonRequest::HibernateSession { session_id } => {
+                match self.hibernate_session(&session_id) {
+                    Ok(()) => DaemonResponse::SessionHibernated { session_id },
+                    Err(code) => DaemonResponse::Error { code },
+                }
+            }
+            DaemonRequest::WakeSession { session_id } => match self.wake_session(&session_id) {
+                Ok(()) => DaemonResponse::SessionWoken { session_id },
+                Err(code) => DaemonResponse::Error { code },
             },
             DaemonRequest::ListAttention {} => match self.attention_queue() {
                 Ok(items) => DaemonResponse::Attention { items },
@@ -139,6 +175,74 @@ impl DaemonRuntime {
             },
         };
         Envelope::new(response)
+    }
+
+    fn create_session(&mut self, workspace_path: &str) -> Result<String, DaemonErrorCode> {
+        let workspace = WorkspaceMetadata::capture(workspace_path)
+            .map_err(|_| DaemonErrorCode::WorkspaceCreationRejected)?;
+        let session_id = generated_id("session")?;
+        let now_ms = current_time_ms().map_err(|_| DaemonErrorCode::StorageUnavailable)?;
+        self.registry
+            .create_with_workspace(&session_id, workspace, now_ms)
+            .map_err(|_| DaemonErrorCode::StorageUnavailable)?;
+        Ok(session_id)
+    }
+
+    fn enqueue_message(
+        &mut self,
+        session_id: &str,
+        text: String,
+        selection: Selection,
+    ) -> Result<String, DaemonErrorCode> {
+        if text.trim().is_empty()
+            || text.len() > MAX_QUEUED_MESSAGE_BYTES
+            || !valid_selection_field(&selection.profile)
+            || !valid_selection_field(&selection.provider)
+            || !valid_selection_field(&selection.model)
+            || !valid_selection_field(&selection.variant)
+        {
+            return Err(DaemonErrorCode::InvalidQueuedMessage);
+        }
+
+        let message_id = generated_id("message")?;
+        let now_ms = current_time_ms().map_err(|_| DaemonErrorCode::StorageUnavailable)?;
+        let message = QueuedMessage {
+            id: message_id.clone(),
+            text,
+            origin: "cli".to_owned(),
+            selection,
+        };
+        self.registry
+            .enqueue(session_id, message, now_ms)
+            .map_err(|error| match error {
+                SessionStoreError::SessionNotFound => DaemonErrorCode::SessionNotFound,
+                _ => DaemonErrorCode::StorageUnavailable,
+            })?;
+        Ok(message_id)
+    }
+
+    fn hibernate_session(&mut self, session_id: &str) -> Result<(), DaemonErrorCode> {
+        let now_ms = current_time_ms().map_err(|_| DaemonErrorCode::StorageUnavailable)?;
+        self.registry
+            .hibernate(session_id, now_ms)
+            .map(|_| ())
+            .map_err(|error| match error {
+                SessionStoreError::SessionNotFound => DaemonErrorCode::SessionNotFound,
+                SessionStoreError::InvalidTransition => DaemonErrorCode::HibernationBlocked,
+                _ => DaemonErrorCode::StorageUnavailable,
+            })
+    }
+
+    fn wake_session(&mut self, session_id: &str) -> Result<(), DaemonErrorCode> {
+        let now_ms = current_time_ms().map_err(|_| DaemonErrorCode::StorageUnavailable)?;
+        self.registry
+            .wake_hibernated(session_id, now_ms)
+            .map(|_| ())
+            .map_err(|error| match error {
+                SessionStoreError::SessionNotFound => DaemonErrorCode::SessionNotFound,
+                SessionStoreError::InvalidTransition => DaemonErrorCode::SessionNotHibernated,
+                _ => DaemonErrorCode::StorageUnavailable,
+            })
     }
 
     /// Derive a stable attention list from durable recovery state; no separate
@@ -221,6 +325,8 @@ impl DaemonRuntime {
                     StoredSessionEvent::MessageQueued { message } => {
                         DaemonSessionEvent::MessageQueued { message }
                     }
+                    StoredSessionEvent::Hibernated => DaemonSessionEvent::Hibernated,
+                    StoredSessionEvent::Woken => DaemonSessionEvent::Woken,
                     StoredSessionEvent::MessageStarted { message_id } => {
                         DaemonSessionEvent::MessageStarted { message_id }
                     }
@@ -369,6 +475,22 @@ fn current_time_ms() -> Result<i64, ()> {
     i64::try_from(duration.as_millis()).map_err(|_| ())
 }
 
+fn generated_id(prefix: &str) -> Result<String, DaemonErrorCode> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| DaemonErrorCode::StorageUnavailable)?
+        .as_nanos();
+    let sequence = GENERATED_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Ok(format!(
+        "{prefix}-{timestamp:x}-{:x}-{sequence:x}",
+        std::process::id()
+    ))
+}
+
+fn valid_selection_field(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= MAX_SELECTION_FIELD_BYTES
+}
+
 fn map_recovery_error(error: SessionStoreError) -> DaemonErrorCode {
     match error {
         SessionStoreError::SessionNotFound => DaemonErrorCode::SessionNotFound,
@@ -506,8 +628,8 @@ mod tests {
     #[cfg(unix)]
     use super::{DaemonService, DaemonServiceError, IpcError, IpcServer};
     use carapana_protocol::{
-        Autonomy, DaemonRequest, DaemonResponse, Envelope, QueuedMessage, Selection, SessionStatus,
-        WorkMode, WorkspaceFileReviewStatus,
+        Autonomy, DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope, QueuedMessage,
+        Selection, SessionStatus, WorkMode, WorkspaceFileReviewStatus,
     };
     use carapana_storage::{SessionRegistry, StoredSessionStatus, WorkspaceMetadata};
     use std::{
@@ -588,6 +710,155 @@ mod tests {
                 variant: "default".into(),
             },
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_create_paused_sessions_and_persist_messages_without_starting_them() {
+        let directory = TestDirectory::new();
+        let workspace = directory.0.join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let mut runtime = DaemonRuntime::open(&database_path, 10).unwrap();
+        let workspace_path = workspace.to_str().unwrap().to_owned();
+
+        let created = runtime.handle(Envelope::new(DaemonRequest::CreateSession {
+            workspace_path: workspace_path.clone(),
+        }));
+        let session_id = match &created.payload {
+            DaemonResponse::SessionCreated { session_id } => session_id.clone(),
+            _ => panic!("session creation did not return a session id"),
+        };
+        let created_json = serde_json::to_string(&created).unwrap();
+        assert!(!created_json.contains(&workspace_path));
+
+        let prompt = "private queued prompt";
+        let queued = runtime.handle(Envelope::new(DaemonRequest::EnqueueMessage {
+            session_id: session_id.clone(),
+            text: prompt.into(),
+            selection: Selection {
+                profile: "operator-choice".into(),
+                work: WorkMode::Plan,
+                autonomy: Autonomy::Ask,
+                provider: "operator-choice".into(),
+                model: "operator-choice".into(),
+                variant: "default".into(),
+            },
+        }));
+        assert!(matches!(
+            queued.payload,
+            DaemonResponse::MessageQueued {
+                session_id: ref queued_session,
+                ..
+            }
+                if queued_session == &session_id
+        ));
+        let queued_json = serde_json::to_string(&queued).unwrap();
+        assert!(!queued_json.contains(prompt));
+        assert!(!queued_json.contains(&workspace_path));
+
+        let sessions = runtime.sessions().unwrap();
+        let session = sessions
+            .into_iter()
+            .find(|session| session.session_id == session_id)
+            .expect("created session should be persisted");
+        assert_eq!(session.status, StoredSessionStatus::Paused);
+        assert!(session.active_message.is_none());
+        assert_eq!(session.queued_messages.len(), 1);
+        assert_eq!(session.queued_messages[0].text, prompt);
+        assert_eq!(session.event_sequence, 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_reject_invalid_workspace_and_message_input_without_echoing_it() {
+        let directory = TestDirectory::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let mut runtime = DaemonRuntime::open(&database_path, 10).unwrap();
+        let invalid_workspace = directory.0.join("missing-secret-workspace");
+        let rejected_workspace = runtime.handle(Envelope::new(DaemonRequest::CreateSession {
+            workspace_path: invalid_workspace.to_string_lossy().into_owned(),
+        }));
+        assert_eq!(
+            rejected_workspace.payload,
+            DaemonResponse::Error {
+                code: DaemonErrorCode::WorkspaceCreationRejected,
+            }
+        );
+        assert!(
+            !serde_json::to_string(&rejected_workspace)
+                .unwrap()
+                .contains("missing-secret-workspace")
+        );
+
+        let rejected_message = runtime.handle(Envelope::new(DaemonRequest::EnqueueMessage {
+            session_id: "not-a-real-session".into(),
+            text: "   ".into(),
+            selection: Selection {
+                profile: "operator-choice".into(),
+                work: WorkMode::Plan,
+                autonomy: Autonomy::Ask,
+                provider: "operator-choice".into(),
+                model: "operator-choice".into(),
+                variant: "default".into(),
+            },
+        }));
+        assert_eq!(
+            rejected_message.payload,
+            DaemonResponse::Error {
+                code: DaemonErrorCode::InvalidQueuedMessage,
+            }
+        );
+    }
+
+    #[test]
+    fn should_block_hibernation_for_active_work_and_wake_only_hibernated_sessions() {
+        let path = TestDatabase::new();
+        {
+            let mut registry = SessionRegistry::open(&path.0).unwrap();
+            registry.create("active-session", 10).unwrap();
+            registry
+                .enqueue("active-session", message("active-message"), 11)
+                .unwrap();
+            registry.start_next("active-session", 12).unwrap();
+            registry.pause("active-session", 13).unwrap();
+            registry.create("paused-session", 20).unwrap();
+        }
+
+        let mut runtime = DaemonRuntime::open(&path.0, 21).unwrap();
+        let blocked = runtime.handle(Envelope::new(DaemonRequest::HibernateSession {
+            session_id: "active-session".into(),
+        }));
+        assert_eq!(
+            blocked.payload,
+            DaemonResponse::Error {
+                code: DaemonErrorCode::HibernationBlocked,
+            }
+        );
+
+        let not_hibernated = runtime.handle(Envelope::new(DaemonRequest::WakeSession {
+            session_id: "paused-session".into(),
+        }));
+        assert_eq!(
+            not_hibernated.payload,
+            DaemonResponse::Error {
+                code: DaemonErrorCode::SessionNotHibernated,
+            }
+        );
+
+        let sessions = runtime.sessions().unwrap();
+        let active = sessions
+            .iter()
+            .find(|session| session.session_id == "active-session")
+            .unwrap();
+        assert_eq!(active.status, StoredSessionStatus::Paused);
+        assert_eq!(active.active_message, Some(message("active-message")));
+        let paused = sessions
+            .iter()
+            .find(|session| session.session_id == "paused-session")
+            .unwrap();
+        assert_eq!(paused.status, StoredSessionStatus::Paused);
+        assert!(paused.active_message.is_none());
     }
 
     #[test]

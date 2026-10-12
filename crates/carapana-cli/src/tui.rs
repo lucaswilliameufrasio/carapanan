@@ -214,6 +214,72 @@ impl App {
         }
     }
 
+    fn hibernate_selected(&mut self) {
+        let Some(snapshot) = self.detail.as_ref() else {
+            return;
+        };
+        if snapshot.status != carapana_protocol::SessionStatus::Paused
+            || snapshot.active_message.is_some()
+            || snapshot.recovery_needs_revalidation
+            || snapshot.active_work_uncertain
+        {
+            self.error = Some("only an idle paused session can be hibernated".into());
+            return;
+        }
+        let session_id = snapshot.session_id.clone();
+        match ipc_request(
+            &self.socket_path,
+            Envelope::new(DaemonRequest::HibernateSession {
+                session_id: session_id.clone(),
+            }),
+        )
+        .map(|response| response.payload)
+        {
+            Ok(DaemonResponse::SessionHibernated {
+                session_id: returned_id,
+            }) if returned_id == session_id => {
+                self.refresh();
+                self.refresh_detail();
+            }
+            Ok(DaemonResponse::Error { code }) => {
+                self.error = Some(format!("session hibernation failed: {code:?}"));
+            }
+            Ok(_) => self.error = Some("daemon returned an invalid hibernation response".into()),
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn wake_selected(&mut self) {
+        let Some(snapshot) = self.detail.as_ref() else {
+            return;
+        };
+        if snapshot.status != carapana_protocol::SessionStatus::Hibernated {
+            self.error = Some("only a hibernated session can be woken".into());
+            return;
+        }
+        let session_id = snapshot.session_id.clone();
+        match ipc_request(
+            &self.socket_path,
+            Envelope::new(DaemonRequest::WakeSession {
+                session_id: session_id.clone(),
+            }),
+        )
+        .map(|response| response.payload)
+        {
+            Ok(DaemonResponse::SessionWoken {
+                session_id: returned_id,
+            }) if returned_id == session_id => {
+                self.refresh();
+                self.refresh_detail();
+            }
+            Ok(DaemonResponse::Error { code }) => {
+                self.error = Some(format!("session wake failed: {code:?}"));
+            }
+            Ok(_) => self.error = Some("daemon returned an invalid wake response".into()),
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
     fn acknowledge_selected_path(&mut self) {
         let Some(snapshot) = self.detail.as_ref() else {
             return;
@@ -399,6 +465,14 @@ impl App {
                 self.review_workspace();
                 false
             }
+            KeyCode::Char('h') if self.detail.is_some() && !self.event_mode => {
+                self.hibernate_selected();
+                false
+            }
+            KeyCode::Char('w') if self.detail.is_some() && !self.event_mode => {
+                self.wake_selected();
+                false
+            }
             KeyCode::Char('[') if self.detail.is_some() && !self.event_mode => {
                 self.selected_review_file = self.selected_review_file.saturating_sub(1);
                 false
@@ -502,7 +576,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
     } else if app.event_mode {
         "↑/↓ scroll · n next page · r reload · Esc details · q quit"
     } else if app.detail.is_some() {
-        "↑/↓ scroll · v review · [/] select path · a acknowledge · R resume · e events · Esc back · q quit"
+        "↑/↓ scroll · h hibernate idle · w wake paused · v review · [/] path · a acknowledge · R resume · e events · Esc back · q quit"
     } else {
         "↑/↓ select · Enter inspect · r refresh · q quit"
     };
@@ -700,7 +774,7 @@ fn detail_lines(
     if let Some(error) = error {
         lines.push(Line::from(""));
         lines.push(Line::styled(
-            format!("Refresh error: {error} · press r to retry"),
+            format!("Action/error: {error} · press r to refresh"),
             Style::default().fg(Color::Red),
         ));
     }
@@ -778,8 +852,8 @@ mod tests {
     use super::{App, workspace_review_status_label};
     use carapana_daemon::{DaemonRuntime, IpcServer};
     use carapana_protocol::{
-        AttentionItem, AttentionReason, Autonomy, QueuedMessage, Selection, SessionStatus,
-        SessionSummary, WorkMode, WorkspaceFileReviewStatus,
+        AttentionItem, AttentionReason, Autonomy, DaemonSessionEvent, QueuedMessage, Selection,
+        SessionStatus, SessionSummary, WorkMode, WorkspaceFileReviewStatus,
     };
     use carapana_storage::{SessionRegistry, WorkspaceMetadata};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -869,6 +943,68 @@ mod tests {
         assert!(app.error.is_some());
         assert!(app.sessions.is_empty());
         assert!(app.attention.is_empty());
+    }
+
+    #[test]
+    fn should_hibernate_and_wake_from_the_tui_without_starting_queued_work() {
+        let directory = PrivateDir::new();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry.create("session-1", 10).unwrap();
+        registry
+            .enqueue("session-1", message_with_id("queued-1"), 11)
+            .unwrap();
+        drop(registry);
+
+        let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+        });
+
+        let mut app = App::new(&socket_path);
+        app.refresh();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.detail.as_ref().unwrap().status, SessionStatus::Paused);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert!(app.error.is_none());
+        let hibernated = app.detail.as_ref().unwrap();
+        assert_eq!(hibernated.status, SessionStatus::Hibernated);
+        assert_eq!(
+            hibernated.queued_messages,
+            vec![message_with_id("queued-1")]
+        );
+        assert!(hibernated.active_message.is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert!(app.error.is_none());
+        let woken = app.detail.as_ref().unwrap();
+        assert_eq!(woken.status, SessionStatus::Paused);
+        assert_eq!(woken.queued_messages, vec![message_with_id("queued-1")]);
+        assert!(woken.active_message.is_none());
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.events.len(), 4);
+        assert!(matches!(
+            &app.events[2].event,
+            DaemonSessionEvent::Hibernated
+        ));
+        assert!(matches!(&app.events[3].event, DaemonSessionEvent::Woken));
+        assert!(
+            app.events.iter().all(|event| {
+                !matches!(&event.event, DaemonSessionEvent::MessageStarted { .. })
+            })
+        );
+
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        assert!(!socket_path.exists());
     }
 
     #[test]

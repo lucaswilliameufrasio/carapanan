@@ -96,6 +96,8 @@ pub enum StoredSessionEvent {
     MessageQueued {
         message: QueuedMessage,
     },
+    Hibernated,
+    Woken,
     MessageStarted {
         message_id: String,
     },
@@ -130,6 +132,8 @@ impl StoredSessionEvent {
             Self::Created { .. } => "created",
             Self::WorkspaceFileObserved { .. } => "workspace_file_observed",
             Self::MessageQueued { .. } => "message_queued",
+            Self::Hibernated => "hibernated",
+            Self::Woken => "woken",
             Self::MessageStarted { .. } => "message_started",
             Self::Paused => "paused",
             Self::Completed { .. } => "completed",
@@ -926,6 +930,64 @@ pub(super) fn complete_active_message(
     Ok(session)
 }
 
+pub(super) fn hibernate_session(
+    database: &mut Database,
+    session_id: &str,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    validate_session_id(session_id)?;
+    validate_timestamp(now_ms)?;
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut session = load_session_tx(&transaction, session_id)?;
+    validate_transition_time(&session, now_ms)?;
+    if session.status != StoredSessionStatus::Paused
+        || session.active_message.is_some()
+        || session.recovery_needs_revalidation
+        || session.active_work_uncertain
+    {
+        return Err(SessionStoreError::InvalidTransition);
+    }
+    apply_and_persist(
+        &transaction,
+        &mut session,
+        StoredSessionEvent::Hibernated,
+        now_ms,
+    )?;
+    transaction.commit()?;
+    Ok(session)
+}
+
+pub(super) fn wake_hibernated_session(
+    database: &mut Database,
+    session_id: &str,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    validate_session_id(session_id)?;
+    validate_timestamp(now_ms)?;
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut session = load_session_tx(&transaction, session_id)?;
+    validate_transition_time(&session, now_ms)?;
+    if session.status != StoredSessionStatus::Hibernated
+        || session.active_message.is_some()
+        || session.recovery_needs_revalidation
+        || session.active_work_uncertain
+    {
+        return Err(SessionStoreError::InvalidTransition);
+    }
+    apply_and_persist(
+        &transaction,
+        &mut session,
+        StoredSessionEvent::Woken,
+        now_ms,
+    )?;
+    transaction.commit()?;
+    Ok(session)
+}
+
 pub(super) fn recover_active_sessions(
     database: &mut Database,
     now_ms: i64,
@@ -1217,6 +1279,22 @@ fn apply_to_session(
                     .any(|queued| queued.id == message.id) =>
         {
             session.queued_messages.push(message.clone());
+        }
+        StoredSessionEvent::Hibernated
+            if session.status == StoredSessionStatus::Paused
+                && session.active_message.is_none()
+                && !session.recovery_needs_revalidation
+                && !session.active_work_uncertain =>
+        {
+            session.status = StoredSessionStatus::Hibernated;
+        }
+        StoredSessionEvent::Woken
+            if session.status == StoredSessionStatus::Hibernated
+                && session.active_message.is_none()
+                && !session.recovery_needs_revalidation
+                && !session.active_work_uncertain =>
+        {
+            session.status = StoredSessionStatus::Paused;
         }
         StoredSessionEvent::MessageStarted { message_id }
             if session.status == StoredSessionStatus::Paused
@@ -2714,6 +2792,85 @@ mod tests {
             Err(SessionStoreError::DuplicateMessageId)
         ));
         assert_eq!(database.load_session("session-1").unwrap(), completed);
+    }
+
+    #[test]
+    fn should_hibernate_and_wake_idle_sessions_without_consuming_the_queue() {
+        let path = TestDatabase::new();
+        let mut database = Database::open(&path.0).unwrap();
+        database.create_session("session-1", 10).unwrap();
+        database
+            .enqueue_message("session-1", message("m1"), 11)
+            .unwrap();
+        database
+            .enqueue_message("session-1", message("m2"), 12)
+            .unwrap();
+
+        let hibernated = database.hibernate_session("session-1", 13).unwrap();
+        assert_eq!(hibernated.status, StoredSessionStatus::Hibernated);
+        assert!(hibernated.active_message.is_none());
+        assert_eq!(
+            hibernated.queued_messages,
+            vec![message("m1"), message("m2")]
+        );
+        assert!(matches!(
+            database.start_next_message("session-1", 14),
+            Err(SessionStoreError::InvalidTransition)
+        ));
+        assert_eq!(database.load_session("session-1").unwrap(), hibernated);
+
+        let rebuilt = database.rebuild_snapshot("session-1").unwrap();
+        assert_eq!(rebuilt, hibernated);
+        assert!(matches!(
+            database.hibernate_session("session-1", 14),
+            Err(SessionStoreError::InvalidTransition)
+        ));
+
+        let woken = database.wake_hibernated_session("session-1", 14).unwrap();
+        assert_eq!(woken.status, StoredSessionStatus::Paused);
+        assert!(woken.active_message.is_none());
+        assert_eq!(woken.queued_messages, vec![message("m1"), message("m2")]);
+        assert_eq!(
+            &database.session_events("session-1").unwrap()[3..],
+            &[StoredSessionEvent::Hibernated, StoredSessionEvent::Woken]
+        );
+        assert!(matches!(
+            database.wake_hibernated_session("session-1", 15),
+            Err(SessionStoreError::InvalidTransition)
+        ));
+        assert_eq!(database.load_session("session-1").unwrap(), woken);
+    }
+
+    #[test]
+    fn should_refuse_to_hibernate_active_or_recovery_uncertain_work() {
+        let path = TestDatabase::new();
+        let mut database = Database::open(&path.0).unwrap();
+        database.create_session("active-session", 10).unwrap();
+        database
+            .enqueue_message("active-session", message("active"), 11)
+            .unwrap();
+        database.start_next_message("active-session", 12).unwrap();
+        database.pause_session("active-session", 13).unwrap();
+        assert!(matches!(
+            database.hibernate_session("active-session", 14),
+            Err(SessionStoreError::InvalidTransition)
+        ));
+
+        database.create_session("recovery-session", 20).unwrap();
+        database
+            .enqueue_message("recovery-session", message("uncertain"), 21)
+            .unwrap();
+        database.start_next_message("recovery-session", 22).unwrap();
+        let recovered = database.recover_active_sessions(23).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert!(matches!(
+            database.hibernate_session("recovery-session", 24),
+            Err(SessionStoreError::InvalidTransition)
+        ));
+        let unchanged = database.load_session("recovery-session").unwrap();
+        assert!(unchanged.recovery_needs_revalidation);
+        assert!(unchanged.active_work_uncertain);
+        assert_eq!(unchanged.status, StoredSessionStatus::Paused);
     }
 
     #[test]

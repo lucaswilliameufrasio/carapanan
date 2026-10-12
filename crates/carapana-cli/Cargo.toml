@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 license = "Apache-2.0"
-description = "Read-only local CLI for the Carapanã daemon"
+description = "Local CLI for persisted Carapanã sessions and gated recovery"
 
 [lints]
 workspace = true
