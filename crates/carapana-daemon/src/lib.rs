@@ -10,6 +10,8 @@ use std::{collections::HashMap, error::Error, fmt, path::Path};
 #[cfg(unix)]
 use std::sync::atomic::AtomicBool;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use carapana_protocol::{
     AttentionItem, AttentionReason, DaemonErrorCode, DaemonRequest, DaemonResponse,
     DaemonSessionEvent, Envelope, SessionEventBatch, SessionEventRecord, SessionSnapshot,
@@ -117,6 +119,18 @@ impl DaemonRuntime {
                     },
                 }
             }
+            DaemonRequest::AcknowledgeRecoveryPath { session_id, path } => {
+                match self.acknowledge_recovery_path(&session_id, &path) {
+                    Ok((path, status)) => DaemonResponse::RecoveryPathAcknowledged { path, status },
+                    Err(code) => DaemonResponse::Error { code },
+                }
+            }
+            DaemonRequest::ResumeRecovered { session_id } => {
+                match self.resume_recovered_session(&session_id) {
+                    Ok(()) => DaemonResponse::RecoveryResumed { session_id },
+                    Err(code) => DaemonResponse::Error { code },
+                }
+            }
             DaemonRequest::Attach { .. } | DaemonRequest::Detach {} => DaemonResponse::Error {
                 code: DaemonErrorCode::ConnectionRequired,
             },
@@ -158,24 +172,35 @@ impl DaemonRuntime {
             .into_iter()
             .map(|file| WorkspaceFileReviewItem {
                 path: file.relative_path.to_string_lossy().into_owned(),
-                status: match file.status {
-                    WorkspaceFileValidationStatus::Unchanged => {
-                        WorkspaceFileReviewStatus::Unchanged
-                    }
-                    WorkspaceFileValidationStatus::Changed => WorkspaceFileReviewStatus::Changed,
-                    WorkspaceFileValidationStatus::Missing => WorkspaceFileReviewStatus::Missing,
-                    WorkspaceFileValidationStatus::Unreadable => {
-                        WorkspaceFileReviewStatus::Unreadable
-                    }
-                    WorkspaceFileValidationStatus::Unsafe => WorkspaceFileReviewStatus::Unsafe,
-                    WorkspaceFileValidationStatus::TooLarge => WorkspaceFileReviewStatus::TooLarge,
-                    WorkspaceFileValidationStatus::Unavailable => {
-                        WorkspaceFileReviewStatus::Unavailable
-                    }
-                },
+                status: workspace_review_status(file.status),
             })
             .collect();
         Ok(WorkspaceFileReview { files })
+    }
+
+    fn acknowledge_recovery_path(
+        &mut self,
+        session_id: &str,
+        path: &str,
+    ) -> Result<(String, WorkspaceFileReviewStatus), DaemonErrorCode> {
+        let now_ms = current_time_ms().map_err(|_| DaemonErrorCode::StorageUnavailable)?;
+        self.registry
+            .acknowledge_recovery_path(session_id, path, now_ms)
+            .map(|acknowledgment| {
+                (
+                    acknowledgment.relative_path.to_string_lossy().into_owned(),
+                    workspace_review_status(acknowledgment.status),
+                )
+            })
+            .map_err(map_recovery_error)
+    }
+
+    fn resume_recovered_session(&mut self, session_id: &str) -> Result<(), DaemonErrorCode> {
+        let now_ms = current_time_ms().map_err(|_| DaemonErrorCode::StorageUnavailable)?;
+        self.registry
+            .resume_recovered_session(session_id, now_ms)
+            .map(|_| ())
+            .map_err(map_recovery_error)
     }
 
     fn events_after(
@@ -210,6 +235,18 @@ impl DaemonRuntime {
                     StoredSessionEvent::RecoveredPaused { active_message_id } => {
                         DaemonSessionEvent::RecoveredPaused { active_message_id }
                     }
+                    StoredSessionEvent::RecoveryPathAcknowledged { acknowledgment } => {
+                        DaemonSessionEvent::RecoveryPathAcknowledged {
+                            path: acknowledgment
+                                .relative_path()
+                                .to_string_lossy()
+                                .into_owned(),
+                            status: workspace_review_status(acknowledgment.status()),
+                        }
+                    }
+                    StoredSessionEvent::RecoveryResumed {
+                        active_message_id, ..
+                    } => DaemonSessionEvent::RecoveryResumed { active_message_id },
                 };
                 Some(SessionEventRecord {
                     sequence: record.sequence,
@@ -310,6 +347,48 @@ impl DaemonRuntime {
             startup_recovered,
             attached_clients: HashMap::new(),
         })
+    }
+}
+
+fn workspace_review_status(status: WorkspaceFileValidationStatus) -> WorkspaceFileReviewStatus {
+    match status {
+        WorkspaceFileValidationStatus::Unchanged => WorkspaceFileReviewStatus::Unchanged,
+        WorkspaceFileValidationStatus::Changed => WorkspaceFileReviewStatus::Changed,
+        WorkspaceFileValidationStatus::Missing => WorkspaceFileReviewStatus::Missing,
+        WorkspaceFileValidationStatus::Unreadable => WorkspaceFileReviewStatus::Unreadable,
+        WorkspaceFileValidationStatus::Unsafe => WorkspaceFileReviewStatus::Unsafe,
+        WorkspaceFileValidationStatus::TooLarge => WorkspaceFileReviewStatus::TooLarge,
+        WorkspaceFileValidationStatus::Unavailable => WorkspaceFileReviewStatus::Unavailable,
+    }
+}
+
+fn current_time_ms() -> Result<i64, ()> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ())?;
+    i64::try_from(duration.as_millis()).map_err(|_| ())
+}
+
+fn map_recovery_error(error: SessionStoreError) -> DaemonErrorCode {
+    match error {
+        SessionStoreError::SessionNotFound => DaemonErrorCode::SessionNotFound,
+        SessionStoreError::WorkspaceNotConfigured
+        | SessionStoreError::WorkspaceMetadata(_)
+        | SessionStoreError::WorkspaceFileMetadata(_) => {
+            DaemonErrorCode::WorkspaceReviewUnavailable
+        }
+        SessionStoreError::RecoveryNotPending => DaemonErrorCode::RecoveryNotPending,
+        SessionStoreError::RecoveryPathNotAcknowledgable => {
+            DaemonErrorCode::RecoveryPathNotAcknowledgable
+        }
+        SessionStoreError::RecoveryAcknowledgmentRequired => {
+            DaemonErrorCode::RecoveryAcknowledgmentRequired
+        }
+        SessionStoreError::RecoveryAcknowledgmentStale => {
+            DaemonErrorCode::RecoveryAcknowledgmentStale
+        }
+        SessionStoreError::RecoveryBlocked => DaemonErrorCode::RecoveryBlocked,
+        _ => DaemonErrorCode::StorageUnavailable,
     }
 }
 
@@ -644,6 +723,92 @@ mod tests {
                 code: carapana_protocol::DaemonErrorCode::WorkspaceReviewUnavailable,
             }
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_require_path_acknowledgment_and_explicit_resume_confirmation() {
+        let database = TestDatabase::new();
+        let directory = TestDirectory::new();
+        let workspace_path = directory.0.join("workspace");
+        fs::create_dir(&workspace_path).unwrap();
+        fs::write(
+            workspace_path.join("source.txt"),
+            b"initial selected contents",
+        )
+        .unwrap();
+        {
+            let mut registry = SessionRegistry::open(&database.0).unwrap();
+            registry
+                .create_with_workspace(
+                    "recovery-resume",
+                    WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                    10,
+                )
+                .unwrap();
+            registry
+                .observe_workspace_file_with_hash("recovery-resume", "source.txt", 11)
+                .unwrap();
+            registry
+                .enqueue("recovery-resume", message("active"), 12)
+                .unwrap();
+            registry
+                .enqueue("recovery-resume", message("queued"), 13)
+                .unwrap();
+            registry.start_next("recovery-resume", 14).unwrap();
+        }
+        fs::write(
+            workspace_path.join("source.txt"),
+            b"operator reviewed changed contents",
+        )
+        .unwrap();
+        let mut runtime = DaemonRuntime::open(&database.0, 20).unwrap();
+
+        assert_eq!(
+            runtime
+                .handle(Envelope::new(DaemonRequest::ResumeRecovered {
+                    session_id: "recovery-resume".into(),
+                }))
+                .payload,
+            DaemonResponse::Error {
+                code: carapana_protocol::DaemonErrorCode::RecoveryAcknowledgmentRequired,
+            }
+        );
+
+        let acknowledgment =
+            runtime.handle(Envelope::new(DaemonRequest::AcknowledgeRecoveryPath {
+                session_id: "recovery-resume".into(),
+                path: "source.txt".into(),
+            }));
+        assert_eq!(
+            acknowledgment.payload,
+            DaemonResponse::RecoveryPathAcknowledged {
+                path: "source.txt".into(),
+                status: WorkspaceFileReviewStatus::Changed,
+            }
+        );
+
+        assert_eq!(
+            runtime
+                .handle(Envelope::new(DaemonRequest::ResumeRecovered {
+                    session_id: "recovery-resume".into(),
+                }))
+                .payload,
+            DaemonResponse::RecoveryResumed {
+                session_id: "recovery-resume".into(),
+            }
+        );
+        let session = runtime
+            .sessions()
+            .unwrap()
+            .into_iter()
+            .find(|session| session.session_id == "recovery-resume")
+            .unwrap();
+        assert_eq!(session.status, StoredSessionStatus::Active);
+        assert!(!session.recovery_needs_revalidation);
+        assert!(!session.active_work_uncertain);
+        assert_eq!(session.active_message, Some(message("active")));
+        assert_eq!(session.queued_messages, vec![message("queued")]);
     }
 
     #[test]

@@ -27,12 +27,27 @@ struct App {
     selected: usize,
     detail: Option<SessionSnapshot>,
     workspace_review: Option<WorkspaceFileReview>,
+    selected_review_file: usize,
+    recovery_dialog: RecoveryDialog,
     detail_scroll: usize,
     event_mode: bool,
     events: Vec<SessionEventRecord>,
     event_cursor: i64,
     event_has_more: bool,
     error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RecoveryDialog {
+    None,
+    AcknowledgePath {
+        session_id: String,
+        path: String,
+        status: WorkspaceFileReviewStatus,
+    },
+    ConfirmResume {
+        session_id: String,
+    },
 }
 
 impl App {
@@ -44,6 +59,8 @@ impl App {
             selected: 0,
             detail: None,
             workspace_review: None,
+            selected_review_file: 0,
+            recovery_dialog: RecoveryDialog::None,
             detail_scroll: 0,
             event_mode: false,
             events: Vec::new(),
@@ -160,6 +177,9 @@ impl App {
         .map(|response| response.payload)
         {
             Ok(DaemonResponse::WorkspaceReview { review }) => {
+                self.selected_review_file = self
+                    .selected_review_file
+                    .min(review.files.len().saturating_sub(1));
                 self.workspace_review = Some(review);
                 self.detail_scroll = 0;
                 self.error = None;
@@ -171,7 +191,134 @@ impl App {
         }
     }
 
+    fn refresh_detail(&mut self) {
+        let Some(session_id) = self
+            .detail
+            .as_ref()
+            .map(|snapshot| snapshot.session_id.clone())
+        else {
+            return;
+        };
+        match IpcAttachment::attach(&self.socket_path, session_id) {
+            Ok(attachment) => {
+                let snapshot = attachment.snapshot().clone();
+                match attachment.detach() {
+                    Ok(_) => {
+                        self.detail = Some(snapshot);
+                        self.error = None;
+                    }
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn acknowledge_selected_path(&mut self) {
+        let Some(snapshot) = self.detail.as_ref() else {
+            return;
+        };
+        if !snapshot.recovery_needs_revalidation {
+            self.error = Some("session has no pending recovery review".into());
+            return;
+        }
+        let Some(file) = self
+            .workspace_review
+            .as_ref()
+            .and_then(|review| review.files.get(self.selected_review_file))
+        else {
+            self.error = Some("review a workspace path before acknowledging it".into());
+            return;
+        };
+        if !matches!(
+            file.status,
+            WorkspaceFileReviewStatus::Changed
+                | WorkspaceFileReviewStatus::Missing
+                | WorkspaceFileReviewStatus::TooLarge
+        ) {
+            self.error =
+                Some("only changed, missing, or too-large paths need acknowledgment".into());
+            return;
+        }
+        self.recovery_dialog = RecoveryDialog::AcknowledgePath {
+            session_id: snapshot.session_id.clone(),
+            path: file.path.clone(),
+            status: file.status,
+        };
+        self.error = None;
+    }
+
+    fn begin_recovery_resume(&mut self) {
+        let Some(snapshot) = self.detail.as_ref() else {
+            return;
+        };
+        if !snapshot.recovery_needs_revalidation {
+            self.error = Some("session has no pending recovery review".into());
+            return;
+        }
+        let session_id = snapshot.session_id.clone();
+        self.review_workspace();
+        if self.workspace_review.is_some() && self.error.is_none() {
+            self.recovery_dialog = RecoveryDialog::ConfirmResume { session_id };
+        }
+    }
+
+    fn confirm_recovery_dialog(&mut self) {
+        let dialog = std::mem::replace(&mut self.recovery_dialog, RecoveryDialog::None);
+        match dialog {
+            RecoveryDialog::None => {}
+            RecoveryDialog::AcknowledgePath {
+                session_id,
+                path,
+                status: _,
+            } => {
+                match ipc_request(
+                    &self.socket_path,
+                    Envelope::new(DaemonRequest::AcknowledgeRecoveryPath { session_id, path }),
+                )
+                .map(|response| response.payload)
+                {
+                    Ok(DaemonResponse::RecoveryPathAcknowledged { .. }) => {
+                        self.refresh_detail();
+                        self.review_workspace();
+                    }
+                    Ok(other) => {
+                        self.error = Some(format!("recovery path acknowledgment failed: {other:?}"))
+                    }
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+            }
+            RecoveryDialog::ConfirmResume { session_id } => {
+                match ipc_request(
+                    &self.socket_path,
+                    Envelope::new(DaemonRequest::ResumeRecovered { session_id }),
+                )
+                .map(|response| response.payload)
+                {
+                    Ok(DaemonResponse::RecoveryResumed { .. }) => {
+                        self.refresh();
+                        self.refresh_detail();
+                        self.workspace_review = None;
+                    }
+                    Ok(other) => self.error = Some(format!("recovery resume failed: {other:?}")),
+                    Err(error) => self.error = Some(error.to_string()),
+                }
+            }
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if self.recovery_dialog != RecoveryDialog::None {
+            match key.code {
+                KeyCode::Char('y') => self.confirm_recovery_dialog(),
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.recovery_dialog = RecoveryDialog::None;
+                    self.error = None;
+                }
+                _ => {}
+            }
+            return false;
+        }
         match key.code {
             KeyCode::Char('q') => true,
             KeyCode::Char('r') => {
@@ -252,6 +399,25 @@ impl App {
                 self.review_workspace();
                 false
             }
+            KeyCode::Char('[') if self.detail.is_some() && !self.event_mode => {
+                self.selected_review_file = self.selected_review_file.saturating_sub(1);
+                false
+            }
+            KeyCode::Char(']') if self.detail.is_some() && !self.event_mode => {
+                if let Some(review) = &self.workspace_review {
+                    self.selected_review_file =
+                        (self.selected_review_file + 1).min(review.files.len().saturating_sub(1));
+                }
+                false
+            }
+            KeyCode::Char('a') if self.detail.is_some() && !self.event_mode => {
+                self.acknowledge_selected_path();
+                false
+            }
+            KeyCode::Char('R') if self.detail.is_some() && !self.event_mode => {
+                self.begin_recovery_resume();
+                false
+            }
             KeyCode::Char('n') if self.event_mode && self.event_has_more => {
                 self.load_event_page();
                 false
@@ -285,7 +451,7 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         "Carapanã · Sessions".to_owned()
     };
     frame.render_widget(
-        Paragraph::new("Read-only · daemon is the source of truth")
+        Paragraph::new("Local control · no provider or tool runner")
             .block(Block::default().borders(Borders::ALL).title(title)),
         header,
     );
@@ -305,6 +471,8 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
             detail_lines(
                 snapshot,
                 app.workspace_review.as_ref(),
+                app.selected_review_file,
+                &app.recovery_dialog,
                 app.error.as_deref(),
             )
         };
@@ -329,10 +497,12 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         inner,
     );
 
-    let footer_text = if app.event_mode {
+    let footer_text = if app.recovery_dialog != RecoveryDialog::None {
+        "y confirm · n/Esc cancel"
+    } else if app.event_mode {
         "↑/↓ scroll · n next page · r reload · Esc details · q quit"
     } else if app.detail.is_some() {
-        "↑/↓ scroll · v review files · e events · r refresh · Esc back · q quit"
+        "↑/↓ scroll · v review · [/] select path · a acknowledge · R resume · e events · Esc back · q quit"
     } else {
         "↑/↓ select · Enter inspect · r refresh · q quit"
     };
@@ -430,6 +600,8 @@ fn overview_scroll(selected_line: usize, viewport_height: u16) -> u16 {
 fn detail_lines(
     snapshot: &SessionSnapshot,
     workspace_review: Option<&WorkspaceFileReview>,
+    selected_review_file: usize,
+    recovery_dialog: &RecoveryDialog,
     error: Option<&str>,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
@@ -475,13 +647,54 @@ fn detail_lines(
         if review.files.is_empty() {
             lines.push(Line::from("  No explicitly observed files."));
         } else {
-            for file in &review.files {
-                lines.push(Line::from(format!(
-                    "  {:?} · {}",
+            for (index, file) in review.files.iter().enumerate() {
+                let line = format!(
+                    "{} {:?} · {}",
+                    if index == selected_review_file {
+                        ">"
+                    } else {
+                        " "
+                    },
                     file.path,
                     workspace_review_status_label(file.status)
-                )));
+                );
+                lines.push(if index == selected_review_file {
+                    Line::styled(line, Style::default().add_modifier(Modifier::REVERSED))
+                } else {
+                    Line::from(line)
+                });
             }
+        }
+    }
+    match recovery_dialog {
+        RecoveryDialog::None => {}
+        RecoveryDialog::AcknowledgePath { path, status, .. } => {
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                format!(
+                    "Confirm acknowledgment: {:?} · {}?",
+                    path,
+                    workspace_review_status_label(*status)
+                ),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::from(
+                "This records your review of this path; it does not resume the session.",
+            ));
+        }
+        RecoveryDialog::ConfirmResume { .. } => {
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                "Confirm recovery resume? The daemon will revalidate paths again.",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::from(
+                "This clears recovery pause only; no provider or tools are started.",
+            ));
         }
     }
     if let Some(error) = error {
@@ -802,6 +1015,8 @@ mod tests {
         let detail = super::detail_lines(
             app.detail.as_ref().unwrap(),
             app.workspace_review.as_ref(),
+            app.selected_review_file,
+            &app.recovery_dialog,
             None,
         );
         assert!(
@@ -937,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn should_keep_recovered_session_paused_while_tui_displays_workspace_review() {
+    fn should_require_tui_acknowledgment_and_final_confirmation_to_resume_recovery() {
         let directory = PrivateDir::new();
         let database_path = directory.0.join("sessions.sqlite3");
         let workspace_path = directory.0.join("workspace");
@@ -995,23 +1210,51 @@ mod tests {
             app.workspace_review.as_ref().unwrap().files[0].status,
             WorkspaceFileReviewStatus::Changed
         );
-        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.recovery_dialog,
+            super::RecoveryDialog::AcknowledgePath { .. }
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         let snapshot = app.detail.as_ref().unwrap();
         assert_eq!(snapshot.status, SessionStatus::Paused);
         assert!(snapshot.recovery_needs_revalidation);
         assert!(snapshot.active_work_uncertain);
         assert_eq!(snapshot.active_message.as_ref().unwrap().id, "active-work");
         assert_eq!(snapshot.queued_messages[0].id, "queued-work");
+        assert_eq!(snapshot.event_sequence, 7);
+        app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE));
+        assert!(matches!(
+            app.recovery_dialog,
+            super::RecoveryDialog::ConfirmResume { .. }
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(app.detail.as_ref().unwrap().status, SessionStatus::Paused);
+        app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        let snapshot = app.detail.as_ref().unwrap();
+        assert_eq!(snapshot.status, SessionStatus::Active);
+        assert!(!snapshot.recovery_needs_revalidation);
+        assert!(!snapshot.active_work_uncertain);
+        assert_eq!(snapshot.active_message.as_ref().unwrap().id, "active-work");
+        assert_eq!(snapshot.queued_messages[0].id, "queued-work");
+        assert!(app.attention.is_empty());
 
-        let detail = super::detail_lines(snapshot, None, None);
+        let detail = super::detail_lines(
+            snapshot,
+            None,
+            app.selected_review_file,
+            &app.recovery_dialog,
+            None,
+        );
         assert!(detail.iter().any(|line| {
             line.to_string()
-                .contains("Recovery needs revalidation: true")
+                .contains("Recovery needs revalidation: false")
         }));
         assert!(
             detail
                 .iter()
-                .any(|line| line.to_string().contains("Active work uncertain: true"))
+                .any(|line| line.to_string().contains("Active work uncertain: false"))
         );
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|frame| super::draw(frame, &app)).unwrap();
@@ -1023,8 +1266,9 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<Vec<_>>()
             .join("");
-        assert!(rendered.contains("v review files"));
-        assert!(!rendered.contains("resume"));
+        assert!(rendered.contains("v review"));
+        assert!(rendered.contains("R resume"));
+        assert!(rendered.contains("no provider or tool runner"));
 
         shutdown.store(true, Ordering::Release);
         server_thread.join().unwrap();
@@ -1032,15 +1276,15 @@ mod tests {
         let session = registry.get("session-1").unwrap();
         assert_eq!(
             session.status,
-            carapana_storage::StoredSessionStatus::Paused
+            carapana_storage::StoredSessionStatus::Active
         );
-        assert!(session.recovery_needs_revalidation);
-        assert!(session.active_work_uncertain);
+        assert!(!session.recovery_needs_revalidation);
+        assert!(!session.active_work_uncertain);
         assert_eq!(session.active_message, Some(message_with_id("active-work")));
         assert_eq!(
             session.queued_messages,
             vec![message_with_id("queued-work")]
         );
-        assert_eq!(session.event_sequence, 6);
+        assert_eq!(session.event_sequence, 8);
     }
 }

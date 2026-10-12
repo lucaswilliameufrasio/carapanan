@@ -38,7 +38,7 @@ impl Drop for PrivateDir {
 }
 
 #[test]
-fn should_initialize_and_restore_a_real_read_only_tui_terminal() {
+fn should_initialize_and_restore_a_real_tui_terminal() {
     let directory = PrivateDir::new();
     let data_home = directory.0.join("xdg");
     let carapana_data = data_home.join("carapana");

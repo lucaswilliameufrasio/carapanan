@@ -103,7 +103,7 @@ with tempfile.TemporaryDirectory(prefix="carapana-tui-pty-") as temporary:
             )
 
         read_until(lambda data: b"pty-session" in visible_text(data))
-        assert b"Read-only" in visible_text(output)
+        assert b"Local control" in visible_text(output)
         os.write(master, b"\r")
         read_until(lambda data: b"Status: Paused" in visible_text(data))
         os.write(master, b"e")

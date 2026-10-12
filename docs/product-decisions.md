@@ -144,7 +144,17 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
   workspace e não limpa a exigência de revalidação. Pelo socket Unix privado do mesmo usuário,
   é permitido expor somente path relativo + status ao CLI/TUI; nunca conteúdo, digest, metadata
   stat ou path absoluto. A visualização não confirma conflitos nem libera retomada.
-- Conflitos com alterações do operador exigem confirmação, inclusive em Yolo.
+- Política v1 de retomada após recovery: exigir revisão read-only fresca e confirmação humana
+  explícita de retomada, inclusive quando todos os paths reportam `unchanged`; metadata e
+  fingerprints, isoladamente, nunca autorizam retomada. `changed`, `missing` e `too_large`
+  exigem reconhecimento explícito por path. `unsafe`, `unreadable`, `unavailable` e qualquer
+  mudança na identidade da raiz bloqueiam retomada até serem resolvidos e revisados novamente.
+  O reconhecimento fica vinculado à identidade da raiz e às evidências locais disponíveis
+  (metadata stat e digest somente quando já autorizado). Qualquer mudança detectável após o
+  reconhecimento invalida a autorização e mantém a sessão pausada; metadata stat-only não
+  detecta alteração de conteúdo que preserve todos os metadados. Nunca retomar
+  automaticamente nem permitir bypass por Yolo. Conflitos com alterações do operador exigem
+  confirmação, inclusive em Yolo.
 - `Parar` interrompe o agente, cancela comandos e encerra processos temporários iniciados
   para o trabalho, com supervisão e encerramento seguro (dev server, API local, serviço de teste).
 - Não encerrar serviços anteriores. Processos marcados pelo operador como `Manter rodando`

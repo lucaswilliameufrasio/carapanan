@@ -8,9 +8,9 @@ Local-first, model-agnostic coding-agent harness, com implementação principal 
 - [Decisões de produto e comportamento — revisão de 4 de outubro de 2026](docs/product-decisions.md)
 
 **Estado atual:** Delivery 0 (protótipo com fixtures) foi aprovado; Delivery 2 está
-em andamento. A CLI/TUI real Unix consulta o daemon e as sessões em modo read-only.
-O protótipo web/mobile continua isolado, com estado simulado: ainda não se conecta ao
-daemon. Não há provider real nem execução de tarefas/tools.
+em andamento. A CLI/TUI real Unix consulta o daemon; recovery só pode ser retomado com
+revalidação e confirmação explícita. O protótipo web/mobile continua isolado, com estado
+simulado: ainda não se conecta ao daemon. Não há provider real nem execução de tarefas/tools.
 
 ## Experimentar
 
@@ -162,16 +162,22 @@ cargo run -p carapana-cli -- attention
 cargo run -p carapana-cli -- show <session-id> --json
 cargo run -p carapana-cli -- show <session-id> --events-after <cursor> --json
 cargo run -p carapana-cli -- review-workspace <session-id> --json
+cargo run -p carapana-cli -- acknowledge-recovery-path <session-id> <path> --confirm
+cargo run -p carapana-cli -- resume-recovered <session-id>
+cargo run -p carapana-cli -- resume-recovered <session-id> --confirm
 cargo run -p carapana-cli -- tui
 ```
 
-A TUI é read-only: ↑/↓ navega e rola detalhes, Enter abre o snapshot, `v` revalida
-os arquivos explicitamente observados, `e` consulta eventos, `n` busca a próxima página
-limitada, `r` atualiza explicitamente, Esc volta e `q` sai. O relatório mostra somente
-paths relativos + status; não inclui conteúdo, digest ou metadata bruta e não autoriza
-retomada. A TUI não envia mensagens, aprova, retoma, executa tools ou inicia provider.
-SIGINT/SIGTERM encerram o daemon. A interface web/mobile acima permanece um protótipo
-com fixtures e não acessa esses dados reais.
+A TUI inspeciona sessões e permite somente o gate explícito de recovery: `v` revalida os
+paths observados; `[`/`]` seleciona um path; `a` abre confirmação para reconhecer
+`changed`, `missing` ou `too_large`; `R` mostra uma revisão fresca e abre a confirmação
+final de retomada. `y` confirma e `n`/Esc cancela. `e` consulta eventos, `n` busca a
+próxima página limitada, `r` atualiza detalhes, Esc volta e `q` sai. O relatório expõe
+somente paths relativos + status; não inclui conteúdo, digest ou metadata bruta. Status
+`unsafe`, `unreadable`, `unavailable` ou identidade de raiz alterada bloqueiam retomada.
+Retomar preserva o trabalho interrompido, mas não inicia provider ou tools. SIGINT/SIGTERM
+encerram o daemon. A interface web/mobile acima permanece um protótipo com fixtures e não
+acessa esses dados reais.
 
 Logs locais JSON são opcionais e ficam desligados por padrão. Para habilitá-los,
 defina `CARAPANA_LOG_DIR=/caminho/privado`; os arquivos rodam diariamente e são

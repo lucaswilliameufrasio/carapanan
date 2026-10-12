@@ -513,6 +513,16 @@ fn should_fail_workspace_review_without_workspace_without_changing_recovery_stat
     assert!(!stderr.contains("WorkspaceNotConfigured"));
     assert!(!stderr.contains("workspace"));
 
+    let resume = run_cli(
+        &directory,
+        &["resume-recovered", "no-workspace-review", "--confirm"],
+    );
+    assert!(!resume.status.success());
+    assert!(resume.stdout.is_empty());
+    let resume_stderr = String::from_utf8_lossy(&resume.stderr);
+    assert!(resume_stderr.contains("WorkspaceReviewUnavailable"));
+    assert!(!resume_stderr.contains("WorkspaceNotConfigured"));
+
     let inspected = run_cli(&directory, &["show", "no-workspace-review", "--json"]);
     assert!(inspected.status.success());
     let inspected: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
@@ -543,6 +553,181 @@ fn should_fail_workspace_review_without_workspace_without_changing_recovery_stat
     assert!(!after_has_more);
     assert_eq!(after_events, before_events);
     assert_eq!(after_event_cursor, before_event_cursor);
+
+    let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
+    assert!(status.success(), "daemon did not stop cleanly: {stderr}");
+    assert!(!socket.exists(), "daemon socket remained after shutdown");
+}
+
+#[test]
+fn should_require_explicit_path_acknowledgment_and_final_resume_confirmation_over_cli() {
+    let directory = PrivateDir::new();
+    let data_directory = user_data_directory(&directory);
+    fs::create_dir_all(&data_directory).unwrap();
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let database_path = data_directory.join("sessions.sqlite3");
+    let workspace_path = directory.0.join("workspace");
+    fs::create_dir(&workspace_path).unwrap();
+    fs::write(
+        workspace_path.join("source.txt"),
+        b"before interrupted work",
+    )
+    .unwrap();
+    {
+        let mut registry = SessionRegistry::open(&database_path).unwrap();
+        registry
+            .create_with_workspace(
+                "confirmed-recovery",
+                WorkspaceMetadata::capture(&workspace_path).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file_with_hash("confirmed-recovery", "source.txt", 11)
+            .unwrap();
+        registry
+            .enqueue(
+                "confirmed-recovery",
+                message("active-work", "preserve interrupted work"),
+                12,
+            )
+            .unwrap();
+        registry
+            .enqueue(
+                "confirmed-recovery",
+                message("queued-work", "preserve queued work"),
+                13,
+            )
+            .unwrap();
+        registry.start_next("confirmed-recovery", 14).unwrap();
+    }
+    fs::set_permissions(&database_path, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(
+        workspace_path.join("source.txt"),
+        b"operator reviewed new contents",
+    )
+    .unwrap();
+
+    let (daemon, socket) = start_daemon(&directory);
+    let mut daemon = DaemonGuard(daemon);
+    wait_for_socket(&mut daemon, &socket);
+
+    let preflight = run_cli(&directory, &["resume-recovered", "confirmed-recovery"]);
+    assert!(
+        preflight.status.success(),
+        "resume preflight failed: {}",
+        String::from_utf8_lossy(&preflight.stderr)
+    );
+    let preflight_stdout = String::from_utf8_lossy(&preflight.stdout);
+    assert!(preflight_stdout.contains("\"source.txt\"\tchanged"));
+    assert!(preflight_stdout.contains("Session remains paused"));
+    let before_ack = run_cli(&directory, &["show", "confirmed-recovery", "--json"]);
+    assert!(before_ack.status.success());
+    let before_ack: serde_json::Value = serde_json::from_slice(&before_ack.stdout).unwrap();
+    assert_eq!(before_ack["snapshot"]["status"], "paused");
+    assert_eq!(before_ack["snapshot"]["event_sequence"], 6);
+
+    let missing_confirmation = run_cli(
+        &directory,
+        &[
+            "acknowledge-recovery-path",
+            "confirmed-recovery",
+            "source.txt",
+        ],
+    );
+    assert!(!missing_confirmation.status.success());
+    let still_before_ack = run_cli(&directory, &["show", "confirmed-recovery", "--json"]);
+    let still_before_ack: serde_json::Value =
+        serde_json::from_slice(&still_before_ack.stdout).unwrap();
+    assert_eq!(still_before_ack["snapshot"]["event_sequence"], 6);
+
+    let acknowledgment = run_cli(
+        &directory,
+        &[
+            "acknowledge-recovery-path",
+            "confirmed-recovery",
+            "source.txt",
+            "--confirm",
+        ],
+    );
+    assert!(
+        acknowledgment.status.success(),
+        "path acknowledgment failed: {}",
+        String::from_utf8_lossy(&acknowledgment.stderr)
+    );
+    assert!(String::from_utf8_lossy(&acknowledgment.stdout).contains("does not resume"));
+
+    let post_ack_preflight = run_cli(&directory, &["resume-recovered", "confirmed-recovery"]);
+    assert!(post_ack_preflight.status.success());
+    assert!(String::from_utf8_lossy(&post_ack_preflight.stdout).contains("Session remains paused"));
+    let before_resume = run_cli(&directory, &["show", "confirmed-recovery", "--json"]);
+    let before_resume: serde_json::Value = serde_json::from_slice(&before_resume.stdout).unwrap();
+    assert_eq!(before_resume["snapshot"]["status"], "paused");
+    assert!(
+        before_resume["snapshot"]["recovery_needs_revalidation"]
+            .as_bool()
+            .unwrap()
+    );
+
+    let resumed = run_cli(
+        &directory,
+        &["resume-recovered", "confirmed-recovery", "--confirm"],
+    );
+    assert!(
+        resumed.status.success(),
+        "explicit recovery resume failed: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let resumed_stdout = String::from_utf8_lossy(&resumed.stdout);
+    assert!(resumed_stdout.contains("\"source.txt\"\tchanged"));
+    assert!(resumed_stdout.contains("Recovery resumed"));
+    assert!(resumed_stdout.contains("No provider or tools were started"));
+
+    let after_resume_output = run_cli(
+        &directory,
+        &[
+            "show",
+            "confirmed-recovery",
+            "--json",
+            "--events-after",
+            "0",
+        ],
+    );
+    assert!(after_resume_output.status.success());
+    let after_resume_text = String::from_utf8_lossy(&after_resume_output.stdout);
+    let after_resume: serde_json::Value =
+        serde_json::from_slice(&after_resume_output.stdout).unwrap();
+    assert_eq!(after_resume["snapshot"]["status"], "active");
+    assert!(
+        !after_resume["snapshot"]["recovery_needs_revalidation"]
+            .as_bool()
+            .unwrap()
+    );
+    assert!(
+        !after_resume["snapshot"]["active_work_uncertain"]
+            .as_bool()
+            .unwrap()
+    );
+    assert_eq!(
+        after_resume["snapshot"]["active_message"]["id"],
+        "active-work"
+    );
+    assert_eq!(
+        after_resume["snapshot"]["queued_messages"][0]["id"],
+        "queued-work"
+    );
+    let events = after_resume["events"]["events"].as_array().unwrap();
+    assert!(events.iter().any(|event| {
+        event["event"]["type"] == "recovery_path_acknowledged"
+            && event["event"]["path"] == "source.txt"
+            && event["event"]["status"] == "changed"
+    }));
+    assert!(events.iter().any(|event| {
+        event["event"]["type"] == "recovery_resumed"
+            && event["event"]["active_message_id"] == "active-work"
+    }));
+    assert!(!after_resume_text.contains("before interrupted work"));
+    assert!(!after_resume_text.contains("operator reviewed new contents"));
 
     let (status, stderr) = stop_with_signal(&mut daemon, "-TERM");
     assert!(status.success(), "daemon did not stop cleanly: {stderr}");

@@ -96,6 +96,24 @@ impl SessionRegistry {
         self.database.review_workspace_files(session_id)
     }
 
+    pub fn acknowledge_recovery_path(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<WorkspaceFileValidation, SessionStoreError> {
+        self.database
+            .acknowledge_recovery_path(session_id, relative_path, now_ms)
+    }
+
+    pub fn resume_recovered_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.resume_recovered_session(session_id, now_ms)
+    }
+
     pub fn get(&self, session_id: &str) -> Result<PersistedSession, SessionStoreError> {
         self.database.load_session(session_id)
     }
@@ -275,6 +293,23 @@ impl Database {
         session_id: &str,
     ) -> Result<WorkspaceValidationReport, SessionStoreError> {
         session_store::review_workspace_files(self, session_id)
+    }
+
+    pub fn acknowledge_recovery_path(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<WorkspaceFileValidation, SessionStoreError> {
+        session_store::acknowledge_recovery_path(self, session_id, relative_path, now_ms)
+    }
+
+    pub fn resume_recovered_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::resume_recovered_session(self, session_id, now_ms)
     }
 
     /// Load from the snapshot, falling back to replaying the event log if needed.

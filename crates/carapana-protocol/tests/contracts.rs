@@ -295,6 +295,65 @@ fn should_expose_only_relative_paths_and_statuses_in_workspace_review_contract()
 }
 
 #[test]
+fn should_keep_recovery_acknowledgment_and_resume_contracts_explicit_and_content_free() {
+    let acknowledge = Envelope::new(DaemonRequest::AcknowledgeRecoveryPath {
+        session_id: "session-1".into(),
+        path: "src/main.rs".into(),
+    });
+    let acknowledge_json = serde_json::to_string(&acknowledge).unwrap();
+    assert_eq!(
+        acknowledge_json,
+        r#"{"protocol":1,"payload":{"type":"acknowledge_recovery_path","session_id":"session-1","path":"src/main.rs"}}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&acknowledge_json).unwrap(),
+        acknowledge
+    );
+
+    let resume = Envelope::new(DaemonRequest::ResumeRecovered {
+        session_id: "session-1".into(),
+    });
+    let resume_json = serde_json::to_string(&resume).unwrap();
+    assert_eq!(
+        resume_json,
+        r#"{"protocol":1,"payload":{"type":"resume_recovered","session_id":"session-1"}}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<Envelope<DaemonRequest>>(&resume_json).unwrap(),
+        resume
+    );
+
+    let response = Envelope::new(DaemonResponse::RecoveryPathAcknowledged {
+        path: "src/main.rs".into(),
+        status: WorkspaceFileReviewStatus::Changed,
+    });
+    let response_json = serde_json::to_string(&response).unwrap();
+    assert_eq!(
+        response_json,
+        r#"{"protocol":1,"payload":{"type":"recovery_path_acknowledged","path":"src/main.rs","status":"changed"}}"#
+    );
+    assert!(!response_json.contains("digest"));
+    assert!(!response_json.contains("metadata"));
+    assert!(!response_json.contains("contents"));
+
+    assert_eq!(
+        serde_json::to_string(&DaemonSessionEvent::RecoveryPathAcknowledged {
+            path: "src/main.rs".into(),
+            status: WorkspaceFileReviewStatus::Changed,
+        })
+        .unwrap(),
+        r#"{"type":"recovery_path_acknowledged","path":"src/main.rs","status":"changed"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&DaemonSessionEvent::RecoveryResumed {
+            active_message_id: Some("message-1".into()),
+        })
+        .unwrap(),
+        r#"{"type":"recovery_resumed","active_message_id":"message-1"}"#
+    );
+}
+
+#[test]
 fn should_round_trip_bounded_incremental_session_event_batches() {
     let batch = SessionEventBatch {
         events: vec![SessionEventRecord {

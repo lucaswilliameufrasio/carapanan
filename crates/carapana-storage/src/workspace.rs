@@ -36,7 +36,8 @@ pub struct WorkspaceFileMetadata {
     content_sha256: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WorkspaceFileValidationStatus {
     Unchanged,
     Changed,

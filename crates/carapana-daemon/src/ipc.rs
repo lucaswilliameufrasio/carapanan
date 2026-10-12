@@ -502,7 +502,9 @@ impl ClientConnection {
                 _,
                 request @ (DaemonRequest::ListSessions {}
                 | DaemonRequest::ListAttention {}
-                | DaemonRequest::ReviewWorkspace { .. }),
+                | DaemonRequest::ReviewWorkspace { .. }
+                | DaemonRequest::AcknowledgeRecoveryPath { .. }
+                | DaemonRequest::ResumeRecovered { .. }),
             ) => runtime.handle(Envelope::new(request)),
         }
     }

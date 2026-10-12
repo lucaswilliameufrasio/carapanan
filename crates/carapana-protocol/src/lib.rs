@@ -143,6 +143,8 @@ pub enum DaemonRequest {
     ListSessions {},
     ListAttention {},
     ReviewWorkspace { session_id: String },
+    AcknowledgeRecoveryPath { session_id: String, path: String },
+    ResumeRecovered { session_id: String },
     Attach { session_id: String },
     EventsAfter { after_sequence: i64 },
     Detach {},
@@ -248,6 +250,13 @@ pub enum DaemonSessionEvent {
     RecoveredPaused {
         active_message_id: Option<String>,
     },
+    RecoveryPathAcknowledged {
+        path: String,
+        status: WorkspaceFileReviewStatus,
+    },
+    RecoveryResumed {
+        active_message_id: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -276,6 +285,11 @@ pub enum DaemonErrorCode {
     ConnectionRequired,
     InvalidEventCursor,
     WorkspaceReviewUnavailable,
+    RecoveryNotPending,
+    RecoveryPathNotAcknowledgable,
+    RecoveryAcknowledgmentRequired,
+    RecoveryAcknowledgmentStale,
+    RecoveryBlocked,
 }
 
 /// Response envelope payload. Attachment returns the full session snapshot; IPC errors
@@ -283,13 +297,34 @@ pub enum DaemonErrorCode {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonResponse {
-    Sessions { sessions: Vec<SessionSummary> },
-    Attention { items: Vec<AttentionItem> },
-    WorkspaceReview { review: WorkspaceFileReview },
-    Events { batch: Box<SessionEventBatch> },
-    Attached { snapshot: Box<SessionSnapshot> },
-    Detached { remaining_attached_clients: u64 },
-    Error { code: DaemonErrorCode },
+    Sessions {
+        sessions: Vec<SessionSummary>,
+    },
+    Attention {
+        items: Vec<AttentionItem>,
+    },
+    WorkspaceReview {
+        review: WorkspaceFileReview,
+    },
+    RecoveryPathAcknowledged {
+        path: String,
+        status: WorkspaceFileReviewStatus,
+    },
+    RecoveryResumed {
+        session_id: String,
+    },
+    Events {
+        batch: Box<SessionEventBatch>,
+    },
+    Attached {
+        snapshot: Box<SessionSnapshot>,
+    },
+    Detached {
+        remaining_attached_clients: u64,
+    },
+    Error {
+        code: DaemonErrorCode,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

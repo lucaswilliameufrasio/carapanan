@@ -44,9 +44,42 @@ pub struct PersistedSession {
     pub workspace: Option<WorkspaceMetadata>,
     #[serde(default)]
     pub workspace_files: Vec<WorkspaceFileMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) recovery_path_acknowledgments: Vec<RecoveryPathAcknowledgment>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub event_sequence: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[doc(hidden)]
+pub struct RecoveryPathAcknowledgment {
+    relative_path_bytes: Vec<u8>,
+    status: WorkspaceFileValidationStatus,
+    current_state: Option<WorkspaceFileMetadata>,
+}
+
+impl RecoveryPathAcknowledgment {
+    pub fn relative_path(&self) -> std::path::PathBuf {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(
+                self.relative_path_bytes.clone(),
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            std::path::PathBuf::from(
+                String::from_utf8_lossy(&self.relative_path_bytes).into_owned(),
+            )
+        }
+    }
+
+    pub fn status(&self) -> WorkspaceFileValidationStatus {
+        self.status
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +107,13 @@ pub enum StoredSessionEvent {
     RecoveredPaused {
         active_message_id: Option<String>,
     },
+    RecoveryPathAcknowledged {
+        acknowledgment: RecoveryPathAcknowledgment,
+    },
+    RecoveryResumed {
+        active_message_id: Option<String>,
+        reviewed_event_sequence: i64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +134,8 @@ impl StoredSessionEvent {
             Self::Paused => "paused",
             Self::Completed { .. } => "completed",
             Self::RecoveredPaused { .. } => "recovered_paused",
+            Self::RecoveryPathAcknowledged { .. } => "recovery_path_acknowledged",
+            Self::RecoveryResumed { .. } => "recovery_resumed",
         }
     }
 }
@@ -116,6 +158,11 @@ pub enum SessionStoreError {
     WorkspaceMetadata(WorkspaceMetadataError),
     WorkspaceFileMetadata(WorkspaceFileMetadataError),
     WorkspaceNotConfigured,
+    RecoveryNotPending,
+    RecoveryPathNotAcknowledgable,
+    RecoveryAcknowledgmentRequired,
+    RecoveryAcknowledgmentStale,
+    RecoveryBlocked,
 }
 
 impl fmt::Display for SessionStoreError {
@@ -154,6 +201,21 @@ impl fmt::Display for SessionStoreError {
             }
             Self::WorkspaceNotConfigured => {
                 formatter.write_str("session has no configured workspace")
+            }
+            Self::RecoveryNotPending => {
+                formatter.write_str("session has no pending recovery review")
+            }
+            Self::RecoveryPathNotAcknowledgable => {
+                formatter.write_str("workspace path does not have an acknowledgeable status")
+            }
+            Self::RecoveryAcknowledgmentRequired => {
+                formatter.write_str("workspace path requires explicit acknowledgment")
+            }
+            Self::RecoveryAcknowledgmentStale => {
+                formatter.write_str("workspace changed after its recovery acknowledgment")
+            }
+            Self::RecoveryBlocked => {
+                formatter.write_str("workspace review contains a blocking status")
             }
         }
     }
@@ -233,6 +295,7 @@ fn create_session_with_optional_workspace(
         active_work_uncertain: false,
         workspace: workspace.clone(),
         workspace_files: Vec::new(),
+        recovery_path_acknowledgments: Vec::new(),
         created_at_ms: now_ms,
         updated_at_ms: now_ms,
         event_sequence: 0,
@@ -375,6 +438,12 @@ pub(super) fn review_workspace_files(
     session_id: &str,
 ) -> Result<WorkspaceValidationReport, SessionStoreError> {
     let session = database.load_session(session_id)?;
+    review_session_workspace_files(&session)
+}
+
+fn review_session_workspace_files(
+    session: &PersistedSession,
+) -> Result<WorkspaceValidationReport, SessionStoreError> {
     let workspace = session
         .workspace
         .as_ref()
@@ -398,6 +467,205 @@ pub(super) fn review_workspace_files(
         });
     }
     Ok(WorkspaceValidationReport { files })
+}
+
+pub(super) fn acknowledge_recovery_path(
+    database: &mut Database,
+    session_id: &str,
+    relative_path: impl AsRef<std::path::Path>,
+    now_ms: i64,
+) -> Result<WorkspaceFileValidation, SessionStoreError> {
+    validate_session_id(session_id)?;
+    validate_timestamp(now_ms)?;
+    let relative_path = relative_path.as_ref();
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut session = load_session_tx(&transaction, session_id)?;
+    validate_transition_time(&session, now_ms)?;
+    if session.status != StoredSessionStatus::Paused || !session.recovery_needs_revalidation {
+        return Err(SessionStoreError::RecoveryNotPending);
+    }
+    let workspace = session
+        .workspace
+        .as_ref()
+        .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
+    workspace
+        .verify_current()
+        .map_err(SessionStoreError::WorkspaceMetadata)?;
+
+    let report = review_session_workspace_files(&session)?;
+    let current_status = report
+        .files
+        .iter()
+        .find(|file| file.relative_path == relative_path)
+        .map(|file| file.status)
+        .ok_or(SessionStoreError::RecoveryPathNotAcknowledgable)?;
+    if !matches!(
+        current_status,
+        WorkspaceFileValidationStatus::Changed
+            | WorkspaceFileValidationStatus::Missing
+            | WorkspaceFileValidationStatus::TooLarge
+    ) {
+        return Err(SessionStoreError::RecoveryPathNotAcknowledgable);
+    }
+
+    let current_state = match current_status {
+        WorkspaceFileValidationStatus::Missing => None,
+        WorkspaceFileValidationStatus::TooLarge => Some(
+            workspace
+                .observe_file(relative_path)
+                .map_err(SessionStoreError::WorkspaceFileMetadata)?,
+        ),
+        WorkspaceFileValidationStatus::Changed => {
+            let baseline = session
+                .workspace_files
+                .iter()
+                .find(|file| file.relative_path() == relative_path)
+                .ok_or(SessionStoreError::InvalidEventHistory)?;
+            if baseline.content_sha256().is_some() {
+                match workspace.observe_file_with_hash(relative_path) {
+                    Ok(observation) => Some(observation),
+                    Err(WorkspaceFileMetadataError::FileTooLarge(_)) => Some(
+                        workspace
+                            .observe_file(relative_path)
+                            .map_err(SessionStoreError::WorkspaceFileMetadata)?,
+                    ),
+                    Err(error) => return Err(SessionStoreError::WorkspaceFileMetadata(error)),
+                }
+            } else {
+                Some(
+                    workspace
+                        .observe_file(relative_path)
+                        .map_err(SessionStoreError::WorkspaceFileMetadata)?,
+                )
+            }
+        }
+        _ => return Err(SessionStoreError::RecoveryPathNotAcknowledgable),
+    };
+    let acknowledgment = RecoveryPathAcknowledgment {
+        relative_path_bytes: path_bytes(relative_path),
+        status: current_status,
+        current_state,
+    };
+    apply_and_persist(
+        &transaction,
+        &mut session,
+        StoredSessionEvent::RecoveryPathAcknowledged { acknowledgment },
+        now_ms,
+    )?;
+    transaction.commit()?;
+    Ok(WorkspaceFileValidation {
+        relative_path: relative_path.to_owned(),
+        status: current_status,
+    })
+}
+
+pub(super) fn resume_recovered_session(
+    database: &mut Database,
+    session_id: &str,
+    now_ms: i64,
+) -> Result<PersistedSession, SessionStoreError> {
+    validate_session_id(session_id)?;
+    validate_timestamp(now_ms)?;
+    let transaction = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut session = load_session_tx(&transaction, session_id)?;
+    validate_transition_time(&session, now_ms)?;
+    if session.status != StoredSessionStatus::Paused || !session.recovery_needs_revalidation {
+        return Err(SessionStoreError::RecoveryNotPending);
+    }
+    let active_message_id = session
+        .active_message
+        .as_ref()
+        .map(|message| message.id.clone())
+        .ok_or(SessionStoreError::InvalidTransition)?;
+    let workspace = session
+        .workspace
+        .as_ref()
+        .ok_or(SessionStoreError::WorkspaceNotConfigured)?;
+    workspace
+        .verify_current()
+        .map_err(SessionStoreError::WorkspaceMetadata)?;
+
+    let report = review_session_workspace_files(&session)?;
+    for file in &report.files {
+        match file.status {
+            WorkspaceFileValidationStatus::Unchanged => {}
+            WorkspaceFileValidationStatus::Changed
+            | WorkspaceFileValidationStatus::Missing
+            | WorkspaceFileValidationStatus::TooLarge => {
+                let acknowledgment = session
+                    .recovery_path_acknowledgments
+                    .iter()
+                    .find(|acknowledgment| acknowledgment.relative_path() == file.relative_path)
+                    .ok_or(SessionStoreError::RecoveryAcknowledgmentRequired)?;
+                if acknowledgment.status != file.status {
+                    return Err(SessionStoreError::RecoveryAcknowledgmentStale);
+                }
+                match (&file.status, &acknowledgment.current_state) {
+                    (WorkspaceFileValidationStatus::Missing, None) => {
+                        verify_path_remains_missing(workspace, &file.relative_path)?;
+                    }
+                    (
+                        WorkspaceFileValidationStatus::Changed
+                        | WorkspaceFileValidationStatus::TooLarge,
+                        Some(current_state),
+                    ) if current_state.relative_path() == file.relative_path => {
+                        current_state
+                            .verify_current(workspace)
+                            .map_err(|_| SessionStoreError::RecoveryAcknowledgmentStale)?;
+                    }
+                    _ => return Err(SessionStoreError::RecoveryAcknowledgmentStale),
+                }
+            }
+            WorkspaceFileValidationStatus::Unreadable
+            | WorkspaceFileValidationStatus::Unsafe
+            | WorkspaceFileValidationStatus::Unavailable => {
+                return Err(SessionStoreError::RecoveryBlocked);
+            }
+        }
+    }
+
+    let reviewed_event_sequence = session.event_sequence;
+    apply_and_persist(
+        &transaction,
+        &mut session,
+        StoredSessionEvent::RecoveryResumed {
+            active_message_id: Some(active_message_id),
+            reviewed_event_sequence,
+        },
+        now_ms,
+    )?;
+    transaction.commit()?;
+    Ok(session)
+}
+
+fn verify_path_remains_missing(
+    workspace: &WorkspaceMetadata,
+    relative_path: &std::path::Path,
+) -> Result<(), SessionStoreError> {
+    match workspace.observe_file(relative_path) {
+        Err(WorkspaceFileMetadataError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        Ok(_) | Err(_) => Err(SessionStoreError::RecoveryAcknowledgmentStale),
+    }
+}
+
+fn path_bytes(path: &std::path::Path) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().to_vec()
+    }
+    #[cfg(not(unix))]
+    {
+        path.to_string_lossy().as_bytes().to_vec()
+    }
 }
 
 fn workspace_file_validation_status(
@@ -866,6 +1134,7 @@ fn apply_event(
                 active_work_uncertain: false,
                 workspace,
                 workspace_files: Vec::new(),
+                recovery_path_acknowledgments: Vec::new(),
                 created_at_ms: occurred_at_ms,
                 updated_at_ms: occurred_at_ms,
                 event_sequence: sequence,
@@ -932,6 +1201,9 @@ fn apply_to_session(
                 .workspace_files
                 .retain(|current| current.relative_path() != path);
             session.workspace_files.push(observation.clone());
+            session
+                .recovery_path_acknowledgments
+                .retain(|acknowledgment| acknowledgment.relative_path() != path);
         }
         StoredSessionEvent::MessageQueued { message }
             if !message.id.trim().is_empty()
@@ -985,6 +1257,54 @@ fn apply_to_session(
             session.status = StoredSessionStatus::Paused;
             session.recovery_needs_revalidation = true;
             session.active_work_uncertain = session.active_message.is_some();
+            session.recovery_path_acknowledgments.clear();
+        }
+        StoredSessionEvent::RecoveryPathAcknowledged { acknowledgment }
+            if session.status == StoredSessionStatus::Paused
+                && session.recovery_needs_revalidation
+                && matches!(
+                    acknowledgment.status,
+                    WorkspaceFileValidationStatus::Changed
+                        | WorkspaceFileValidationStatus::Missing
+                        | WorkspaceFileValidationStatus::TooLarge
+                )
+                && session.workspace_files.iter().any(|observation| {
+                    observation.relative_path() == acknowledgment.relative_path()
+                })
+                && match (acknowledgment.status, &acknowledgment.current_state) {
+                    (WorkspaceFileValidationStatus::Missing, None) => true,
+                    (
+                        WorkspaceFileValidationStatus::Changed
+                        | WorkspaceFileValidationStatus::TooLarge,
+                        Some(current_state),
+                    ) => {
+                        current_state.relative_path() == acknowledgment.relative_path()
+                            && current_state.validate_path().is_ok()
+                    }
+                    _ => false,
+                } =>
+        {
+            session
+                .recovery_path_acknowledgments
+                .retain(|current| current.relative_path() != acknowledgment.relative_path());
+            session
+                .recovery_path_acknowledgments
+                .push(acknowledgment.clone());
+        }
+        StoredSessionEvent::RecoveryResumed {
+            active_message_id,
+            reviewed_event_sequence,
+        } if session.status == StoredSessionStatus::Paused
+            && session.recovery_needs_revalidation
+            && session.active_message.as_ref().map(|message| &message.id)
+                == active_message_id.as_ref()
+            && sequence == reviewed_event_sequence.saturating_add(1)
+            && active_message_id.is_some() =>
+        {
+            session.status = StoredSessionStatus::Active;
+            session.recovery_needs_revalidation = false;
+            session.active_work_uncertain = false;
+            session.recovery_path_acknowledgments.clear();
         }
         _ => return Err(SessionStoreError::InvalidEventHistory),
     }
@@ -1039,7 +1359,10 @@ fn validate_timestamp(timestamp_ms: i64) -> Result<(), SessionStoreError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionStoreError, StoredSessionEvent, StoredSessionStatus, io_validation_status};
+    use super::{
+        SessionStoreError, StoredSessionEvent, StoredSessionStatus, io_validation_status,
+        verify_path_remains_missing,
+    };
     use crate::{
         Database, SessionRegistry, WorkspaceFileMetadataError, WorkspaceFileValidationStatus,
         WorkspaceMetadata, WorkspaceMetadataError,
@@ -1694,6 +2017,322 @@ mod tests {
         assert_eq!(after_review.status, StoredSessionStatus::Paused);
         assert!(after_review.recovery_needs_revalidation);
         assert_eq!(after_review.event_sequence, before_review.event_sequence);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_require_fresh_path_acknowledgments_before_explicit_recovery_resume() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(workspace.0.join("changed.txt"), b"baseline contents").unwrap();
+        fs::write(workspace.0.join("missing.txt"), b"will be removed").unwrap();
+        fs::write(workspace.0.join("large.txt"), b"small hash baseline").unwrap();
+
+        let mut registry = SessionRegistry::open(&path.0).unwrap();
+        registry
+            .create_with_workspace(
+                "recovery-resume",
+                WorkspaceMetadata::capture(&workspace.0).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file_with_hash("recovery-resume", "changed.txt", 11)
+            .unwrap();
+        registry
+            .observe_workspace_file("recovery-resume", "missing.txt", 12)
+            .unwrap();
+        registry
+            .observe_workspace_file_with_hash("recovery-resume", "large.txt", 13)
+            .unwrap();
+        registry
+            .enqueue("recovery-resume", message("active"), 14)
+            .unwrap();
+        registry
+            .enqueue("recovery-resume", message("queued"), 15)
+            .unwrap();
+        registry.start_next("recovery-resume", 16).unwrap();
+        drop(registry);
+
+        let mut registry = SessionRegistry::open(&path.0).unwrap();
+        registry.recover_after_restart(20).unwrap();
+        fs::write(
+            workspace.0.join("changed.txt"),
+            b"operator's first resolved state",
+        )
+        .unwrap();
+        fs::remove_file(workspace.0.join("missing.txt")).unwrap();
+        fs::write(
+            workspace.0.join("large.txt"),
+            vec![b'x'; crate::MAX_WORKSPACE_FILE_HASH_BYTES + 1],
+        )
+        .unwrap();
+
+        let before_review = registry.get("recovery-resume").unwrap();
+        assert_eq!(before_review.status, StoredSessionStatus::Paused);
+        assert!(before_review.recovery_needs_revalidation);
+        assert!(before_review.active_work_uncertain);
+        assert!(matches!(
+            registry.resume_recovered_session("recovery-resume", 21),
+            Err(SessionStoreError::RecoveryAcknowledgmentRequired)
+        ));
+        assert_eq!(registry.get("recovery-resume").unwrap(), before_review);
+
+        let acknowledged_changed = registry
+            .acknowledge_recovery_path("recovery-resume", "changed.txt", 22)
+            .unwrap();
+        assert_eq!(
+            acknowledged_changed.status,
+            WorkspaceFileValidationStatus::Changed
+        );
+        assert_eq!(
+            registry
+                .get("recovery-resume")
+                .unwrap()
+                .recovery_path_acknowledgments
+                .len(),
+            1
+        );
+        let acknowledged_missing = registry
+            .acknowledge_recovery_path("recovery-resume", "missing.txt", 23)
+            .unwrap();
+        assert_eq!(
+            acknowledged_missing.status,
+            WorkspaceFileValidationStatus::Missing
+        );
+        let acknowledged_large = registry
+            .acknowledge_recovery_path("recovery-resume", "large.txt", 24)
+            .unwrap();
+        assert_eq!(
+            acknowledged_large.status,
+            WorkspaceFileValidationStatus::TooLarge
+        );
+        let acknowledged_state = registry.get("recovery-resume").unwrap();
+        assert_eq!(acknowledged_state.recovery_path_acknowledgments.len(), 3);
+
+        let reopened = SessionRegistry::open(&path.0).unwrap();
+        assert_eq!(reopened.get("recovery-resume").unwrap(), acknowledged_state);
+        fs::write(
+            workspace.0.join("changed.txt"),
+            b"changed again after acknowledgment",
+        )
+        .unwrap();
+        assert!(matches!(
+            registry.resume_recovered_session("recovery-resume", 25),
+            Err(SessionStoreError::RecoveryAcknowledgmentStale)
+        ));
+        let still_paused = registry.get("recovery-resume").unwrap();
+        assert_eq!(still_paused.status, StoredSessionStatus::Paused);
+        assert!(still_paused.recovery_needs_revalidation);
+        assert!(still_paused.active_work_uncertain);
+
+        registry
+            .acknowledge_recovery_path("recovery-resume", "changed.txt", 26)
+            .unwrap();
+        let resumed = registry
+            .resume_recovered_session("recovery-resume", 27)
+            .unwrap();
+        assert_eq!(resumed.status, StoredSessionStatus::Active);
+        assert!(!resumed.recovery_needs_revalidation);
+        assert!(!resumed.active_work_uncertain);
+        assert_eq!(resumed.active_message, Some(message("active")));
+        assert_eq!(resumed.queued_messages, vec![message("queued")]);
+        assert!(resumed.recovery_path_acknowledgments.is_empty());
+        assert!(matches!(
+            registry
+                .database
+                .session_events("recovery-resume")
+                .unwrap()
+                .last(),
+            Some(StoredSessionEvent::RecoveryResumed {
+                active_message_id: Some(message_id),
+                ..
+            }) if message_id == "active"
+        ));
+
+        let mut reopened = Database::open(&path.0).unwrap();
+        let replayed = reopened.rebuild_snapshot("recovery-resume").unwrap();
+        assert_eq!(replayed, resumed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_require_explicit_resume_even_when_all_workspace_paths_are_unchanged() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(workspace.0.join("unchanged.txt"), b"same contents").unwrap();
+        let mut registry = SessionRegistry::open(&path.0).unwrap();
+        registry
+            .create_with_workspace(
+                "unchanged-recovery",
+                WorkspaceMetadata::capture(&workspace.0).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file("unchanged-recovery", "unchanged.txt", 11)
+            .unwrap();
+        registry
+            .enqueue("unchanged-recovery", message("active"), 12)
+            .unwrap();
+        registry.start_next("unchanged-recovery", 13).unwrap();
+        registry.recover_after_restart(14).unwrap();
+
+        let before_resume = registry.get("unchanged-recovery").unwrap();
+        let report = registry
+            .review_workspace_files("unchanged-recovery")
+            .unwrap();
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(
+            report.files[0].status,
+            WorkspaceFileValidationStatus::Unchanged
+        );
+        assert_eq!(registry.get("unchanged-recovery").unwrap(), before_resume);
+
+        let resumed = registry
+            .resume_recovered_session("unchanged-recovery", 15)
+            .unwrap();
+        assert_eq!(resumed.status, StoredSessionStatus::Active);
+        assert!(!resumed.recovery_needs_revalidation);
+        assert_eq!(resumed.active_message, Some(message("active")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_only_accept_missing_acknowledgment_when_path_is_still_not_found() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TestWorkspace::new();
+        let workspace_metadata = WorkspaceMetadata::capture(&workspace.0).unwrap();
+        let relative_path = std::path::Path::new("selected.txt");
+        assert!(verify_path_remains_missing(&workspace_metadata, relative_path).is_ok());
+
+        fs::write(workspace.0.join(relative_path), b"reappeared").unwrap();
+        assert!(matches!(
+            verify_path_remains_missing(&workspace_metadata, relative_path),
+            Err(SessionStoreError::RecoveryAcknowledgmentStale)
+        ));
+        fs::remove_file(workspace.0.join(relative_path)).unwrap();
+
+        let outside = workspace.0.with_file_name("missing-ack-outside.txt");
+        fs::write(&outside, b"outside target").unwrap();
+        symlink(&outside, workspace.0.join(relative_path)).unwrap();
+        assert!(matches!(
+            verify_path_remains_missing(&workspace_metadata, relative_path),
+            Err(SessionStoreError::RecoveryAcknowledgmentStale)
+        ));
+        fs::remove_file(workspace.0.join(relative_path)).unwrap();
+        fs::remove_file(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_block_resume_until_unsafe_workspace_paths_are_resolved() {
+        use std::os::unix::fs::symlink;
+
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(workspace.0.join("source.txt"), b"selected file").unwrap();
+        let outside = workspace.0.with_file_name("outside-target.txt");
+        fs::write(&outside, b"never inspect outside target").unwrap();
+        let mut registry = SessionRegistry::open(&path.0).unwrap();
+        registry
+            .create_with_workspace(
+                "blocked-recovery",
+                WorkspaceMetadata::capture(&workspace.0).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file("blocked-recovery", "source.txt", 11)
+            .unwrap();
+        registry
+            .enqueue("blocked-recovery", message("active"), 12)
+            .unwrap();
+        registry.start_next("blocked-recovery", 13).unwrap();
+        registry.recover_after_restart(14).unwrap();
+        fs::remove_file(workspace.0.join("source.txt")).unwrap();
+        symlink(&outside, workspace.0.join("source.txt")).unwrap();
+
+        let report = registry.review_workspace_files("blocked-recovery").unwrap();
+        assert_eq!(
+            report.files[0].status,
+            WorkspaceFileValidationStatus::Unsafe
+        );
+        assert!(matches!(
+            registry.acknowledge_recovery_path("blocked-recovery", "source.txt", 15),
+            Err(SessionStoreError::RecoveryPathNotAcknowledgable)
+        ));
+        assert!(matches!(
+            registry.resume_recovered_session("blocked-recovery", 15),
+            Err(SessionStoreError::RecoveryBlocked)
+        ));
+        let still_paused = registry.get("blocked-recovery").unwrap();
+        assert_eq!(still_paused.status, StoredSessionStatus::Paused);
+        assert!(still_paused.recovery_needs_revalidation);
+
+        fs::remove_file(workspace.0.join("source.txt")).unwrap();
+        fs::write(
+            workspace.0.join("source.txt"),
+            b"operator reviewed replacement",
+        )
+        .unwrap();
+        assert_eq!(
+            registry
+                .review_workspace_files("blocked-recovery")
+                .unwrap()
+                .files[0]
+                .status,
+            WorkspaceFileValidationStatus::Changed
+        );
+        registry
+            .acknowledge_recovery_path("blocked-recovery", "source.txt", 16)
+            .unwrap();
+        let resumed = registry
+            .resume_recovered_session("blocked-recovery", 17)
+            .unwrap();
+        assert_eq!(resumed.status, StoredSessionStatus::Active);
+        assert!(!resumed.recovery_needs_revalidation);
+        fs::remove_file(outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_fail_closed_when_workspace_root_identity_changes_before_recovery_resume() {
+        let path = TestDatabase::new();
+        let workspace = TestWorkspace::new();
+        fs::write(workspace.0.join("source.txt"), b"selected file").unwrap();
+        let mut registry = SessionRegistry::open(&path.0).unwrap();
+        registry
+            .create_with_workspace(
+                "root-change-recovery",
+                WorkspaceMetadata::capture(&workspace.0).unwrap(),
+                10,
+            )
+            .unwrap();
+        registry
+            .observe_workspace_file("root-change-recovery", "source.txt", 11)
+            .unwrap();
+        registry
+            .enqueue("root-change-recovery", message("active"), 12)
+            .unwrap();
+        registry.start_next("root-change-recovery", 13).unwrap();
+        registry.recover_after_restart(14).unwrap();
+        let before_resume = registry.get("root-change-recovery").unwrap();
+
+        let moved_workspace = workspace.0.with_extension("moved");
+        fs::rename(&workspace.0, &moved_workspace).unwrap();
+        fs::create_dir(&workspace.0).unwrap();
+        fs::write(workspace.0.join("source.txt"), b"replacement root contents").unwrap();
+
+        assert!(matches!(
+            registry.resume_recovered_session("root-change-recovery", 15),
+            Err(SessionStoreError::WorkspaceMetadata(
+                WorkspaceMetadataError::IdentityChanged(_)
+            ))
+        ));
+        assert_eq!(registry.get("root-change-recovery").unwrap(), before_resume);
+        fs::remove_dir_all(moved_workspace).unwrap();
     }
 
     #[cfg(unix)]

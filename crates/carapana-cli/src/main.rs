@@ -18,7 +18,7 @@ use carapana_protocol::{DaemonRequest, DaemonResponse, Envelope};
 use carapana_storage::user_database_path;
 
 #[derive(Parser)]
-#[command(name = "carapana", about = "Read-only local Carapanã session client")]
+#[command(name = "carapana", about = "Local Carapanã session client")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -44,6 +44,19 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Explicitly acknowledge one changed, missing, or too-large recovery path.
+    AcknowledgeRecoveryPath {
+        session_id: String,
+        path: String,
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Resume recovered active work after fresh review and explicit confirmation.
+    ResumeRecovered {
+        session_id: String,
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Inspect a session snapshot and optionally read events after a cursor.
     Show {
         session_id: String,
@@ -52,7 +65,7 @@ enum Commands {
         #[arg(long)]
         events_after: Option<i64>,
     },
-    /// Open a read-only terminal view of daemon sessions.
+    /// Open the terminal client for local session inspection and gated recovery actions.
     Tui,
 }
 
@@ -175,6 +188,87 @@ fn run_client(
                     }
                 }
             }
+        }
+        Commands::AcknowledgeRecoveryPath {
+            session_id,
+            path: relative_path,
+            confirm,
+        } => {
+            if !confirm {
+                return Err("acknowledging a recovery path requires --confirm".into());
+            }
+            let response = ipc_request(
+                path,
+                Envelope::new(DaemonRequest::AcknowledgeRecoveryPath {
+                    session_id,
+                    path: relative_path,
+                }),
+            )?;
+            let DaemonResponse::RecoveryPathAcknowledged { path, status } = response.payload else {
+                return Err(format!(
+                    "daemon did not acknowledge the recovery path: {:?}",
+                    response.payload
+                )
+                .into());
+            };
+            writeln!(
+                output,
+                "Acknowledged {:?} as {}. This does not resume the session.",
+                path,
+                review_status_label(status)
+            )?;
+        }
+        Commands::ResumeRecovered {
+            session_id,
+            confirm,
+        } => {
+            let report_response = ipc_request(
+                path,
+                Envelope::new(DaemonRequest::ReviewWorkspace {
+                    session_id: session_id.clone(),
+                }),
+            )?;
+            let DaemonResponse::WorkspaceReview { review } = report_response.payload else {
+                return Err(format!(
+                    "daemon could not review the workspace before resume: {:?}",
+                    report_response.payload
+                )
+                .into());
+            };
+            writeln!(output, "Fresh recovery review:")?;
+            if review.files.is_empty() {
+                writeln!(output, "No explicitly observed workspace files.")?;
+            } else {
+                for file in review.files {
+                    writeln!(
+                        output,
+                        "{:?}\t{}",
+                        file.path,
+                        review_status_label(file.status)
+                    )?;
+                }
+            }
+            output.flush()?;
+            if !confirm {
+                writeln!(
+                    output,
+                    "Session remains paused. Review the paths, then run `resume-recovered {session_id} --confirm` to explicitly resume."
+                )?;
+                return Ok(());
+            }
+            let response = ipc_request(
+                path,
+                Envelope::new(DaemonRequest::ResumeRecovered { session_id }),
+            )?;
+            let DaemonResponse::RecoveryResumed { session_id } = response.payload else {
+                return Err(
+                    format!("daemon refused recovery resume: {:?}", response.payload).into(),
+                );
+            };
+            writeln!(
+                output,
+                "Recovery resumed for {session_id}. No provider or tools were started."
+            )?;
         }
         Commands::Show {
             session_id,
