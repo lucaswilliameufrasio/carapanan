@@ -301,6 +301,7 @@ fn should_create_a_paused_session_and_queue_stdin_without_starting_or_echoing_wo
         1
     );
     assert_eq!(inspected["snapshot"]["queued_messages"][0]["text"], prompt);
+    assert_eq!(inspected["snapshot"]["queued_messages"][0]["origin"], "cli");
     let events = inspected["events"]["events"].as_array().unwrap();
     assert_eq!(events.len(), 2);
     assert_eq!(events[1]["event"]["type"], "message_queued");

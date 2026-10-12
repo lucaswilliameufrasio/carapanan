@@ -1,9 +1,10 @@
 //! Versioned contracts. No transport, authorization or task execution.
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const MAX_QUEUED_MESSAGE_BYTES: usize = 8 * 1024;
 pub const MAX_SELECTION_FIELD_BYTES: usize = 256;
+pub const MAX_WORKSPACE_PATH_BYTES: usize = 4 * 1024;
 
 fn version<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
     let value = u16::deserialize(deserializer)?;
@@ -85,6 +86,22 @@ pub struct QueuedMessage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum MessageOrigin {
+    Cli,
+    Tui,
+}
+
+impl MessageOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Tui => "tui",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Success,
     Failure,
@@ -151,6 +168,7 @@ pub enum DaemonRequest {
         session_id: String,
         text: String,
         selection: Selection,
+        origin: MessageOrigin,
     },
     HibernateSession {
         session_id: String,

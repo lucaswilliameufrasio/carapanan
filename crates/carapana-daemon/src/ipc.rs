@@ -552,7 +552,8 @@ mod tests {
     use crate::DaemonRuntime;
     use carapana_protocol::{
         Autonomy, DaemonRequest, DaemonResponse, Envelope, MAX_QUEUED_MESSAGE_BYTES,
-        MAX_SELECTION_FIELD_BYTES, QueuedMessage, Selection, SessionStatus, WorkMode,
+        MAX_SELECTION_FIELD_BYTES, MessageOrigin, QueuedMessage, Selection, SessionStatus,
+        WorkMode,
     };
     use carapana_storage::SessionRegistry;
     use std::{
@@ -715,6 +716,7 @@ mod tests {
                 model: selection_field.clone(),
                 variant: selection_field,
             },
+            origin: MessageOrigin::Cli,
         });
         let mut frame = Cursor::new(Vec::new());
 

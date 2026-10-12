@@ -203,8 +203,11 @@ explícita e registra somente o estado; não libera working set/cache/processos.
 volta para `paused`, preservando a fila sem iniciar trabalho.
 
 A TUI inspeciona sessões; no detalhe, `h` hiberna uma sessão pausada ociosa e `w` acorda
-uma hibernada para `paused`, sem iniciar a fila nem alterar processos/recursos. Para recovery,
-`v` revalida os
+uma hibernada para `paused`, sem iniciar a fila nem alterar processos/recursos. No overview,
+`c` abre a criação de sessão com o caminho mascarado; no detalhe, `m` abre um composer que
+coleta texto e todos os campos de seleção explicitamente. `Ctrl+J` insere nova linha; uma
+confirmação enfileira sem iniciar trabalho. Os campos provider/model são somente metadata.
+Para recovery, `v` revalida os
 paths observados; `[`/`]` seleciona um path; `a` abre confirmação para reconhecer
 `changed`, `missing` ou `too_large`; `R` mostra uma revisão fresca e abre a confirmação
 final de retomada. `y` confirma e `n`/Esc cancela. `e` consulta eventos, `n` busca a
@@ -214,6 +217,8 @@ somente paths relativos + status; não inclui conteúdo, digest ou metadata brut
 Retomar preserva o trabalho interrompido, mas não inicia provider ou tools. SIGINT/SIGTERM
 encerram o daemon. A interface web/mobile acima permanece um protótipo com fixtures e não
 acessa esses dados reais.
+
+O protocolo IPC atual é v3; mantenha CLI e daemon na mesma versão.
 
 Logs locais JSON são opcionais e ficam desligados por padrão. Para habilitá-los,
 defina `CARAPANA_LOG_DIR=/caminho/privado`; os arquivos rodam diariamente e são

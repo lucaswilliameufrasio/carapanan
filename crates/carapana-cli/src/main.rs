@@ -14,7 +14,7 @@ mod tui;
 use carapana_daemon::{DaemonService, IpcAttachment, ipc_request};
 #[cfg(unix)]
 use carapana_protocol::{
-    DaemonRequest, DaemonResponse, Envelope, MAX_QUEUED_MESSAGE_BYTES, Selection,
+    DaemonRequest, DaemonResponse, Envelope, MAX_QUEUED_MESSAGE_BYTES, MessageOrigin, Selection,
 };
 #[cfg(unix)]
 use carapana_storage::user_database_path;
@@ -79,7 +79,7 @@ enum Commands {
         #[arg(long)]
         events_after: Option<i64>,
     },
-    /// Open the terminal client for local session inspection and gated recovery actions.
+    /// Open the terminal client for session management, inspection, and gated recovery actions.
     Tui,
 }
 
@@ -153,6 +153,7 @@ fn run_client(
                     session_id: session_id.clone(),
                     text,
                     selection,
+                    origin: MessageOrigin::Cli,
                 }),
             )?;
             match response.payload {

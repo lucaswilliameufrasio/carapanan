@@ -54,8 +54,9 @@ fn should_round_trip_profile_defaults_without_permission_fields() {
 fn should_reject_missing_unsupported_versions_unknown_fields_and_unknown_variants() {
     for json in [
         r#"{"protocol":1,"payload":"value"}"#,
+        r#"{"protocol":2,"payload":"value"}"#,
         r#"{"payload":"value"}"#,
-        r#"{"protocol":2,"payload":"value","extra":true}"#,
+        r#"{"protocol":3,"payload":"value","extra":true}"#,
     ] {
         assert!(serde_json::from_str::<Envelope<String>>(json).is_err());
     }
@@ -108,7 +109,7 @@ fn should_round_trip_the_resumed_session_event() {
     let json = serde_json::to_string(&event).unwrap();
     assert_eq!(
         json,
-        r#"{"protocol":2,"payload":{"type":"resumed","message_id":"m1"}}"#
+        r#"{"protocol":3,"payload":{"type":"resumed","message_id":"m1"}}"#
     );
     assert_eq!(
         serde_json::from_str::<Envelope<SessionEvent>>(&json).unwrap(),
@@ -122,7 +123,7 @@ fn should_version_read_only_daemon_session_listing_and_reject_unknown_fields() {
     let request_json = serde_json::to_string(&request).unwrap();
     assert_eq!(
         request_json,
-        r#"{"protocol":2,"payload":{"type":"list_sessions"}}"#
+        r#"{"protocol":3,"payload":{"type":"list_sessions"}}"#
     );
     assert_eq!(
         serde_json::from_str::<Envelope<DaemonRequest>>(&request_json).unwrap(),
@@ -152,8 +153,9 @@ fn should_version_read_only_daemon_session_listing_and_reject_unknown_fields() {
 
     for invalid in [
         r#"{"protocol":1,"payload":{"type":"list_sessions"}}"#,
-        r#"{"protocol":2,"payload":{"type":"list_sessions","execute":true}}"#,
-        r#"{"protocol":2,"payload":{"type":"run_command"}}"#,
+        r#"{"protocol":2,"payload":{"type":"list_sessions"}}"#,
+        r#"{"protocol":3,"payload":{"type":"list_sessions","execute":true}}"#,
+        r#"{"protocol":3,"payload":{"type":"run_command"}}"#,
     ] {
         assert!(
             serde_json::from_str::<Envelope<DaemonRequest>>(invalid).is_err(),
@@ -174,7 +176,7 @@ fn should_contract_explicit_paused_session_creation_and_inert_message_enqueue() 
     let create_json = serde_json::to_string(&create).unwrap();
     assert_eq!(
         create_json,
-        r#"{"protocol":2,"payload":{"type":"create_session","workspace_path":"/private/workspace"}}"#
+        r#"{"protocol":3,"payload":{"type":"create_session","workspace_path":"/private/workspace"}}"#
     );
     assert_eq!(
         serde_json::from_str::<Envelope<DaemonRequest>>(&create_json).unwrap(),
@@ -193,8 +195,10 @@ fn should_contract_explicit_paused_session_creation_and_inert_message_enqueue() 
         session_id: "session-1".into(),
         text: "private prompt".into(),
         selection,
+        origin: MessageOrigin::Cli,
     });
     let enqueue_json = serde_json::to_string(&enqueue).unwrap();
+    assert!(enqueue_json.contains(r#""origin":"cli""#));
     assert_eq!(
         serde_json::from_str::<Envelope<DaemonRequest>>(&enqueue_json).unwrap(),
         enqueue
@@ -226,7 +230,7 @@ fn should_contract_explicit_hibernation_and_wake_as_state_only_requests() {
     let hibernate_json = serde_json::to_string(&hibernate).unwrap();
     assert_eq!(
         hibernate_json,
-        r#"{"protocol":2,"payload":{"type":"hibernate_session","session_id":"session-1"}}"#
+        r#"{"protocol":3,"payload":{"type":"hibernate_session","session_id":"session-1"}}"#
     );
     assert_eq!(
         serde_json::from_str::<Envelope<DaemonRequest>>(&hibernate_json).unwrap(),
@@ -270,7 +274,7 @@ fn should_model_connection_scoped_attach_with_a_full_reconnect_snapshot() {
     );
     assert!(
         serde_json::from_str::<Envelope<DaemonRequest>>(
-            r#"{"protocol":2,"payload":{"type":"detach","session_id":"spoofed"}}"#
+            r#"{"protocol":3,"payload":{"type":"detach","session_id":"spoofed"}}"#
         )
         .is_err()
     );
@@ -309,7 +313,7 @@ fn should_model_connection_scoped_attach_with_a_full_reconnect_snapshot() {
     );
     assert_eq!(
         serde_json::from_str::<Envelope<DaemonRequest>>(
-            r#"{"protocol":2,"payload":{"type":"detach"}}"#
+            r#"{"protocol":3,"payload":{"type":"detach"}}"#
         )
         .unwrap()
         .payload,
@@ -351,7 +355,7 @@ fn should_expose_only_relative_paths_and_statuses_in_workspace_review_contract()
     let request_json = serde_json::to_string(&request).unwrap();
     assert_eq!(
         request_json,
-        r#"{"protocol":2,"payload":{"type":"review_workspace","session_id":"session-1"}}"#
+        r#"{"protocol":3,"payload":{"type":"review_workspace","session_id":"session-1"}}"#
     );
     assert_eq!(
         serde_json::from_str::<Envelope<DaemonRequest>>(&request_json).unwrap(),
@@ -369,7 +373,7 @@ fn should_expose_only_relative_paths_and_statuses_in_workspace_review_contract()
     let response_json = serde_json::to_string(&response).unwrap();
     assert_eq!(
         response_json,
-        r#"{"protocol":2,"payload":{"type":"workspace_review","review":{"files":[{"path":"src/main.rs","status":"changed"}]}}}"#
+        r#"{"protocol":3,"payload":{"type":"workspace_review","review":{"files":[{"path":"src/main.rs","status":"changed"}]}}}"#
     );
     assert!(!response_json.contains("digest"));
     assert!(!response_json.contains("metadata"));
@@ -395,7 +399,7 @@ fn should_keep_recovery_acknowledgment_and_resume_contracts_explicit_and_content
     let acknowledge_json = serde_json::to_string(&acknowledge).unwrap();
     assert_eq!(
         acknowledge_json,
-        r#"{"protocol":2,"payload":{"type":"acknowledge_recovery_path","session_id":"session-1","path":"src/main.rs"}}"#
+        r#"{"protocol":3,"payload":{"type":"acknowledge_recovery_path","session_id":"session-1","path":"src/main.rs"}}"#
     );
     assert_eq!(
         serde_json::from_str::<Envelope<DaemonRequest>>(&acknowledge_json).unwrap(),
@@ -408,7 +412,7 @@ fn should_keep_recovery_acknowledgment_and_resume_contracts_explicit_and_content
     let resume_json = serde_json::to_string(&resume).unwrap();
     assert_eq!(
         resume_json,
-        r#"{"protocol":2,"payload":{"type":"resume_recovered","session_id":"session-1"}}"#
+        r#"{"protocol":3,"payload":{"type":"resume_recovered","session_id":"session-1"}}"#
     );
     assert_eq!(
         serde_json::from_str::<Envelope<DaemonRequest>>(&resume_json).unwrap(),
@@ -422,7 +426,7 @@ fn should_keep_recovery_acknowledgment_and_resume_contracts_explicit_and_content
     let response_json = serde_json::to_string(&response).unwrap();
     assert_eq!(
         response_json,
-        r#"{"protocol":2,"payload":{"type":"recovery_path_acknowledged","path":"src/main.rs","status":"changed"}}"#
+        r#"{"protocol":3,"payload":{"type":"recovery_path_acknowledged","path":"src/main.rs","status":"changed"}}"#
     );
     assert!(!response_json.contains("digest"));
     assert!(!response_json.contains("metadata"));

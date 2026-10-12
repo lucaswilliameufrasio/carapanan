@@ -7,17 +7,19 @@ use std::{
 
 use carapana_daemon::{IpcAttachment, ipc_request};
 use carapana_protocol::{
-    AttentionItem, DaemonRequest, DaemonResponse, Envelope, SessionEventRecord, SessionSnapshot,
-    SessionSummary, WorkspaceFileReview, WorkspaceFileReviewStatus,
+    AttentionItem, Autonomy, DaemonRequest, DaemonResponse, Envelope, MAX_QUEUED_MESSAGE_BYTES,
+    MAX_SELECTION_FIELD_BYTES, MAX_WORKSPACE_PATH_BYTES, MessageOrigin, Selection,
+    SessionEventRecord, SessionSnapshot, SessionSummary, WorkMode, WorkspaceFileReview,
+    WorkspaceFileReviewStatus,
 };
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 struct App {
@@ -28,7 +30,8 @@ struct App {
     detail: Option<SessionSnapshot>,
     workspace_review: Option<WorkspaceFileReview>,
     selected_review_file: usize,
-    recovery_dialog: RecoveryDialog,
+    dialog: DialogState,
+    notice: Option<String>,
     detail_scroll: usize,
     event_mode: bool,
     events: Vec<SessionEventRecord>,
@@ -38,7 +41,7 @@ struct App {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum RecoveryDialog {
+enum DialogState {
     None,
     AcknowledgePath {
         session_id: String,
@@ -48,6 +51,38 @@ enum RecoveryDialog {
     ConfirmResume {
         session_id: String,
     },
+    CreateWorkspace {
+        input: String,
+    },
+    QueueMessage {
+        session_id: String,
+        stage: QueueStage,
+        input: String,
+        draft: QueueDraft,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueStage {
+    Text,
+    Profile,
+    Work,
+    Autonomy,
+    Provider,
+    Model,
+    Variant,
+    Confirm,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct QueueDraft {
+    text: String,
+    profile: String,
+    work: Option<WorkMode>,
+    autonomy: Option<Autonomy>,
+    provider: String,
+    model: String,
+    variant: String,
 }
 
 impl App {
@@ -60,7 +95,8 @@ impl App {
             detail: None,
             workspace_review: None,
             selected_review_file: 0,
-            recovery_dialog: RecoveryDialog::None,
+            dialog: DialogState::None,
+            notice: None,
             detail_scroll: 0,
             event_mode: false,
             events: Vec::new(),
@@ -240,6 +276,10 @@ impl App {
             }) if returned_id == session_id => {
                 self.refresh();
                 self.refresh_detail();
+                self.notice = Some(
+                    "Session hibernated; queue is preserved and no resources or processes were changed."
+                        .into(),
+                );
             }
             Ok(DaemonResponse::Error { code }) => {
                 self.error = Some(format!("session hibernation failed: {code:?}"));
@@ -271,6 +311,9 @@ impl App {
             }) if returned_id == session_id => {
                 self.refresh();
                 self.refresh_detail();
+                self.notice = Some(
+                    "Session is paused again; queue is preserved and no work was started.".into(),
+                );
             }
             Ok(DaemonResponse::Error { code }) => {
                 self.error = Some(format!("session wake failed: {code:?}"));
@@ -306,7 +349,7 @@ impl App {
                 Some("only changed, missing, or too-large paths need acknowledgment".into());
             return;
         }
-        self.recovery_dialog = RecoveryDialog::AcknowledgePath {
+        self.dialog = DialogState::AcknowledgePath {
             session_id: snapshot.session_id.clone(),
             path: file.path.clone(),
             status: file.status,
@@ -325,15 +368,15 @@ impl App {
         let session_id = snapshot.session_id.clone();
         self.review_workspace();
         if self.workspace_review.is_some() && self.error.is_none() {
-            self.recovery_dialog = RecoveryDialog::ConfirmResume { session_id };
+            self.dialog = DialogState::ConfirmResume { session_id };
         }
     }
 
     fn confirm_recovery_dialog(&mut self) {
-        let dialog = std::mem::replace(&mut self.recovery_dialog, RecoveryDialog::None);
+        let dialog = std::mem::replace(&mut self.dialog, DialogState::None);
         match dialog {
-            RecoveryDialog::None => {}
-            RecoveryDialog::AcknowledgePath {
+            DialogState::None => {}
+            DialogState::AcknowledgePath {
                 session_id,
                 path,
                 status: _,
@@ -354,7 +397,7 @@ impl App {
                     Err(error) => self.error = Some(error.to_string()),
                 }
             }
-            RecoveryDialog::ConfirmResume { session_id } => {
+            DialogState::ConfirmResume { session_id } => {
                 match ipc_request(
                     &self.socket_path,
                     Envelope::new(DaemonRequest::ResumeRecovered { session_id }),
@@ -370,19 +413,447 @@ impl App {
                     Err(error) => self.error = Some(error.to_string()),
                 }
             }
+            other => self.dialog = other,
         }
     }
 
-    fn handle_key(&mut self, key: KeyEvent) -> bool {
-        if self.recovery_dialog != RecoveryDialog::None {
+    fn begin_create_workspace(&mut self) {
+        self.dialog = DialogState::CreateWorkspace {
+            input: String::new(),
+        };
+        self.error = None;
+        self.notice = None;
+    }
+
+    fn begin_queue_message(&mut self) {
+        let Some(session_id) = self
+            .detail
+            .as_ref()
+            .map(|snapshot| snapshot.session_id.clone())
+        else {
+            return;
+        };
+        self.dialog = DialogState::QueueMessage {
+            session_id,
+            stage: QueueStage::Text,
+            input: String::new(),
+            draft: QueueDraft::default(),
+        };
+        self.error = None;
+        self.notice = None;
+    }
+
+    fn submit_create_workspace(&mut self, input: String) {
+        if input.trim().is_empty() {
+            self.error = Some("enter a workspace root".into());
+            self.dialog = DialogState::CreateWorkspace { input };
+            return;
+        }
+        let retry_input = input.clone();
+        let selected_path = PathBuf::from(input);
+        let selected_path = if selected_path.is_absolute() {
+            selected_path
+        } else {
+            match std::env::current_dir() {
+                Ok(current_dir) => current_dir.join(selected_path),
+                Err(_) => {
+                    self.error = Some("could not resolve the selected workspace root".into());
+                    self.dialog = DialogState::CreateWorkspace { input: retry_input };
+                    return;
+                }
+            }
+        };
+        let Some(workspace_path) = selected_path.to_str() else {
+            self.error = Some("workspace root must be valid UTF-8".into());
+            self.dialog = DialogState::CreateWorkspace { input: retry_input };
+            return;
+        };
+
+        match ipc_request(
+            &self.socket_path,
+            Envelope::new(DaemonRequest::CreateSession {
+                workspace_path: workspace_path.to_owned(),
+            }),
+        )
+        .map(|response| response.payload)
+        {
+            Ok(DaemonResponse::SessionCreated { session_id }) => {
+                self.refresh();
+                if let Some(index) = self
+                    .sessions
+                    .iter()
+                    .position(|session| session.session_id == session_id)
+                {
+                    self.selected = index;
+                    self.open_selected();
+                } else {
+                    self.error =
+                        Some("created session was not present in the refreshed list".into());
+                }
+                self.notice = Some(format!(
+                    "Created paused session {session_id}; no provider or tools were started."
+                ));
+            }
+            Ok(DaemonResponse::Error { code }) => {
+                self.error = Some(format!("session creation failed: {code:?}"));
+                self.dialog = DialogState::CreateWorkspace { input: retry_input };
+            }
+            Ok(_) => {
+                self.error = Some("daemon returned an invalid session-creation response".into());
+                self.dialog = DialogState::CreateWorkspace { input: retry_input };
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.dialog = DialogState::CreateWorkspace { input: retry_input };
+            }
+        }
+    }
+
+    fn handle_dialog_key(&mut self, key: KeyEvent) {
+        if matches!(
+            &self.dialog,
+            DialogState::AcknowledgePath { .. } | DialogState::ConfirmResume { .. }
+        ) {
             match key.code {
                 KeyCode::Char('y') => self.confirm_recovery_dialog(),
                 KeyCode::Char('n') | KeyCode::Esc => {
-                    self.recovery_dialog = RecoveryDialog::None;
+                    self.dialog = DialogState::None;
                     self.error = None;
                 }
                 _ => {}
             }
+            return;
+        }
+
+        let dialog = std::mem::replace(&mut self.dialog, DialogState::None);
+        match dialog {
+            DialogState::CreateWorkspace { mut input } => match key.code {
+                KeyCode::Esc => {
+                    self.error = None;
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                    self.dialog = DialogState::CreateWorkspace { input };
+                    self.error = None;
+                }
+                KeyCode::Enter => self.submit_create_workspace(input),
+                KeyCode::Char(character)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    if character.is_control() {
+                        self.error =
+                            Some("control characters are not accepted in a workspace path".into());
+                    } else if input.len().saturating_add(character.len_utf8())
+                        > MAX_WORKSPACE_PATH_BYTES
+                    {
+                        self.error = Some("workspace path reached its maximum size".into());
+                    } else {
+                        input.push(character);
+                        self.error = None;
+                    }
+                    self.dialog = DialogState::CreateWorkspace { input };
+                }
+                _ => self.dialog = DialogState::CreateWorkspace { input },
+            },
+            DialogState::QueueMessage {
+                session_id,
+                stage,
+                mut input,
+                draft,
+            } => self.handle_queue_dialog_key(session_id, stage, &mut input, draft, key),
+            other => self.dialog = other,
+        }
+    }
+
+    fn handle_queue_dialog_key(
+        &mut self,
+        session_id: String,
+        stage: QueueStage,
+        input: &mut String,
+        draft: QueueDraft,
+        key: KeyEvent,
+    ) {
+        if stage == QueueStage::Confirm {
+            match key.code {
+                KeyCode::Char('y') => self.submit_queue_message(session_id, draft),
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.error = None;
+                }
+                _ => {
+                    self.dialog = DialogState::QueueMessage {
+                        session_id,
+                        stage,
+                        input: input.clone(),
+                        draft,
+                    };
+                }
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => self.error = None,
+            KeyCode::Backspace => {
+                input.pop();
+                self.error = None;
+                self.dialog = DialogState::QueueMessage {
+                    session_id,
+                    stage,
+                    input: input.clone(),
+                    draft,
+                };
+            }
+            KeyCode::Enter => self.advance_queue_stage(session_id, stage, input.clone(), draft),
+            KeyCode::Char('j')
+                if stage == QueueStage::Text && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.append_queue_input(session_id, stage, input, draft, '\n');
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.append_queue_input(session_id, stage, input, draft, character);
+            }
+            _ => {
+                self.dialog = DialogState::QueueMessage {
+                    session_id,
+                    stage,
+                    input: input.clone(),
+                    draft,
+                };
+            }
+        }
+    }
+
+    fn append_queue_input(
+        &mut self,
+        session_id: String,
+        stage: QueueStage,
+        input: &mut String,
+        draft: QueueDraft,
+        character: char,
+    ) {
+        let maximum = if stage == QueueStage::Text {
+            MAX_QUEUED_MESSAGE_BYTES
+        } else {
+            MAX_SELECTION_FIELD_BYTES
+        };
+        if input.len().saturating_add(character.len_utf8()) > maximum {
+            self.error = Some("input reached its maximum size".into());
+        } else if character.is_control() && character != '\n' {
+            self.error = Some("control characters are not accepted in this field".into());
+        } else {
+            input.push(character);
+            self.error = None;
+        }
+        self.dialog = DialogState::QueueMessage {
+            session_id,
+            stage,
+            input: input.clone(),
+            draft,
+        };
+    }
+
+    fn advance_queue_stage(
+        &mut self,
+        session_id: String,
+        stage: QueueStage,
+        input: String,
+        mut draft: QueueDraft,
+    ) {
+        let next_stage = match stage {
+            QueueStage::Text => {
+                if input.trim().is_empty() {
+                    self.error = Some("message text cannot be empty".into());
+                    self.dialog = DialogState::QueueMessage {
+                        session_id,
+                        stage,
+                        input,
+                        draft,
+                    };
+                    return;
+                }
+                draft.text = input;
+                QueueStage::Profile
+            }
+            QueueStage::Profile => {
+                if !valid_selection_value(&input) {
+                    self.error = Some("profile id must not be blank and must fit 256 bytes".into());
+                    self.dialog = DialogState::QueueMessage {
+                        session_id,
+                        stage,
+                        input,
+                        draft,
+                    };
+                    return;
+                }
+                draft.profile = input;
+                QueueStage::Work
+            }
+            QueueStage::Work => {
+                draft.work = match input.trim() {
+                    "plan" => Some(WorkMode::Plan),
+                    "execute" => Some(WorkMode::Execute),
+                    _ => None,
+                };
+                if draft.work.is_none() {
+                    self.error = Some("work must be `plan` or `execute`".into());
+                    self.dialog = DialogState::QueueMessage {
+                        session_id,
+                        stage,
+                        input,
+                        draft,
+                    };
+                    return;
+                }
+                QueueStage::Autonomy
+            }
+            QueueStage::Autonomy => {
+                draft.autonomy = match input.trim() {
+                    "ask" => Some(Autonomy::Ask),
+                    "auto" => Some(Autonomy::Auto),
+                    "yolo" => Some(Autonomy::Yolo),
+                    _ => None,
+                };
+                if draft.autonomy.is_none() {
+                    self.error = Some("autonomy must be `ask`, `auto`, or `yolo`".into());
+                    self.dialog = DialogState::QueueMessage {
+                        session_id,
+                        stage,
+                        input,
+                        draft,
+                    };
+                    return;
+                }
+                QueueStage::Provider
+            }
+            QueueStage::Provider => {
+                if !valid_selection_value(&input) {
+                    self.error =
+                        Some("provider id must not be blank and must fit 256 bytes".into());
+                    self.dialog = DialogState::QueueMessage {
+                        session_id,
+                        stage,
+                        input,
+                        draft,
+                    };
+                    return;
+                }
+                draft.provider = input;
+                QueueStage::Model
+            }
+            QueueStage::Model => {
+                if !valid_selection_value(&input) {
+                    self.error = Some("model id must not be blank and must fit 256 bytes".into());
+                    self.dialog = DialogState::QueueMessage {
+                        session_id,
+                        stage,
+                        input,
+                        draft,
+                    };
+                    return;
+                }
+                draft.model = input;
+                QueueStage::Variant
+            }
+            QueueStage::Variant => {
+                if !valid_selection_value(&input) {
+                    self.error = Some("variant id must not be blank and must fit 256 bytes".into());
+                    self.dialog = DialogState::QueueMessage {
+                        session_id,
+                        stage,
+                        input,
+                        draft,
+                    };
+                    return;
+                }
+                draft.variant = input;
+                QueueStage::Confirm
+            }
+            QueueStage::Confirm => return,
+        };
+        self.dialog = DialogState::QueueMessage {
+            session_id,
+            stage: next_stage,
+            input: String::new(),
+            draft,
+        };
+        self.error = None;
+    }
+
+    fn submit_queue_message(&mut self, session_id: String, draft: QueueDraft) {
+        let (Some(work), Some(autonomy)) = (draft.work, draft.autonomy) else {
+            self.error = Some("message selection is incomplete".into());
+            return;
+        };
+        let retry_draft = draft.clone();
+        let text_length = draft.text.len();
+        let selection = Selection {
+            profile: draft.profile.clone(),
+            work,
+            autonomy,
+            provider: draft.provider.clone(),
+            model: draft.model.clone(),
+            variant: draft.variant.clone(),
+        };
+        match ipc_request(
+            &self.socket_path,
+            Envelope::new(DaemonRequest::EnqueueMessage {
+                session_id: session_id.clone(),
+                text: draft.text.clone(),
+                selection,
+                origin: MessageOrigin::Tui,
+            }),
+        )
+        .map(|response| response.payload)
+        {
+            Ok(DaemonResponse::MessageQueued {
+                session_id: returned_id,
+                ..
+            }) if returned_id == session_id => {
+                self.refresh();
+                self.refresh_detail();
+                self.notice = Some(format!(
+                    "Queued {text_length} bytes; session remains paused and no provider or tools were started."
+                ));
+            }
+            Ok(DaemonResponse::Error { code }) => {
+                self.error = Some(format!("message enqueue failed: {code:?}"));
+                self.dialog = DialogState::QueueMessage {
+                    session_id,
+                    stage: QueueStage::Confirm,
+                    input: String::new(),
+                    draft: retry_draft,
+                };
+            }
+            Ok(_) => {
+                self.error = Some("daemon returned an invalid enqueue response".into());
+                self.dialog = DialogState::QueueMessage {
+                    session_id,
+                    stage: QueueStage::Confirm,
+                    input: String::new(),
+                    draft: retry_draft,
+                };
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.dialog = DialogState::QueueMessage {
+                    session_id,
+                    stage: QueueStage::Confirm,
+                    input: String::new(),
+                    draft: retry_draft,
+                };
+            }
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> bool {
+        if self.dialog != DialogState::None {
+            self.handle_dialog_key(key);
             return false;
         }
         match key.code {
@@ -451,6 +922,14 @@ impl App {
                 self.open_selected();
                 false
             }
+            KeyCode::Char('c') if self.detail.is_none() => {
+                self.begin_create_workspace();
+                false
+            }
+            KeyCode::Char('m') if self.detail.is_some() && !self.event_mode => {
+                self.begin_queue_message();
+                false
+            }
             KeyCode::Char('e') if self.detail.is_some() => {
                 self.event_mode = true;
                 self.detail_scroll = 0;
@@ -505,6 +984,10 @@ impl App {
     }
 }
 
+fn valid_selection_value(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= MAX_SELECTION_FIELD_BYTES
+}
+
 fn draw(frame: &mut Frame<'_>, app: &App) {
     let [header, content, footer] = Layout::default()
         .direction(Direction::Vertical)
@@ -546,7 +1029,8 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
                 snapshot,
                 app.workspace_review.as_ref(),
                 app.selected_review_file,
-                &app.recovery_dialog,
+                &app.dialog,
+                app.notice.as_deref(),
                 app.error.as_deref(),
             )
         };
@@ -571,18 +1055,111 @@ fn draw(frame: &mut Frame<'_>, app: &App) {
         inner,
     );
 
-    let footer_text = if app.recovery_dialog != RecoveryDialog::None {
+    let footer_text = if matches!(
+        &app.dialog,
+        DialogState::AcknowledgePath { .. } | DialogState::ConfirmResume { .. }
+    ) {
         "y confirm · n/Esc cancel"
+    } else if matches!(&app.dialog, DialogState::CreateWorkspace { .. }) {
+        "Type workspace root · Enter create paused session · Esc cancel"
+    } else if let DialogState::QueueMessage { stage, .. } = &app.dialog {
+        if *stage == QueueStage::Confirm {
+            "y queue · n/Esc cancel"
+        } else {
+            "Enter next field · Ctrl+J newline in text · Backspace · Esc cancel"
+        }
     } else if app.event_mode {
         "↑/↓ scroll · n next page · r reload · Esc details · q quit"
     } else if app.detail.is_some() {
-        "↑/↓ scroll · h hibernate idle · w wake paused · v review · [/] path · a acknowledge · R resume · e events · Esc back · q quit"
+        "↑/↓ · m queue · h sleep · w wake · v review · a ack · R resume · e events · Esc back · q quit"
     } else {
-        "↑/↓ select · Enter inspect · r refresh · q quit"
+        "↑/↓ select · Enter inspect · c create session · r refresh · q quit"
     };
     frame.render_widget(
         Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL)),
         footer,
+    );
+    draw_dialog(frame, &app.dialog, app.error.as_deref());
+}
+
+fn draw_dialog(frame: &mut Frame<'_>, dialog: &DialogState, error: Option<&str>) {
+    let (title, mut lines) = match dialog {
+        DialogState::CreateWorkspace { input } => (
+            "Create paused session",
+            vec![
+                Line::from("Workspace root (input hidden; relative paths use current directory):"),
+                Line::from(if input.is_empty() {
+                    "[type path]".to_owned()
+                } else {
+                    "•".repeat(input.chars().count().min(64))
+                }),
+                Line::from("The path is sent only as input; no provider or tools will start."),
+            ],
+        ),
+        DialogState::QueueMessage {
+            stage,
+            input,
+            draft,
+            ..
+        } => {
+            let prompt = match stage {
+                QueueStage::Text => "Message text (Ctrl+J inserts a newline):",
+                QueueStage::Profile => "Profile id:",
+                QueueStage::Work => "Work mode (`plan` or `execute`; stored as data only):",
+                QueueStage::Autonomy => "Autonomy (`ask`, `auto`, or `yolo`; stored as data only):",
+                QueueStage::Provider => "Provider id (metadata only; no provider will start):",
+                QueueStage::Model => "Model id (metadata only; no provider will start):",
+                QueueStage::Variant => "Variant id:",
+                QueueStage::Confirm => "Queue this message without starting work?",
+            };
+            let mut lines = vec![Line::from(prompt)];
+            if *stage == QueueStage::Confirm {
+                lines.push(Line::from(format!("Text size: {} bytes", draft.text.len())));
+                lines.push(Line::from(format!(
+                    "Selection: {} · {:?} · {:?} · {} · {} · {}",
+                    draft.profile,
+                    draft.work,
+                    draft.autonomy,
+                    draft.provider,
+                    draft.model,
+                    draft.variant
+                )));
+                lines.push(Line::from(
+                    "The selection is not permission or provider availability.",
+                ));
+            } else {
+                lines.push(Line::from(input.clone()));
+            }
+            ("Queue explicit intent", lines)
+        }
+        _ => return,
+    };
+    if let Some(error) = error {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            error.to_owned(),
+            Style::default().fg(Color::Red),
+        ));
+    }
+
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).min(80);
+    let height = area.height.saturating_sub(2).min(14);
+    if width == 0 || height == 0 {
+        return;
+    }
+    let popup = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(std::mem::take(&mut lines)))
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
+        popup,
     );
 }
 
@@ -660,6 +1237,13 @@ fn overview_lines(app: &App) -> (Vec<Line<'static>>, Option<usize>) {
             Style::default().fg(Color::Red),
         ));
     }
+    if let Some(notice) = &app.notice {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            notice.clone(),
+            Style::default().fg(Color::Green),
+        ));
+    }
     (lines, selected_line)
 }
 
@@ -675,7 +1259,8 @@ fn detail_lines(
     snapshot: &SessionSnapshot,
     workspace_review: Option<&WorkspaceFileReview>,
     selected_review_file: usize,
-    recovery_dialog: &RecoveryDialog,
+    dialog: &DialogState,
+    notice: Option<&str>,
     error: Option<&str>,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
@@ -740,9 +1325,11 @@ fn detail_lines(
             }
         }
     }
-    match recovery_dialog {
-        RecoveryDialog::None => {}
-        RecoveryDialog::AcknowledgePath { path, status, .. } => {
+    match dialog {
+        DialogState::None
+        | DialogState::CreateWorkspace { .. }
+        | DialogState::QueueMessage { .. } => {}
+        DialogState::AcknowledgePath { path, status, .. } => {
             lines.push(Line::from(""));
             lines.push(Line::styled(
                 format!(
@@ -758,7 +1345,7 @@ fn detail_lines(
                 "This records your review of this path; it does not resume the session.",
             ));
         }
-        RecoveryDialog::ConfirmResume { .. } => {
+        DialogState::ConfirmResume { .. } => {
             lines.push(Line::from(""));
             lines.push(Line::styled(
                 "Confirm recovery resume? The daemon will revalidate paths again.",
@@ -770,6 +1357,13 @@ fn detail_lines(
                 "This clears recovery pause only; no provider or tools are started.",
             ));
         }
+    }
+    if let Some(notice) = notice {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            notice.to_owned(),
+            Style::default().fg(Color::Green),
+        ));
     }
     if let Some(error) = error {
         lines.push(Line::from(""));
@@ -929,6 +1523,16 @@ mod tests {
         }
     }
 
+    fn type_dialog_input(app: &mut App, value: &str) {
+        for character in value.chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+    }
+
+    fn press_enter(app: &mut App) {
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
     #[test]
     fn should_render_a_narrow_read_only_overview_and_empty_connection_state() {
         let directory = PrivateDir::new();
@@ -1001,6 +1605,129 @@ mod tests {
                 !matches!(&event.event, DaemonSessionEvent::MessageStarted { .. })
             })
         );
+
+        shutdown.store(true, Ordering::Release);
+        server_thread.join().unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn should_create_and_queue_explicit_work_from_the_tui_without_starting_it() {
+        let directory = PrivateDir::new();
+        let workspace = directory.0.join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let database_path = directory.0.join("sessions.sqlite3");
+        let mut runtime = DaemonRuntime::open(&database_path, 20).unwrap();
+        let socket_path = directory.0.join("daemon.sock");
+        let server = IpcServer::bind(&socket_path).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let server_thread = thread::spawn(move || {
+            server
+                .serve_until(&mut runtime, server_shutdown.as_ref())
+                .unwrap();
+        });
+
+        let mut app = App::new(&socket_path);
+        app.refresh();
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        type_dialog_input(&mut app, workspace.to_str().unwrap());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        let rendered_workspace_dialog = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(!rendered_workspace_dialog.contains(workspace.to_str().unwrap()));
+        assert!(rendered_workspace_dialog.contains("input hidden"));
+        press_enter(&mut app);
+
+        let snapshot = app.detail.as_ref().expect("new session should open");
+        let session_id = snapshot.session_id.clone();
+        assert_eq!(snapshot.status, SessionStatus::Paused);
+        assert!(snapshot.queued_messages.is_empty());
+        assert!(
+            !app.notice
+                .as_deref()
+                .unwrap()
+                .contains(workspace.to_str().unwrap())
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        type_dialog_input(&mut app, "first line");
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        type_dialog_input(&mut app, "second line");
+        press_enter(&mut app);
+
+        type_dialog_input(&mut app, "profile-operator");
+        press_enter(&mut app);
+        type_dialog_input(&mut app, "plan");
+        press_enter(&mut app);
+        type_dialog_input(&mut app, "ask");
+        press_enter(&mut app);
+        type_dialog_input(&mut app, "provider-not-configured");
+        press_enter(&mut app);
+        type_dialog_input(&mut app, "model-not-configured");
+        press_enter(&mut app);
+        type_dialog_input(&mut app, "default");
+        press_enter(&mut app);
+        assert!(matches!(
+            &app.dialog,
+            super::DialogState::QueueMessage {
+                stage: super::QueueStage::Confirm,
+                ..
+            }
+        ));
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+
+        let snapshot = app.detail.as_ref().unwrap();
+        assert_eq!(snapshot.session_id, session_id);
+        assert_eq!(snapshot.status, SessionStatus::Paused);
+        assert!(snapshot.active_message.is_none());
+        assert_eq!(snapshot.queued_messages.len(), 1);
+        assert_eq!(snapshot.queued_messages[0].text, "first line\nsecond line");
+        assert_eq!(snapshot.queued_messages[0].origin, "tui");
+        assert_eq!(
+            snapshot.queued_messages[0].selection.profile,
+            "profile-operator"
+        );
+        assert_eq!(snapshot.queued_messages[0].selection.work, WorkMode::Plan);
+        assert_eq!(
+            snapshot.queued_messages[0].selection.autonomy,
+            Autonomy::Ask
+        );
+        assert_eq!(
+            snapshot.queued_messages[0].selection.provider,
+            "provider-not-configured"
+        );
+        assert_eq!(
+            snapshot.queued_messages[0].selection.model,
+            "model-not-configured"
+        );
+        assert_eq!(snapshot.queued_messages[0].selection.variant, "default");
+        assert!(
+            app.notice
+                .as_deref()
+                .unwrap()
+                .contains("no provider or tools were started")
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(app.events.len(), 2);
+        assert!(
+            app.events.iter().all(|event| {
+                !matches!(&event.event, DaemonSessionEvent::MessageStarted { .. })
+            })
+        );
+        assert!(matches!(
+            &app.events[1].event,
+            DaemonSessionEvent::MessageQueued { message }
+                if message.origin == "tui"
+        ));
 
         shutdown.store(true, Ordering::Release);
         server_thread.join().unwrap();
@@ -1152,7 +1879,8 @@ mod tests {
             app.detail.as_ref().unwrap(),
             app.workspace_review.as_ref(),
             app.selected_review_file,
-            &app.recovery_dialog,
+            &app.dialog,
+            app.notice.as_deref(),
             None,
         );
         assert!(
@@ -1348,8 +2076,8 @@ mod tests {
         );
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert!(matches!(
-            app.recovery_dialog,
-            super::RecoveryDialog::AcknowledgePath { .. }
+            app.dialog,
+            super::DialogState::AcknowledgePath { .. }
         ));
         app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         let snapshot = app.detail.as_ref().unwrap();
@@ -1361,8 +2089,8 @@ mod tests {
         assert_eq!(snapshot.event_sequence, 7);
         app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE));
         assert!(matches!(
-            app.recovery_dialog,
-            super::RecoveryDialog::ConfirmResume { .. }
+            app.dialog,
+            super::DialogState::ConfirmResume { .. }
         ));
         app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert_eq!(app.detail.as_ref().unwrap().status, SessionStatus::Paused);
@@ -1380,7 +2108,8 @@ mod tests {
             snapshot,
             None,
             app.selected_review_file,
-            &app.recovery_dialog,
+            &app.dialog,
+            app.notice.as_deref(),
             None,
         );
         assert!(detail.iter().any(|line| {

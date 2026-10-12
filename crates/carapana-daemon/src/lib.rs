@@ -21,9 +21,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use carapana_protocol::{
     AttentionItem, AttentionReason, DaemonErrorCode, DaemonRequest, DaemonResponse,
     DaemonSessionEvent, Envelope, MAX_QUEUED_MESSAGE_BYTES, MAX_SELECTION_FIELD_BYTES,
-    QueuedMessage, Selection, SessionEventBatch, SessionEventRecord, SessionSnapshot,
-    SessionStatus, SessionSummary, WorkspaceFileReview, WorkspaceFileReviewItem,
-    WorkspaceFileReviewStatus,
+    MAX_WORKSPACE_PATH_BYTES, MessageOrigin, QueuedMessage, Selection, SessionEventBatch,
+    SessionEventRecord, SessionSnapshot, SessionStatus, SessionSummary, WorkspaceFileReview,
+    WorkspaceFileReviewItem, WorkspaceFileReviewStatus,
 };
 use carapana_storage::{
     MigrationError, PersistedSession, SessionRegistry, SessionStoreError, StoredSessionEvent,
@@ -121,7 +121,8 @@ impl DaemonRuntime {
                 session_id,
                 text,
                 selection,
-            } => match self.enqueue_message(&session_id, text, selection) {
+                origin,
+            } => match self.enqueue_message(&session_id, text, selection, origin) {
                 Ok(message_id) => DaemonResponse::MessageQueued {
                     session_id,
                     message_id,
@@ -178,6 +179,9 @@ impl DaemonRuntime {
     }
 
     fn create_session(&mut self, workspace_path: &str) -> Result<String, DaemonErrorCode> {
+        if workspace_path.len() > MAX_WORKSPACE_PATH_BYTES {
+            return Err(DaemonErrorCode::WorkspaceCreationRejected);
+        }
         let workspace = WorkspaceMetadata::capture(workspace_path)
             .map_err(|_| DaemonErrorCode::WorkspaceCreationRejected)?;
         let session_id = generated_id("session")?;
@@ -193,6 +197,7 @@ impl DaemonRuntime {
         session_id: &str,
         text: String,
         selection: Selection,
+        origin: MessageOrigin,
     ) -> Result<String, DaemonErrorCode> {
         if text.trim().is_empty()
             || text.len() > MAX_QUEUED_MESSAGE_BYTES
@@ -209,7 +214,7 @@ impl DaemonRuntime {
         let message = QueuedMessage {
             id: message_id.clone(),
             text,
-            origin: "cli".to_owned(),
+            origin: origin.as_str().to_owned(),
             selection,
         };
         self.registry
@@ -628,8 +633,9 @@ mod tests {
     #[cfg(unix)]
     use super::{DaemonService, DaemonServiceError, IpcError, IpcServer};
     use carapana_protocol::{
-        Autonomy, DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope, QueuedMessage,
-        Selection, SessionStatus, WorkMode, WorkspaceFileReviewStatus,
+        Autonomy, DaemonErrorCode, DaemonRequest, DaemonResponse, Envelope,
+        MAX_WORKSPACE_PATH_BYTES, MessageOrigin, QueuedMessage, Selection, SessionStatus, WorkMode,
+        WorkspaceFileReviewStatus,
     };
     use carapana_storage::{SessionRegistry, StoredSessionStatus, WorkspaceMetadata};
     use std::{
@@ -744,6 +750,7 @@ mod tests {
                 model: "operator-choice".into(),
                 variant: "default".into(),
             },
+            origin: MessageOrigin::Cli,
         }));
         assert!(matches!(
             queued.payload,
@@ -791,6 +798,23 @@ mod tests {
                 .contains("missing-secret-workspace")
         );
 
+        let oversized_workspace = "x".repeat(MAX_WORKSPACE_PATH_BYTES + 1);
+        let rejected_oversized_workspace =
+            runtime.handle(Envelope::new(DaemonRequest::CreateSession {
+                workspace_path: oversized_workspace.clone(),
+            }));
+        assert_eq!(
+            rejected_oversized_workspace.payload,
+            DaemonResponse::Error {
+                code: DaemonErrorCode::WorkspaceCreationRejected,
+            }
+        );
+        assert!(
+            !serde_json::to_string(&rejected_oversized_workspace)
+                .unwrap()
+                .contains(&oversized_workspace)
+        );
+
         let rejected_message = runtime.handle(Envelope::new(DaemonRequest::EnqueueMessage {
             session_id: "not-a-real-session".into(),
             text: "   ".into(),
@@ -802,6 +826,7 @@ mod tests {
                 model: "operator-choice".into(),
                 variant: "default".into(),
             },
+            origin: MessageOrigin::Cli,
         }));
         assert_eq!(
             rejected_message.payload,
