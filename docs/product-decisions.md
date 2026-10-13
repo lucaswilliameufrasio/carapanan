@@ -496,3 +496,15 @@ desativados.
   porém teria ownership e reconexão mais complexos. Process groups não contêm descendentes que
   deliberadamente façam detach/setsid, nem sobrevivem a SIGKILL do guardian, encerramento forçado
   do host ou falha da máquina; esses limites não são anunciados como garantias.
+
+## PD-20 — Catálogo puro de capacidades de provider
+
+- A primeira fatia do Delivery 3 mantém o catálogo de provider/modelo/variante como dados puros
+  em `carapana-core`, separado de transporte, autenticação, persistência e IPC. O protocolo atual
+  continua carregando os identificadores capturados como strings.
+- A resolução valida a seleção exata e retorna capabilities declaradas para aquela variante;
+  provider/modelo/variante ausentes ou incompatíveis falham explicitamente, sem fallback.
+- Capabilities são metadados, não autorização: `tool_calling` não habilita tool executável.
+  Esta fatia usa somente catálogos de teste; não realiza auth, chamadas de rede ou inferência.
+- Adapter ChatGPT real, uso de credenciais, inferência e prova na conta autorizada continuam
+  bloqueados até autorização específica e comprovação conforme PD-02/PD-17.

@@ -3687,6 +3687,14 @@ Comprovar auth/inferência/capacidades na conta ChatGPT autorizada, sem tools ex
 nesta fase. Implementar modelos/variantes sem fallback silencioso, confirmação ao trocar
 provider e espera/retries/cota conforme PD-10. API paga não vira requisito do produto.
 
+### Progresso da fatia mock-only — 12 de outubro de 2026
+
+- `carapana-core::provider` contém catálogo puro de provider/modelo/variante, capabilities
+  tipadas e resolução exata sem fallback. A fatia não adiciona adapter, autenticação, rede,
+  inferência ou execução de tools; decisão em PD-20.
+- Autenticação ChatGPT e inferência reais continuam pendentes de autorização específica e
+  comprovação na conta/ambiente aprovados; não inferir permissão a partir deste checkpoint.
+
 ---
 
 # 158. Delivery 4 — Core Coding Tools
