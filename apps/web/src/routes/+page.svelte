@@ -516,7 +516,9 @@
           {#if ui.scenario === 'empty'}<div class="empty-state">
               <FolderOpen size={36} />
               <p>{l.noExecution}</p>
-              <button class="primary" onclick={() => chooseSession('sample-api')}>{l.openMock}</button>
+              <button class="primary" onclick={() => chooseSession('sample-api')}
+                >{l.openMock}</button
+              >
             </div>{:else}
             <button
               class="attention-session"
