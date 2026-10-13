@@ -3677,17 +3677,16 @@ Implementar:
 - reconnect;
 - model switching.
 
-Caso o delegated ChatGPT-plan integration dependa de habilitação externa ainda não concedida:
-
-- mock permanece para testes;
-- OpenAI API pode ser adapter temporário de desenvolvimento;
-- não criar workaround não oficial.
+O primeiro provider é exclusivamente SIWC oficial para contas elegíveis. Se o grant não permitir
+uso do plano, manter o login com status de inferência desabilitada e solicitar escolha explícita;
+não exigir API paga nem criar workaround não oficial.
 
 Comprovar auth/inferência/capacidades na conta ChatGPT autorizada, sem tools executáveis
 nesta fase. Implementar modelos/variantes sem fallback silencioso, confirmação ao trocar
-provider e espera/retries/cota conforme PD-10. API paga não vira requisito do produto.
+provider e tratamento explícito de cotas conforme PD-10. Não repetir inferência automaticamente.
+API paga não vira requisito do produto.
 
-### Progresso da fatia mock-only — 12 de outubro de 2026
+### Progresso do Delivery 3 — 13 de outubro de 2026
 
 - `carapana-core::provider` contém catálogo puro de provider/modelo/variante, capabilities
   tipadas e resolução exata sem fallback. A fatia não adiciona adapter, autenticação, rede,
@@ -3695,8 +3694,23 @@ provider e espera/retries/cota conforme PD-10. API paga não vira requisito do p
 - O contrato mock-only usa `futures-core::Stream`, eventos/errors tipados e cancelamento
   cooperativo runtime-independent. Não escolhe executor, não faz retries/reconnect e não conecta
   o stream ao daemon/session engine; pedidos de tool são somente dados. Decisão em PD-21.
-- Autenticação ChatGPT e inferência reais continuam pendentes de autorização específica e
-  comprovação na conta/ambiente aprovados; não inferir permissão a partir deste checkpoint.
+- Em 13/10/2026 o operador autorizou explicitamente implementar SIWC oficial, autenticação,
+  inferência real e envio de contexto ao provider, sem estender a autorização a tools/tarefas,
+  subprocessos, autonomia, deploy ou merge.
+- Implementada a primeira fatia SIWC em `carapana-openai`: dynamic registration oficial, callback
+  loopback/PKCE, state/nonce, validação de ID token/JWKS, checagem de escopo/identidade e persistência
+  privada owner-only fora do SQLite. Refresh token é rotacionado sob lock interprocesso por conta.
+- Implementado catálogo de modelos visíveis e adapter Responses SSE com `store:false`, streaming,
+  cancelamento, limites de tamanho, erros/cotas tipados e sem retries. Tool calls inesperadas continuam
+  dados inertes e não são enviadas na requisição.
+- CLI agora oferece `chatgpt sign-in`, `accounts`, `models` e `smoke-test`; o último exige
+  `--confirm-remote` e envia somente um prompt sintético fixo, sem sessão/workspace. Nenhum login,
+  chamada real de inferência ou envio de contexto foi executado durante os testes locais.
+- Testes usam o cliente de produção contra servidor HTTP falso local; incluem callbacks loopback,
+  rotação de refresh, segurança de arquivos, erros, streaming e cancelamento. O teste real na conta
+  autorizada ainda é um gate manual e não deve entrar nos testes comuns.
+- Tools executáveis, execução de tarefas/processos e autonomia seguem desativadas. A fila e o daemon
+  continuam desconectados do adapter nesta entrega.
 
 ---
 

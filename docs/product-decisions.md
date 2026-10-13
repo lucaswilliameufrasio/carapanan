@@ -530,3 +530,40 @@ desativados.
 - Preferido sobre callback síncrono para manter consumers não bloqueantes e adapters de rede
   assíncronos sem impor runtime ao core. Reavaliar somente se o runtime/adapters aprovados exigirem
   outra política de cancelamento.
+
+## PD-22 — Integração oficial SIWC fora do core
+
+**Data:** 13 de outubro de 2026
+
+**Status:** aprovado para o Delivery 3, com autorização explícita do operador.
+
+- O provider ChatGPT real fica em um crate de integração separado (`carapana-openai`); `carapana-core`
+  permanece sem transporte, OAuth, runtime ou dependência de API externa.
+- Usar exclusivamente o fluxo open-source oficial Sign in with ChatGPT: dynamic client registration,
+  authorization code + PKCE, callback loopback em `127.0.0.1` com `/auth/callback`, validação de
+  state/nonce e ID token por JWKS, audience/issuer/expiry, e uso somente quando o token conceder
+  `chatgpt.tokens.use.direct`. Não reaproveitar credenciais Codex, endpoint privado ou API key paga.
+- Tokens ficam fora do SQLite de sessões, em arquivos separados dentro do diretório privado do
+  usuário (`0700` no diretório, `0600` no arquivo), escritos atomicamente; não registrar nem incluir
+  credenciais em erros, logs, prompts, contexto ou commits. Esta proteção de filesystem não é
+  criptografia em repouso e deve ser informada como limitação.
+- Reautorizar uma conta reutiliza o client ID e `ext_agent_host_id` da conta, valida a identidade
+  novamente e usa `id_token_hint`/`login_hint` apenas no authorize URL; pedir consentimento novamente
+  (`prompt=consent`) exige uma escolha explícita do operador. Refresh usa o client ID emitido,
+  `resource=https://api.openai.com/v1`, mantém o grant, grava o refresh-token rotacionado e é
+  serializado por conta entre processos. Em erro terminal de refresh, limpar o refresh token inválido,
+  conservar o mapeamento da conta e exigir novo sign-in; erros transitórios preservam as credenciais.
+- Descoberta de modelos usa o catálogo da conta (`GET /v1/models`, somente itens `visibility=list`).
+  Inferência usa apenas `POST /v1/responses`, `store:false`, `stream:true`, sem redirecionamentos;
+  só `response.completed` confirma sucesso. O stream observa cancelamento e não reenvia inferência
+  automaticamente. `retry_after`, status, códigos, parâmetro, request ID e a forma do erro remoto são
+  preservados sem expor corpo bruto.
+- O primeiro smoke test real usa apenas um prompt fixo sintético, sem contexto de sessão/workspace.
+  A CLI exige `--confirm-remote` antes de enviar esse prompt. O envio de contexto real depende de
+  consentimento explícito por provider conforme PD-10. O login oficial e a autorização de escopos no
+  navegador não conectam a fila nem iniciam execução.
+- Nenhuma tool será enviada ou executada nesta fase. `ToolCallRequested` permanece saída inerte; não
+  ligar provider ao daemon, fila, tarefas, subprocessos ou modo autônomo.
+- Testes usam cliente de produção contra servidor HTTP local falso; testes normais nunca acessam
+  OpenAI nem usam tokens reais. Reavaliar armazenamento se o produto passar a exigir proteção contra
+  leitura por outros processos do mesmo usuário ou multiusuário no mesmo host.

@@ -1,4 +1,12 @@
+use carapana_core::provider::{
+    CancellationToken, ModelCapabilities, ProviderAdapter, ProviderEvent, ProviderMessage,
+    ProviderMessageRole, ProviderRequest, ResolvedModelSelection,
+};
+use carapana_openai::{
+    ChatGptProvider, CredentialStore, authenticate, enable_plan_usage, load_fresh_account,
+};
 use clap::{Parser, Subcommand};
+use futures_util::StreamExt;
 use std::{
     error::Error,
     io::{self, Read, Write},
@@ -81,6 +89,41 @@ enum Commands {
     },
     /// Open the terminal client for session management, inspection, and gated recovery actions.
     Tui,
+    /// Sign in to ChatGPT and use its eligible plan without configuring an API key.
+    #[command(subcommand, name = "chatgpt")]
+    ChatGpt(ChatGptCommands),
+}
+
+#[derive(Subcommand)]
+enum ChatGptCommands {
+    /// Register a new ChatGPT account or reauthorize an existing registration.
+    SignIn {
+        #[arg(long, value_name = "CLIENT_ID")]
+        client_id: Option<String>,
+        /// Explicitly request consent again for ChatGPT-plan usage on an existing registration.
+        #[arg(long)]
+        enable_plan_usage: bool,
+    },
+    /// List locally saved ChatGPT registrations without displaying credentials.
+    Accounts {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List models visible to one saved ChatGPT account.
+    Models {
+        #[arg(long, value_name = "CLIENT_ID")]
+        client_id: String,
+    },
+    /// Send one fixed synthetic prompt to the selected model; no session or workspace context is sent.
+    SmokeTest {
+        #[arg(long, value_name = "CLIENT_ID")]
+        client_id: String,
+        #[arg(long, value_name = "MODEL")]
+        model: String,
+        /// Confirm one real remote inference request using the selected account's ChatGPT plan.
+        #[arg(long)]
+        confirm_remote: bool,
+    },
 }
 
 #[cfg(unix)]
@@ -114,6 +157,7 @@ fn run_client(
     match command {
         Commands::Daemon => unreachable!("daemon command is handled before client dispatch"),
         Commands::Tui => return tui::run(path),
+        Commands::ChatGpt(_) => unreachable!("ChatGPT commands are handled before IPC dispatch"),
         Commands::CreateSession { workspace } => {
             let workspace = if workspace.is_absolute() {
                 workspace
@@ -430,6 +474,205 @@ fn run_client(
     Ok(())
 }
 
+fn run_chatgpt(command: ChatGptCommands, output: &mut impl Write) -> Result<(), Box<dyn Error>> {
+    match command {
+        ChatGptCommands::SignIn {
+            client_id,
+            enable_plan_usage: request_consent,
+        } => {
+            let account = if request_consent {
+                let client_id = client_id.as_deref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--enable-plan-usage requires an existing --client-id",
+                    )
+                })?;
+                enable_plan_usage(client_id)?
+            } else {
+                authenticate(client_id.as_deref())?
+            };
+            let summary = account.summary();
+            writeln!(output, "ChatGPT account authorized.")?;
+            writeln!(output, "client_id: {}", summary.client_id)?;
+            if let Some(email) = summary
+                .email
+                .as_deref()
+                .filter(|email| is_safe_terminal_text(email, 320))
+            {
+                writeln!(output, "account: {email}")?;
+            }
+            writeln!(output, "ChatGPT plan usage: {}", summary.plan_usage_enabled)?;
+            writeln!(
+                output,
+                "Refresh token available: {}",
+                summary.has_refresh_token
+            )?;
+            if !summary.plan_usage_enabled {
+                writeln!(
+                    output,
+                    "No inference will run until plan usage is authorized. To request consent again, use `carapana chatgpt sign-in --client-id {} --enable-plan-usage`.",
+                    summary.client_id
+                )?;
+            }
+            writeln!(output, "No session, tools, or tasks were started.")?;
+        }
+        ChatGptCommands::Accounts { json } => {
+            let accounts = CredentialStore::for_user()?.accounts()?;
+            let summaries = accounts
+                .iter()
+                .map(|account| account.summary())
+                .collect::<Vec<_>>();
+            if json {
+                let accounts = summaries
+                    .iter()
+                    .map(|summary| {
+                        serde_json::json!({
+                            "client_id": summary.client_id,
+                            "email": summary.email,
+                            "plan_usage_enabled": summary.plan_usage_enabled,
+                            "has_refresh_token": summary.has_refresh_token,
+                            "expires_at_unix_seconds": summary.expires_at_unix_seconds,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::to_writer_pretty(&mut *output, &accounts)?;
+                writeln!(output)?;
+            } else if summaries.is_empty() {
+                writeln!(
+                    output,
+                    "No saved ChatGPT accounts. Run `carapana chatgpt sign-in`."
+                )?;
+            } else {
+                for summary in summaries {
+                    let email = summary
+                        .email
+                        .as_deref()
+                        .filter(|email| is_safe_terminal_text(email, 320))
+                        .unwrap_or("email unavailable");
+                    writeln!(
+                        output,
+                        "{}\t{}\tplan_usage={}\trefresh_token={}",
+                        summary.client_id,
+                        email,
+                        summary.plan_usage_enabled,
+                        summary.has_refresh_token
+                    )?;
+                }
+            }
+        }
+        ChatGptCommands::Models { client_id } => {
+            let account = load_fresh_account(&client_id)?;
+            let provider = ChatGptProvider::new(account)
+                .map_err(|error| provider_error("could not initialize ChatGPT", error))?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let models = runtime
+                .block_on(provider.available_models(CancellationToken::new()))
+                .map_err(|error| provider_error("model listing failed", error))?;
+            if models.is_empty() {
+                writeln!(
+                    output,
+                    "No models are currently available for this account."
+                )?;
+            } else {
+                for model in models {
+                    writeln!(output, "{}\t{}", model.slug, model.display_name)?;
+                }
+            }
+        }
+        ChatGptCommands::SmokeTest {
+            client_id,
+            model,
+            confirm_remote,
+        } => {
+            if !confirm_remote {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "a real inference request requires --confirm-remote",
+                )
+                .into());
+            }
+            let account = load_fresh_account(&client_id)?;
+            let provider = ChatGptProvider::new(account)
+                .map_err(|error| provider_error("could not initialize ChatGPT", error))?;
+            let request = ProviderRequest {
+                selection: ResolvedModelSelection {
+                    provider: "chatgpt".to_owned(),
+                    model,
+                    variant: "default".to_owned(),
+                    capabilities: ModelCapabilities {
+                        streaming: true,
+                        cancellation: true,
+                        tool_calling: false,
+                    },
+                },
+                messages: vec![ProviderMessage {
+                    role: ProviderMessageRole::User,
+                    content: "Reply with exactly: Carapana SIWC smoke test OK.".to_owned(),
+                }],
+            };
+            writeln!(
+                output,
+                "Sending one fixed synthetic prompt to ChatGPT. No session or workspace context and no tools will be sent."
+            )?;
+            output.flush()?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime
+                .block_on(async {
+                    let mut events = provider.stream(request, CancellationToken::new());
+                    while let Some(event) = events.next().await {
+                        match event {
+                            Ok(ProviderEvent::TextDelta(text)) => {
+                                write_terminal_safe_text(output, &text)?
+                            }
+                            Ok(ProviderEvent::ToolCallRequested { .. }) => {
+                                writeln!(
+                                    output,
+                                    "\nA tool call was returned but was not executed."
+                                )?;
+                            }
+                            Err(error) => return Err(provider_error("inference failed", error)),
+                        }
+                    }
+                    writeln!(output)?;
+                    writeln!(
+                        output,
+                        "Smoke test completed; no conversation was persisted."
+                    )?;
+                    Ok::<(), io::Error>(())
+                })
+                .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
+        }
+    }
+    output.flush()?;
+    Ok(())
+}
+
+fn provider_error(context: &str, error: carapana_core::provider::ProviderError) -> io::Error {
+    io::Error::other(format!("{context}: {error:?}"))
+}
+
+fn is_safe_terminal_text(value: &str, max_bytes: usize) -> bool {
+    !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
+}
+
+fn write_terminal_safe_text(output: &mut impl Write, text: &str) -> io::Result<()> {
+    let mut safe_text = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character == '\n' || character == '\t' {
+            safe_text.push(character);
+        } else if character.is_control() {
+            safe_text.push_str(&character.escape_default().to_string());
+        } else {
+            safe_text.push(character);
+        }
+    }
+    output.write_all(safe_text.as_bytes())
+}
+
 #[cfg(unix)]
 fn read_queue_input() -> Result<(String, Selection), Box<dyn Error>> {
     // JSON may expand one input control byte to a six-byte escape before IPC framing.
@@ -508,6 +751,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
         Commands::Daemon => run_daemon(),
         Commands::Tui => tui::run(&socket_path()?),
+        Commands::ChatGpt(command) => run_chatgpt(command, &mut io::stdout().lock()),
         command => run_client(command, &socket_path()?, &mut io::stdout().lock()),
     }
 }
@@ -549,7 +793,10 @@ fn main() -> ExitCode {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{Commands, review_status_label, run_client};
+    use super::{
+        ChatGptCommands, Commands, is_safe_terminal_text, review_status_label, run_chatgpt,
+        run_client, write_terminal_safe_text,
+    };
     use carapana_daemon::{DaemonRuntime, IpcServer};
     use carapana_protocol::{Autonomy, QueuedMessage, Selection, WorkMode};
     use carapana_storage::{SessionRegistry, WorkspaceMetadata};
@@ -620,6 +867,42 @@ mod tests {
         ] {
             assert_eq!(review_status_label(status), expected);
         }
+    }
+
+    #[test]
+    fn chatgpt_smoke_test_requires_explicit_remote_confirmation_before_loading_account() {
+        let mut output = Vec::new();
+
+        let result = run_chatgpt(
+            ChatGptCommands::SmokeTest {
+                client_id: "oaiapp-not-a-real-account".to_owned(),
+                model: "explicit-test-model".to_owned(),
+                confirm_remote: false,
+            },
+            &mut output,
+        );
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires --confirm-remote")
+        );
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn chatgpt_output_escapes_terminal_controls_and_omits_unsafe_email() {
+        let mut output = Vec::new();
+
+        write_terminal_safe_text(&mut output, "plain\n\u{1b}[31mred\u{1b}[0m").unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "plain\n\\u{1b}[31mred\\u{1b}[0m"
+        );
+        assert!(is_safe_terminal_text("account@example.invalid", 320));
+        assert!(!is_safe_terminal_text("account\nname@example.invalid", 320));
     }
 
     #[test]

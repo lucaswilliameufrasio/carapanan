@@ -50,12 +50,45 @@ pub enum ProviderEvent {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProviderResponseShape {
+    ErrorObject,
+    Detail,
+    Empty,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderRemoteError {
+    pub status: Option<u16>,
+    pub code: Option<String>,
+    pub parameter: Option<String>,
+    pub request_id: Option<String>,
+    pub response_shape: Option<ProviderResponseShape>,
+}
+
+impl ProviderRemoteError {
+    pub fn local() -> Self {
+        Self {
+            status: None,
+            code: None,
+            parameter: None,
+            request_id: None,
+            response_shape: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderError {
-    AuthenticationRequired,
-    ModelUnavailable,
-    RateLimited { retry_after: Option<Duration> },
-    TemporarilyUnavailable,
-    InvalidResponse,
+    AuthenticationRequired(ProviderRemoteError),
+    ModelUnavailable(ProviderRemoteError),
+    RateLimited {
+        retry_after: Option<Duration>,
+        remote: ProviderRemoteError,
+    },
+    TemporarilyUnavailable(ProviderRemoteError),
+    InvalidResponse(ProviderRemoteError),
+    RemoteRejected(ProviderRemoteError),
     Cancelled,
 }
 
@@ -340,7 +373,7 @@ mod tests {
     use super::{
         CancellationToken, CatalogDefinitionError, ModelCapabilities, ModelDescriptor,
         ProviderAdapter, ProviderCatalog, ProviderDescriptor, ProviderError, ProviderEvent,
-        ProviderMessage, ProviderMessageRole, ProviderRequest, ProviderStream,
+        ProviderMessage, ProviderMessageRole, ProviderRemoteError, ProviderRequest, ProviderStream,
         SelectionResolutionError, VariantDescriptor,
     };
 
@@ -667,6 +700,12 @@ mod tests {
         let provider = ScriptedProvider {
             events: vec![Err(ProviderError::RateLimited {
                 retry_after: Some(Duration::from_secs(3)),
+                remote: ProviderRemoteError {
+                    status: Some(429),
+                    code: Some("rate_limit_exceeded".into()),
+                    request_id: Some("req-test".into()),
+                    ..ProviderRemoteError::local()
+                },
             })],
         };
         let mut stream = provider.stream(provider_request(), CancellationToken::new());
@@ -677,6 +716,12 @@ mod tests {
             stream.as_mut().poll_next(&mut context),
             Poll::Ready(Some(Err(ProviderError::RateLimited {
                 retry_after: Some(Duration::from_secs(3)),
+                remote: ProviderRemoteError {
+                    status: Some(429),
+                    code: Some("rate_limit_exceeded".into()),
+                    request_id: Some("req-test".into()),
+                    ..ProviderRemoteError::local()
+                },
             })))
         );
         assert_eq!(stream.as_mut().poll_next(&mut context), Poll::Ready(None));

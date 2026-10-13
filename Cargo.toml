@@ -5,6 +5,7 @@ members = [
     "crates/carapana-storage",
     "crates/carapana-daemon",
     "crates/carapana-cli",
+    "crates/carapana-openai",
     "prototypes/terminal",
 ]
 resolver = "3"

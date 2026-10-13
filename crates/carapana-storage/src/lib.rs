@@ -12,7 +12,9 @@ pub use session_store::{
     PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionEventRecord,
     StoredSessionStatus,
 };
-pub use user_database::{UserDatabaseError, open_user_database, user_database_path};
+pub use user_database::{
+    UserDatabaseError, open_user_database, user_data_directory, user_database_path,
+};
 pub use workspace::{
     MAX_WORKSPACE_FILE_HASH_BYTES, WorkspaceFileMetadata, WorkspaceFileMetadataError,
     WorkspaceFileValidation, WorkspaceFileValidationStatus, WorkspaceMetadata,

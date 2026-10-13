@@ -71,6 +71,20 @@ impl From<MigrationError> for UserDatabaseError {
 /// Linux honors an absolute `XDG_DATA_HOME`, otherwise using `$HOME/.local/share`.
 /// macOS uses `$HOME/Library/Application Support`. Other platforms fail closed.
 pub fn user_database_path() -> Result<PathBuf, UserDatabaseError> {
+    Ok(user_data_directory_path()?.join(DATABASE_FILE))
+}
+
+/// Resolve and prepare the private, per-user Carapanã data directory.
+///
+/// The directory is created with owner-only permissions when absent. Existing
+/// directories with broad permissions or symlink components are rejected.
+pub fn user_data_directory() -> Result<PathBuf, UserDatabaseError> {
+    let directory = user_data_directory_path()?;
+    ensure_private_directory(&directory)?;
+    Ok(directory)
+}
+
+fn user_data_directory_path() -> Result<PathBuf, UserDatabaseError> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     #[cfg(target_os = "linux")]
     let (platform, xdg_data_home) = (
@@ -82,8 +96,7 @@ pub fn user_database_path() -> Result<PathBuf, UserDatabaseError> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let (platform, xdg_data_home) = (Platform::Unsupported, None);
 
-    let directory = resolve_data_directory(platform, home, xdg_data_home)?;
-    Ok(directory.join(DATABASE_FILE))
+    resolve_data_directory(platform, home, xdg_data_home)
 }
 
 /// Open or initialize the private, per-user SQLite database.
