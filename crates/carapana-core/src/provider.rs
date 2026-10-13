@@ -2,9 +2,174 @@
 //!
 //! This module performs no authentication, network I/O, inference, or tool execution.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    task::{Context, Poll, Waker},
+    time::Duration,
+};
 
 use carapana_protocol::Selection;
+use futures_core::Stream;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderMessageRole {
+    System,
+    User,
+    Assistant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderMessage {
+    pub role: ProviderMessageRole,
+    pub content: String,
+}
+
+/// Content-bearing input. Callers must enforce the sharing confirmation required by PD-10
+/// before passing this request to a remote provider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderRequest {
+    pub selection: ResolvedModelSelection,
+    pub messages: Vec<ProviderMessage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProviderEvent {
+    TextDelta(String),
+    /// Untrusted model output only; receiving this event never authorizes tool execution.
+    ToolCallRequested {
+        id: String,
+        name: String,
+        arguments_json: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProviderError {
+    AuthenticationRequired,
+    ModelUnavailable,
+    RateLimited { retry_after: Option<Duration> },
+    TemporarilyUnavailable,
+    InvalidResponse,
+    Cancelled,
+}
+
+pub type ProviderStream =
+    Pin<Box<dyn Stream<Item = Result<ProviderEvent, ProviderError>> + Send + 'static>>;
+
+/// Runtime-independent cancellation signal for one provider request.
+#[derive(Clone, Debug)]
+pub struct CancellationToken {
+    state: Arc<CancellationState>,
+}
+
+#[derive(Debug, Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    next_waiter_id: AtomicU64,
+    waiters: Mutex<BTreeMap<u64, Waker>>,
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(CancellationState::default()),
+        }
+    }
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        if self.state.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        let waiters = {
+            let mut registered = self
+                .state
+                .waiters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *registered)
+        };
+
+        for waiter in waiters.into_values() {
+            waiter.wake();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    pub fn cancelled(&self) -> Cancelled<'_> {
+        let waiter_id = self.state.next_waiter_id.fetch_add(1, Ordering::Relaxed);
+        Cancelled {
+            token: self,
+            waiter_id,
+        }
+    }
+}
+
+#[must_use = "futures do nothing unless polled"]
+pub struct Cancelled<'a> {
+    token: &'a CancellationToken,
+    waiter_id: u64,
+}
+
+impl Future for Cancelled<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let token = this.token;
+        if token.is_cancelled() {
+            return Poll::Ready(());
+        }
+
+        let mut waiters = token
+            .state
+            .waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if token.is_cancelled() {
+            return Poll::Ready(());
+        }
+        waiters.insert(this.waiter_id, context.waker().clone());
+        if token.is_cancelled() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl Drop for Cancelled<'_> {
+    fn drop(&mut self) {
+        let mut waiters = self
+            .token
+            .state
+            .waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        waiters.remove(&self.waiter_id);
+    }
+}
+
+/// Provider boundary. Implementations return model output as data and must observe the
+/// cancellation token; this trait does not authorize or execute tool calls.
+pub trait ProviderAdapter: Send + Sync {
+    fn stream(&self, request: ProviderRequest, cancellation: CancellationToken) -> ProviderStream;
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ModelCapabilities {
@@ -159,11 +324,24 @@ fn validate_provider(provider: &ProviderDescriptor) -> Result<(), CatalogDefinit
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Poll, Wake, Waker},
+        time::Duration,
+    };
+
     use carapana_protocol::{Autonomy, Selection, WorkMode};
+    use futures_core::Stream;
 
     use super::{
-        CatalogDefinitionError, ModelCapabilities, ModelDescriptor, ProviderCatalog,
-        ProviderDescriptor, SelectionResolutionError, VariantDescriptor,
+        CancellationToken, CatalogDefinitionError, ModelCapabilities, ModelDescriptor,
+        ProviderAdapter, ProviderCatalog, ProviderDescriptor, ProviderError, ProviderEvent,
+        ProviderMessage, ProviderMessageRole, ProviderRequest, ProviderStream,
+        SelectionResolutionError, VariantDescriptor,
     };
 
     fn selection(provider: &str, model: &str, variant: &str) -> Selection {
@@ -203,6 +381,74 @@ mod tests {
             }],
         }])
         .unwrap()
+    }
+
+    fn provider_request() -> ProviderRequest {
+        ProviderRequest {
+            selection: catalog()
+                .resolve(&selection("mock", "mock-model", "extended"))
+                .unwrap(),
+            messages: vec![ProviderMessage {
+                role: ProviderMessageRole::User,
+                content: "hello".into(),
+            }],
+        }
+    }
+
+    struct ScriptedProvider {
+        events: Vec<Result<ProviderEvent, ProviderError>>,
+    }
+
+    impl ProviderAdapter for ScriptedProvider {
+        fn stream(
+            &self,
+            request: ProviderRequest,
+            cancellation: CancellationToken,
+        ) -> ProviderStream {
+            assert_eq!(request.selection.provider, "mock");
+            Box::pin(ScriptedStream {
+                events: self.events.clone().into(),
+                cancellation,
+            })
+        }
+    }
+
+    struct ScriptedStream {
+        events: VecDeque<Result<ProviderEvent, ProviderError>>,
+        cancellation: CancellationToken,
+    }
+
+    impl Stream for ScriptedStream {
+        type Item = Result<ProviderEvent, ProviderError>;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Option<Self::Item>> {
+            let this = self.get_mut();
+            if this.cancellation.is_cancelled() {
+                return Poll::Ready(None);
+            }
+            Poll::Ready(this.events.pop_front())
+        }
+    }
+
+    struct FlagWake(AtomicBool);
+
+    impl Wake for FlagWake {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    fn test_waker() -> (Arc<FlagWake>, Waker) {
+        let wake = Arc::new(FlagWake(AtomicBool::new(false)));
+        let waker = Waker::from(Arc::clone(&wake));
+        (wake, waker)
     }
 
     #[test]
@@ -382,5 +628,103 @@ mod tests {
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id, "mock");
         assert_eq!(providers[0].models[0].variants.len(), 2);
+    }
+
+    #[test]
+    fn should_stream_provider_text_and_inert_tool_call_events() {
+        let provider = ScriptedProvider {
+            events: vec![
+                Ok(ProviderEvent::TextDelta("answer".into())),
+                Ok(ProviderEvent::ToolCallRequested {
+                    id: "call-1".into(),
+                    name: "read_file".into(),
+                    arguments_json: r#"{"path":"README.md"}"#.into(),
+                }),
+            ],
+        };
+        let cancellation = CancellationToken::new();
+        let mut stream = provider.stream(provider_request(), cancellation);
+        let (_wake, waker) = test_waker();
+        let mut context = Context::from_waker(&waker);
+
+        assert_eq!(
+            stream.as_mut().poll_next(&mut context),
+            Poll::Ready(Some(Ok(ProviderEvent::TextDelta("answer".into()))))
+        );
+        assert_eq!(
+            stream.as_mut().poll_next(&mut context),
+            Poll::Ready(Some(Ok(ProviderEvent::ToolCallRequested {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                arguments_json: r#"{"path":"README.md"}"#.into(),
+            })))
+        );
+        assert_eq!(stream.as_mut().poll_next(&mut context), Poll::Ready(None));
+    }
+
+    #[test]
+    fn should_preserve_typed_provider_errors_without_automatic_retry() {
+        let provider = ScriptedProvider {
+            events: vec![Err(ProviderError::RateLimited {
+                retry_after: Some(Duration::from_secs(3)),
+            })],
+        };
+        let mut stream = provider.stream(provider_request(), CancellationToken::new());
+        let (_wake, waker) = test_waker();
+        let mut context = Context::from_waker(&waker);
+
+        assert_eq!(
+            stream.as_mut().poll_next(&mut context),
+            Poll::Ready(Some(Err(ProviderError::RateLimited {
+                retry_after: Some(Duration::from_secs(3)),
+            })))
+        );
+        assert_eq!(stream.as_mut().poll_next(&mut context), Poll::Ready(None));
+    }
+
+    #[test]
+    fn should_stop_a_stream_after_its_cancellation_token_is_cancelled() {
+        let provider = ScriptedProvider {
+            events: vec![Ok(ProviderEvent::TextDelta("first".into()))],
+        };
+        let cancellation = CancellationToken::new();
+        let mut stream = provider.stream(provider_request(), cancellation.clone());
+        let (_wake, waker) = test_waker();
+        let mut context = Context::from_waker(&waker);
+
+        assert!(matches!(
+            stream.as_mut().poll_next(&mut context),
+            Poll::Ready(Some(Ok(ProviderEvent::TextDelta(_))))
+        ));
+        cancellation.cancel();
+        assert!(cancellation.is_cancelled());
+        assert_eq!(stream.as_mut().poll_next(&mut context), Poll::Ready(None));
+    }
+
+    #[test]
+    fn should_wake_async_waiters_when_cancellation_is_requested() {
+        let cancellation = CancellationToken::new();
+        let (wake, waker) = test_waker();
+        let mut context = Context::from_waker(&waker);
+        let mut cancelled = Box::pin(cancellation.cancelled());
+
+        assert_eq!(cancelled.as_mut().poll(&mut context), Poll::Pending);
+        cancellation.cancel();
+        assert!(wake.0.load(Ordering::Acquire));
+        assert_eq!(cancelled.as_mut().poll(&mut context), Poll::Ready(()));
+    }
+
+    #[test]
+    fn should_unregister_dropped_async_cancellation_waiters() {
+        let cancellation = CancellationToken::new();
+        let (wake, waker) = test_waker();
+        let mut context = Context::from_waker(&waker);
+        {
+            let mut cancelled = Box::pin(cancellation.cancelled());
+            assert_eq!(cancelled.as_mut().poll(&mut context), Poll::Pending);
+        }
+
+        cancellation.cancel();
+        assert!(!wake.0.load(Ordering::Acquire));
     }
 }

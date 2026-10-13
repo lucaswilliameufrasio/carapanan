@@ -3692,6 +3692,9 @@ provider e espera/retries/cota conforme PD-10. API paga não vira requisito do p
 - `carapana-core::provider` contém catálogo puro de provider/modelo/variante, capabilities
   tipadas e resolução exata sem fallback. A fatia não adiciona adapter, autenticação, rede,
   inferência ou execução de tools; decisão em PD-20.
+- O contrato mock-only usa `futures-core::Stream`, eventos/errors tipados e cancelamento
+  cooperativo runtime-independent. Não escolhe executor, não faz retries/reconnect e não conecta
+  o stream ao daemon/session engine; pedidos de tool são somente dados. Decisão em PD-21.
 - Autenticação ChatGPT e inferência reais continuam pendentes de autorização específica e
   comprovação na conta/ambiente aprovados; não inferir permissão a partir deste checkpoint.
 

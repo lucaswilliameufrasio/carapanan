@@ -508,3 +508,25 @@ desativados.
   Esta fatia usa somente catálogos de teste; não realiza auth, chamadas de rede ou inferência.
 - Adapter ChatGPT real, uso de credenciais, inferência e prova na conta autorizada continuam
   bloqueados até autorização específica e comprovação conforme PD-02/PD-17.
+
+## PD-21 — Contrato assíncrono de streaming de provider
+
+**Data:** 12 de outubro de 2026
+
+**Status:** aprovado para contrato e testes mock-only; não habilita integração real.
+
+- `carapana-core` define request, eventos e errors tipados em torno de `futures-core::Stream`.
+  O core não escolhe nem depende de executor async; adapters futuros fornecem a stream.
+- Cancelamento é um token compartilhável e independente de runtime. Adapters devem observar
+  seu future de cancelamento e encerrar o transporte/stream; o consumidor pode também descartar
+  a stream. A interface não promete retry, reconnect ou cancelamento de trabalho remoto que o
+  adapter não consiga interromper.
+- Mensagens e seleção resolvida são passadas ao adapter somente por um futuro chamador, que deve
+  aplicar a confirmação de compartilhamento PD-10 antes de enviar conteúdo remoto. Esta decisão
+  não adiciona wiring de execução.
+- Texto e pedidos de tool são eventos de dados não confiáveis. `ToolCallRequested` não executa
+  tool nem concede autorização; tools continuam fora desta fase. Errors tipados preservam
+  rate-limit e `retry_after`, mas esta camada não repete automaticamente.
+- Preferido sobre callback síncrono para manter consumers não bloqueantes e adapters de rede
+  assíncronos sem impor runtime ao core. Reavaliar somente se o runtime/adapters aprovados exigirem
+  outra política de cancelamento.
