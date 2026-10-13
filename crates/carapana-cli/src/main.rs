@@ -518,6 +518,26 @@ fn run(_cli: Cli) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(unix)]
+    {
+        let mut arguments = std::env::args_os();
+        let _ = arguments.next();
+        if arguments
+            .next()
+            .is_some_and(|argument| argument == "__carapana_internal_process_host_v1")
+        {
+            if arguments.next().is_some() {
+                return ExitCode::FAILURE;
+            }
+            return match carapana_daemon::run_process_host() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => {
+                    eprintln!("carapana: private process host failed");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    }
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

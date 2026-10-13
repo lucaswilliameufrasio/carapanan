@@ -4,6 +4,8 @@
 
 #[cfg(unix)]
 mod ipc;
+#[cfg(unix)]
+mod process;
 
 use std::{
     collections::HashMap,
@@ -32,6 +34,11 @@ use carapana_storage::{
 
 #[cfg(unix)]
 pub use ipc::{IpcAttachment, IpcError, IpcServer, request as ipc_request};
+#[cfg(unix)]
+pub use process::{
+    OwnedProcessInfo, ProcessError, ProcessShutdownPolicy, ProcessSpec, ProcessSupervisor,
+    run_process_host,
+};
 
 static GENERATED_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -528,6 +535,7 @@ fn map_recovery_error(error: SessionStoreError) -> DaemonErrorCode {
 pub struct DaemonService {
     runtime: DaemonRuntime,
     server: IpcServer,
+    process_supervisor: ProcessSupervisor,
 }
 
 #[cfg(unix)]
@@ -535,6 +543,7 @@ pub struct DaemonService {
 pub enum DaemonServiceError {
     Startup(DaemonStartupError),
     Ipc(IpcError),
+    Process(ProcessError),
 }
 
 #[cfg(unix)]
@@ -543,6 +552,7 @@ impl fmt::Display for DaemonServiceError {
         match self {
             Self::Startup(error) => write!(formatter, "daemon service startup failed: {error}"),
             Self::Ipc(error) => write!(formatter, "daemon service IPC failed: {error}"),
+            Self::Process(error) => write!(formatter, "daemon process supervision failed: {error}"),
         }
     }
 }
@@ -553,6 +563,7 @@ impl Error for DaemonServiceError {
         match self {
             Self::Startup(error) => Some(error),
             Self::Ipc(error) => Some(error),
+            Self::Process(error) => Some(error),
         }
     }
 }
@@ -564,7 +575,12 @@ impl DaemonService {
         let registry = SessionRegistry::open_user().map_err(DaemonStartupError::from)?;
         let server = IpcServer::bind_user()?;
         let runtime = DaemonRuntime::recover(registry, now_ms)?;
-        Ok(Self { runtime, server })
+        let process_supervisor = ProcessSupervisor::for_current_executable()?;
+        Ok(Self {
+            runtime,
+            server,
+            process_supervisor,
+        })
     }
 
     /// Open an explicit database/socket pair, primarily for tests and embedding.
@@ -579,7 +595,31 @@ impl DaemonService {
         let registry = SessionRegistry::open(database_path).map_err(DaemonStartupError::from)?;
         let server = IpcServer::bind(socket_path)?;
         let runtime = DaemonRuntime::recover(registry, now_ms)?;
-        Ok(Self { runtime, server })
+        let process_supervisor = ProcessSupervisor::for_current_executable()?;
+        Ok(Self {
+            runtime,
+            server,
+            process_supervisor,
+        })
+    }
+
+    /// Open an explicit database/socket pair and use the supplied executable as the
+    /// private process-host entrypoint. Intended for integration tests and embedding.
+    pub fn open_with_process_host(
+        database_path: impl AsRef<Path>,
+        socket_path: impl AsRef<Path>,
+        process_host_executable: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<Self, DaemonServiceError> {
+        let registry = SessionRegistry::open(database_path).map_err(DaemonStartupError::from)?;
+        let server = IpcServer::bind(socket_path)?;
+        let runtime = DaemonRuntime::recover(registry, now_ms)?;
+        let process_supervisor = ProcessSupervisor::new(process_host_executable)?;
+        Ok(Self {
+            runtime,
+            server,
+            process_supervisor,
+        })
     }
 
     pub fn startup_recovered(&self) -> &[PersistedSession] {
@@ -590,8 +630,76 @@ impl DaemonService {
         self.server.path()
     }
 
-    pub fn serve_until(&mut self, shutdown: &AtomicBool) -> Result<(), IpcError> {
-        self.server.serve_until(&mut self.runtime, shutdown)
+    /// Start an owned process only for a session persisted by this daemon.
+    pub fn spawn_owned_process(
+        &mut self,
+        session_id: &str,
+        spec: ProcessSpec,
+    ) -> Result<OwnedProcessInfo, ProcessError> {
+        self.verify_process_owner_session(session_id)?;
+        self.process_supervisor
+            .spawn_owned_process(session_id, spec)
+    }
+
+    pub fn owned_processes(&mut self) -> Result<Vec<OwnedProcessInfo>, ProcessError> {
+        self.process_supervisor.owned_processes()
+    }
+
+    pub fn stop_owned_process(
+        &mut self,
+        session_id: &str,
+        process_id: &str,
+    ) -> Result<(), ProcessError> {
+        self.verify_process_owner_session(session_id)?;
+        self.process_supervisor
+            .stop_owned_process(session_id, process_id)
+    }
+
+    pub fn restart_owned_process(
+        &mut self,
+        session_id: &str,
+        process_id: &str,
+        spec: ProcessSpec,
+    ) -> Result<OwnedProcessInfo, ProcessError> {
+        self.verify_process_owner_session(session_id)?;
+        self.process_supervisor
+            .restart_owned_process(session_id, process_id, spec)
+    }
+
+    pub fn stop_session_processes(&mut self, session_id: &str) -> Result<(), ProcessError> {
+        self.verify_process_owner_session(session_id)?;
+        self.process_supervisor.stop_session_processes(session_id)
+    }
+
+    pub fn serve_until(&mut self, shutdown: &AtomicBool) -> Result<(), DaemonServiceError> {
+        let server_result = self.server.serve_until(&mut self.runtime, shutdown);
+        let supervisor_result = self.process_supervisor.shutdown();
+        match (server_result, supervisor_result) {
+            (Err(error), _) => Err(DaemonServiceError::Ipc(error)),
+            (Ok(()), Err(error)) => Err(DaemonServiceError::Process(error)),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
+    fn verify_process_owner_session(&self, session_id: &str) -> Result<(), ProcessError> {
+        if session_id.trim().is_empty()
+            || session_id.len() > 256
+            || session_id.chars().any(char::is_control)
+        {
+            return Err(ProcessError::InvalidSessionId);
+        }
+        match self.runtime.registry.get(session_id) {
+            Ok(_) => Ok(()),
+            Err(SessionStoreError::SessionNotFound) => Err(ProcessError::OwnerSessionMissing),
+            Err(_) => Err(ProcessError::SessionStorageUnavailable),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DaemonService {
+    fn drop(&mut self) {
+        let _ = self.process_supervisor.shutdown();
     }
 }
 
@@ -624,6 +732,13 @@ impl From<DaemonStartupError> for DaemonServiceError {
 impl From<IpcError> for DaemonServiceError {
     fn from(error: IpcError) -> Self {
         Self::Ipc(error)
+    }
+}
+
+#[cfg(unix)]
+impl From<ProcessError> for DaemonServiceError {
+    fn from(error: ProcessError) -> Self {
+        Self::Process(error)
     }
 }
 

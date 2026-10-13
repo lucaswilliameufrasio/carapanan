@@ -454,6 +454,45 @@ performance e execução só são declarados validados com testes reais na etapa
   possui esses recursos de runtime. Hibernação automática/reclaim só será implementada com
   sinais de idle/pressão medidos e cleanup comprovado.
 - Supervisão efetiva só pode afetar processos criados e identificados pelo Carapanã; processos
-  anteriores ou marcados `Manter rodando` não são encerrados. Enquanto spawn/kill não estiverem
-  autorizados, não executar nenhuma operação de processo; contratos/estado inertes não implicam
+  anteriores ou marcados `Manter rodando` não são encerrados. A autorização específica de
+  12 de outubro de 2026 cobre somente a primitive definida em PD-19; não habilita, por si,
+  provider, tools, execução de tarefas ou autonomia. Contratos/estado inertes não implicam
   capacidade operacional.
+
+## PD-19 — Supervisor local de processos próprios
+
+**Data:** 12 de outubro de 2026
+
+**Status:** aprovado para a fundação da Delivery 2; provider, tools e execução de tarefas seguem
+desativados.
+
+- O supervisor é Unix-only nesta entrega e permanece fora dos contratos IPC, CLI e TUI. Ele é
+  uma primitive interna para código futuro explicitamente autorizado; enfileirar/retomar mensagem
+  não chama o supervisor.
+- A API interna permite criar, listar, parar e reiniciar somente identificadores próprios; restart
+  encerra o grupo anterior antes de tentar iniciar a nova especificação no mesmo owner session.
+- A façade do `DaemonService` exige que a sessão proprietária exista no SQLite e que stop/restart
+  usem a mesma sessão registrada no processo. Esses métodos seguem indisponíveis no IPC.
+- Executar um binário absoluto já existente com argv separado, sem shell, sem herdar ambiente e
+  com stdin/stdout/stderr em `/dev/null`. Limitar quantidade/tamanho de args, caminho e processos
+  gerenciados; não registrar executable, args, cwd ou payload de controle.
+- Um modo privado do próprio binário Carapanã atua como guardian de cada processo e líder do
+  process group dedicado; o executável gerenciado herda esse grupo. O guardian recebe comandos em
+  pipes privados e, em stop, SIGINT/SIGTERM ou EOF do daemon, sinaliza o grupo com SIGTERM, aguarda
+  800 ms e então SIGKILL (incluindo a si próprio). Permanecer vivo como âncora durante a limpeza
+  impede reutilização do PGID enquanto ele envia sinais. O daemon aguarda os guardians por até 3 s.
+  Nunca procurar/alvejar processos por nome, workspace ou PID externo.
+- `KeepRunning` é uma política explícita de detach: shutdown da sessão/daemon ou saída natural do
+  líder não sinaliza o grupo. Uma parada direta e explícita de um identificador ainda controlado
+  pode encerrá-lo. Processos preservados não são re-adotados depois. Um gerenciador externo que
+  sinalize todos os processos de um cgroup ainda pode afetá-los; a política só controla sinais
+  enviados pelo supervisor Carapanã.
+- Os processos são identificados somente pela resposta do guardian recém-iniciado e pela relação
+  viva de pipes/handles: PID do executável e PGID/ PID do guardian são distintos. Não se restaura
+  identidade a partir de PIDs persistidos; após detach ou perda do guardian, o processo não é
+  re-adotado nem sinalizado pelo número antigo.
+- Trade-off: um guardian extra por processo consome recursos, mas o EOF permite cleanup depois de
+  crash do daemon, ao contrário de `Child` direto; um supervisor central seria mais econômico,
+  porém teria ownership e reconexão mais complexos. Process groups não contêm descendentes que
+  deliberadamente façam detach/setsid, nem sobrevivem a SIGKILL do guardian, encerramento forçado
+  do host ou falha da máquina; esses limites não são anunciados como garantias.

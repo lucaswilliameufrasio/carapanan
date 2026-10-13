@@ -218,6 +218,13 @@ Retomar preserva o trabalho interrompido, mas não inicia provider ou tools. SIG
 encerram o daemon. A interface web/mobile acima permanece um protótipo com fixtures e não
 acessa esses dados reais.
 
+A fundação agora inclui uma primitive interna de supervisão Unix: executável absoluto, argv sem
+shell, ambiente/stdio isolados, process group próprio e guardian que encerra o grupo por TERM
+(800 ms) e KILL; EOF do daemon também inicia cleanup. `KeepRunning` é um detach explícito.
+Essa primitive não está conectada à fila, a pedidos IPC, nem a comandos CLI/TUI; ainda não há
+execução de provider, tools ou tarefas. Descendentes que se desanexam do process group e falha
+forçada do próprio guardian permanecem fora da garantia; detalhes em PD-19.
+
 O protocolo IPC atual é v3; mantenha CLI e daemon na mesma versão.
 
 Logs locais JSON são opcionais e ficam desligados por padrão. Para habilitá-los,

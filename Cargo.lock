@@ -166,6 +166,7 @@ dependencies = [
  "carapana-storage",
  "clap",
  "crossterm",
+ "nix 0.29.0",
  "ratatui",
  "serde_json",
  "signal-hook",
@@ -185,8 +186,10 @@ version = "0.0.0"
 dependencies = [
  "carapana-protocol",
  "carapana-storage",
+ "nix 0.29.0",
  "serde",
  "serde_json",
+ "signal-hook",
 ]
 
 [[package]]
