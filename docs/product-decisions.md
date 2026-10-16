@@ -692,3 +692,37 @@ desativados.
   prova contra toda mutação concorrente. Isso não constitui o gate completo: detecção de segredos no
   conteúdo, autorizações, sandbox, escrita, processos e aprovação seguem independentes e bloqueiam
   runtime wiring.
+
+## PD-28 — Snapshot e substituição atômica isolada
+
+**Data:** 16 de outubro de 2026
+
+**Status:** aplicada como primitive local isolada; não habilita edição pelo agente nem wiring de runtime.
+
+- `carapana-storage` oferece snapshot em memória de um arquivo regular, não sensível, com limite de
+  256 KiB, conteúdo e metadata capturados pelo mesmo descritor; o snapshot não é serializável nem
+  imprimível por `Debug`. A escrita recebe esse snapshot, não um path/conteúdo-base livre, vinculando a
+  proposta ao workspace, path, identidade, bytes e atributos observados.
+- A primeira operação substitui somente arquivo existente. Rejeita criação, remoção, symlinks,
+  componentes inválidos, outro filesystem, hard links, arquivos grandes, qualquer extended attribute
+  ou metadata/ownership que não possa preservar. Exige conteúdo novo de até 256 KiB. Cria temporário
+  exclusivo e owner-only no mesmo diretório aberto relativamente a descritores; conteúdo e mode básico
+  são sincronizados, o snapshot é revalidado e o rename é atômico. O arquivo substituto fica owner-only
+  durante o rename e só depois recebe o mode básico anterior, para não expor o temporário com permissões
+  mais amplas. Erro de sync, ajuste de mode ou validação após rename é reportado como resultado incerto;
+  o chamador não deve repetir cegamente. Erro normal tenta remover o temporário; crash ou falha nessa
+  limpeza pode deixar um arquivo oculto owner-only, sem rotina automática de recovery nesta fatia.
+- A comparação exata de conteúdo/metadata/atributos imediatamente antes do rename detecta conflitos
+  observados, mas não é compare-and-swap do filesystem nem lock contra editores externos. Uma mutação
+  adversarial entre a última validação e o rename ainda pode vencer a corrida; se outro processo
+  remover o destino exatamente nessa janela, o rename pode recriá-lo. Escritores Carapanã e externos
+  precisam de coordenação/approval próprios antes de qualquer ativação.
+- O temporário preserva owner/group somente quando a identidade herdada ao criá-lo coincide com o
+  arquivo observado; atributos estendidos e arquivos com hard links são recusados. Filesystem ACLs
+  não representadas por extended attributes, flags de filesystem, durabilidade e o breve intervalo
+  owner-only após rename ainda precisam de prova por OS/filesystem. Qualquer falha antes do rename
+  falha fechada; após rename o resultado pode ser incerto.
+- O primitive permanece local, bloqueado para paths protegidos e sem integração com `carapana-tools`,
+  diff, approvals, provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. A prévia de diff
+  continua visualização em memória. Wiring exige fechar limitações de concorrência/metadata e todos os
+  gates independentes de conteúdo/segredos, autorização, sandbox e teste.

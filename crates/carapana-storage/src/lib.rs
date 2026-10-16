@@ -17,10 +17,11 @@ pub use user_database::{
 };
 pub use workspace::{
     MAX_WORKSPACE_DIRECTORY_READ_ENTRIES, MAX_WORKSPACE_FILE_HASH_BYTES,
-    MAX_WORKSPACE_FILE_READ_BYTES, WorkspaceDirectoryEntry, WorkspaceDirectoryEntryKind,
-    WorkspaceDirectoryIdentity, WorkspaceDirectoryListing, WorkspaceDirectoryReadError,
-    WorkspaceFileMetadata, WorkspaceFileMetadataError, WorkspaceFileReadError,
-    WorkspaceFileValidation, WorkspaceFileValidationStatus, WorkspaceMetadata,
+    MAX_WORKSPACE_FILE_READ_BYTES, MAX_WORKSPACE_FILE_WRITE_BYTES, WorkspaceDirectoryEntry,
+    WorkspaceDirectoryEntryKind, WorkspaceDirectoryIdentity, WorkspaceDirectoryListing,
+    WorkspaceDirectoryReadError, WorkspaceFileMetadata, WorkspaceFileMetadataError,
+    WorkspaceFileReadError, WorkspaceFileSnapshot, WorkspaceFileValidation,
+    WorkspaceFileValidationStatus, WorkspaceFileWriteError, WorkspaceMetadata,
     WorkspaceMetadataError, WorkspaceValidationReport,
 };
 

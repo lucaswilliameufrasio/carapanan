@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 license = "Apache-2.0"
-description = "SQLite schema and migration foundation for local Carapanã sessions"
+description = "Local persistence and bounded workspace filesystem primitives for Carapanã"
 
 [lints]
 workspace = true

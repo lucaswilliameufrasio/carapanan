@@ -9,6 +9,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod write;
+
+pub use write::{MAX_WORKSPACE_FILE_WRITE_BYTES, WorkspaceFileSnapshot, WorkspaceFileWriteError};
+
 pub const MAX_WORKSPACE_FILE_HASH_BYTES: usize = 1024 * 1024;
 pub const MAX_WORKSPACE_FILE_READ_BYTES: usize = 256 * 1024;
 pub const MAX_WORKSPACE_DIRECTORY_READ_ENTRIES: usize = 50_000;
@@ -126,6 +130,7 @@ pub enum WorkspaceFileReadError {
     SensitivePath(PathBuf),
     NotRegularFile(PathBuf),
     FileTooLarge(PathBuf),
+    MetadataTooLarge(PathBuf),
     Changed(PathBuf),
     Io(io::Error),
 }
@@ -258,6 +263,11 @@ impl fmt::Display for WorkspaceFileReadError {
             Self::FileTooLarge(path) => write!(
                 formatter,
                 "workspace file exceeds the configured read limit (maximum 256 KiB): {}",
+                path.display()
+            ),
+            Self::MetadataTooLarge(path) => write!(
+                formatter,
+                "workspace file metadata exceeds the configured snapshot limit: {}",
                 path.display()
             ),
             Self::Changed(path) => write!(

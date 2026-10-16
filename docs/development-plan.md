@@ -3770,18 +3770,28 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - Prévia unified diff em memória compara dois textos fornecidos pelo chamador, sem ler nem alterar
   arquivos; limita entradas/tempo/saída e substitui controles de terminal/bidi. É somente visualização,
   não produz patch aplicável. Decisão PD-26.
+- PD-28 adiciona snapshot efêmero não serializável e `WorkspaceMetadata::replace_file_atomically`, só
+  para arquivos existentes de até 256 KiB vinculados ao snapshot. Usa temp owner-only, revalida bytes,
+  metadata, extended attributes e cadeia de diretórios, rejeita symlinks, hard links, atributos
+  estendidos, arquivos protegidos e metadata não preservável; o rename é relativo a descritores e o
+  resultado pós-rename pode ser incerto. O arquivo passa brevemente por mode owner-only após o rename;
+  crash/falha de cleanup pode deixar um temporário oculto sem recovery automático. Isso detecta conflitos
+  observados, mas não é compare-and-swap: uma escrita/remoção externa na janela final ainda pode vencer;
+  não habilita edição concorrente nem runtime.
 - Testes de filesystem real cobrem leitura e limites, traversal, symlinks em arquivo/diretório,
   ignore files symlink/oversized, diretório não regular, nomes protegidos, regras ignore e precedência,
   enumeração relativa a descritores, substituição de diretório antes e durante a revalidação e limites
   de entradas; também cobrem matchers compilados de bytes lidos sem reabertura, exclusão de regras
   ancestrais, profundidade, arquivos ignorados, busca literal/case ASCII, binários, UTF-8 inválido,
   orçamento aplicado no limite de leitura, snippets sem controles de terminal e parser real de
-  Rust/TypeScript/TSX com erros de sintaxe, posições, limites e ausência de source no resultado.
+  Rust/TypeScript/TSX com erros de sintaxe, posições, limites e ausência de source no resultado. A
+  escrita tem regressões para substituição/mode, conflito e destino removido, symlink/substituição de
+  diretório, workspace errado, limite de bytes, hard links e arquivos com extended attributes.
 - As APIs continuam desconectadas do provider, `ToolCallRequested`, daemon, CLI/TUI, sessão e fila;
-  nenhum conteúdo foi enviado. Ainda faltam escrita atômica, diff ligado a arquivos/edições,
-  Git/worktree, artifacts, execução e prova do gate de segurança. O diff atual é apenas prévia em
-  memória. A denylist de nomes não detecta segredos em conteúdo, e traversal não deve ser ligado em
-  runtime até fechar a revisão de substituição concorrente durante o walk.
+  nenhum conteúdo foi enviado. Ainda faltam diff ligado a arquivos/edições, Git/worktree, artifacts,
+  execução e prova do gate de segurança. O diff atual é apenas prévia em memória. A denylist de nomes
+  não detecta segredos em conteúdo; a escrita não coordena processos externos, e traversal/writes não
+  devem ser ligados em runtime antes das revisões e gates próprios.
 - Delivery 4 permanece incompleto. A implementação descriptor-relative continua isolada e não está
   ligada a runtime; ainda exige revisão/gates próprios e não equivale a proteção de conteúdo secreto,
   autorização, sandbox ou controle de execução. Não inferir autorização ou segurança a partir dessas
