@@ -3746,6 +3746,47 @@ Controles devem ser comprovados antes de ativar a capacidade correspondente. Se 
 for possível garantir proteção, bloquear a capacidade. Essas implementações são após
 aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 
+### Progresso do Delivery 4 — 16 de outubro de 2026
+
+- A primitive `WorkspaceMetadata::read_file` em `carapana-storage::workspace` valida a identidade do
+  workspace e abre arquivos Unix sem seguir symlinks. Aceita caminho relativo, arquivo regular e até
+  256 KiB; `read_file_with_limit` permite um limite menor. Bloqueia nomes sensíveis conhecidos e
+  falha em plataformas sem enforcement comprovado. Decisão PD-23.
+- O novo crate `carapana-tools` lista arquivos relativos com `.gitignore`, `.ignore` e
+  `.carapanaignore`, sem regras globais/ancestrais, sem symlinks ou travessia de filesystem, com
+  exclusões padrão e limites de profundidade/entradas. Busca literal reutiliza o leitor seguro e limita
+  arquivos, bytes e resultados. Decisão PD-24.
+- Ignore files são lidos por `WorkspaceMetadata::read_file` e compilados de memória; a camada do
+  parser não reabre caminhos. A enumeração agora é relativa a descritores em `carapana-storage`: abre
+  cada componente com `openat`/`O_NOFOLLOW`, enumera via `rustix::fs::Dir` e classifica entradas com
+  `statat(..., SYMLINK_NOFOLLOW)`. `carapana-tools` conserva a política de recursão/ignore; cada
+  diretório usa a identidade descoberta, limite de entradas e revalidação da cadeia interna do
+  workspace antes/depois. O orçamento conta também entradas omitidas por sensibilidade ou filesystem.
+  Mudanças/substituições observadas falham fechadas; entradas protegidas e filesystems diferentes não
+  são retornados. Decisão PD-27.
+- Parser Tree-sitter sob demanda suporta Rust, TypeScript e TSX, conforme escolha do operador. Lê
+  somente um arquivo explícito pelo leitor seguro; limita source, tempo, nós e diagnósticos e não
+  devolve trechos de código. JavaScript/Svelte continuam fora do escopo inicial. Decisão PD-25.
+- Prévia unified diff em memória compara dois textos fornecidos pelo chamador, sem ler nem alterar
+  arquivos; limita entradas/tempo/saída e substitui controles de terminal/bidi. É somente visualização,
+  não produz patch aplicável. Decisão PD-26.
+- Testes de filesystem real cobrem leitura e limites, traversal, symlinks em arquivo/diretório,
+  ignore files symlink/oversized, diretório não regular, nomes protegidos, regras ignore e precedência,
+  enumeração relativa a descritores, substituição de diretório antes e durante a revalidação e limites
+  de entradas; também cobrem matchers compilados de bytes lidos sem reabertura, exclusão de regras
+  ancestrais, profundidade, arquivos ignorados, busca literal/case ASCII, binários, UTF-8 inválido,
+  orçamento aplicado no limite de leitura, snippets sem controles de terminal e parser real de
+  Rust/TypeScript/TSX com erros de sintaxe, posições, limites e ausência de source no resultado.
+- As APIs continuam desconectadas do provider, `ToolCallRequested`, daemon, CLI/TUI, sessão e fila;
+  nenhum conteúdo foi enviado. Ainda faltam escrita atômica, diff ligado a arquivos/edições,
+  Git/worktree, artifacts, execução e prova do gate de segurança. O diff atual é apenas prévia em
+  memória. A denylist de nomes não detecta segredos em conteúdo, e traversal não deve ser ligado em
+  runtime até fechar a revisão de substituição concorrente durante o walk.
+- Delivery 4 permanece incompleto. A implementação descriptor-relative continua isolada e não está
+  ligada a runtime; ainda exige revisão/gates próprios e não equivale a proteção de conteúdo secreto,
+  autorização, sandbox ou controle de execução. Não inferir autorização ou segurança a partir dessas
+  primitives; cada capacidade seguinte exige enforcement e testes próprios antes de qualquer wiring.
+
 ---
 
 # 159. Delivery 5 — Context Engine

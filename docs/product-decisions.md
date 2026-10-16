@@ -567,3 +567,128 @@ desativados.
 - Testes usam cliente de produção contra servidor HTTP local falso; testes normais nunca acessam
   OpenAI nem usam tokens reais. Reavaliar armazenamento se o produto passar a exigir proteção contra
   leitura por outros processos do mesmo usuário ou multiusuário no mesmo host.
+
+## PD-23 — Primitive de leitura limitada do workspace
+
+**Data:** 14 de outubro de 2026
+
+**Status:** aplicada à primitive local isolada; não habilita tools nem envio de conteúdo.
+
+- `carapana-storage::WorkspaceMetadata::read_file` reutiliza a identidade do workspace e a abertura
+  Unix com `openat`/`O_NOFOLLOW` já usada pelas observações de recovery, evitando uma segunda
+  implementação de resolução de caminhos. A escolha mantém validação e leitura presas à identidade
+  capturada; não significa que o crate esteja autorizado a persistir ou compartilhar o conteúdo.
+- A operação aceita somente caminho relativo dentro do workspace, arquivo regular e no máximo
+  256 KiB. Rejeita symlinks em qualquer componente, caminhos protegidos conhecidos (incluindo env,
+  credenciais/configurações, chaves privadas e estado Terraform), troca de identidade/metadados durante
+  a leitura e qualquer plataforma sem a primitiva comprovada. Arquivos são retornados como bytes ao
+  chamador local; `read_file_with_limit` permite ao chamador impor um limite menor, nunca maior que
+  256 KiB. Não há conversão, filtragem de saída ou detecção de segredos no conteúdo.
+- A lista de nomes protegidos é defesa conservadora, não classificador completo de segredos. A seleção
+  do workspace e o limite de caminho não substituem autorização por ação, revisão de conteúdo, sandbox,
+  filtragem de outputs nem consentimento de compartilhamento com provider.
+- A primitive não é ligada ao provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. Não há
+  listagem/recursão, busca, escrita, shell ou execução de processos. Esses recursos exigem slices e
+  evidências próprias; capacidade do provider continua sendo dado inerte conforme PD-20/PD-21.
+- Trade-off: manter a operação junto das primitivas de identidade/recovery evita duplicação de uma
+  fronteira sensível e permite testes diretos contra filesystem real. A API não é uma aprovação de
+  separar ou ativar o futuro executor de tools; a arquitetura poderá extrair um crate coeso quando
+  existirem contratos e capacidades além desta leitura isolada.
+
+## PD-24 — Inspeção local isolada em `carapana-tools`
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementada como API local não conectada; não ativa execução nem compartilhamento remoto.
+
+- A listagem e a busca pertencem ao novo crate `carapana-tools`; `carapana-storage` continua dono da
+  identidade persistida do workspace e da abertura/leitura segura. A extração foi feita quando a
+  capacidade deixou de ser uma única primitive. Nenhum dos crates chama provider, daemon, CLI/TUI,
+  fila ou executor.
+- Os arquivos de regras são lidos por `WorkspaceMetadata::read_file` (abertura Unix sem-follow,
+  caminho confinado e limite de bytes) e compilados em memória; o parser não reabre paths. A leitura
+  protege a configuração contra symlink/TOCTOU. O walker de diretórios, porém, não é descritor-relativo
+  e ainda exige revisão contra troca concorrente de paths antes de qualquer runtime wiring.
+- A listagem usa `ignore` com versão exata e lockfile para semântica conhecida. `.ignore` tem
+  precedência sobre `.gitignore`; `.carapanaignore` tem precedência sobre ambas. Configuração global e
+  regras ancestrais são desativadas para tornar o resultado local ao workspace. Links simbólicos e outros
+  filesystems não são percorridos; `.git`, `node_modules`, `target`, `dist`, `build`, `.cache` e
+  `vendor` são excluídos por padrão. Profundidade e quantidade de entradas/arquivos são limitadas.
+- Busca é literal e somente leitura, limitada a 512 arquivos, 8 MiB lidos e 200 linhas de resultado;
+  `read_file_with_limit` aplica o orçamento restante durante cada leitura, além do teto de 256 KiB
+  por arquivo e das proteções de `WorkspaceMetadata::read_file`. Busca sem distinção
+  de caixa ignora caixa ASCII. Snippets substituem controles de terminal e formatação bidirecional,
+  mas ainda são dados não confiáveis e podem conter segredos em arquivos com nomes não reconhecidos;
+  consumidores devem escapar caminhos antes de renderizá-los.
+- Preferido sobre manter traversal em `carapana-storage`, pois storage não deve possuir indexação ou
+  comportamento de ferramentas; também preferido sobre implementar padrões ignore manualmente, para
+  não divergir da semântica convencional. A dependência `ignore` usa a licença MIT disponível no
+  pacote dual MIT/Unlicense e é fixada no manifesto e no lockfile.
+- Listagem/busca não são approvals e não implicam envio ao modelo. Qualquer wiring futuro exige
+  contratos de autorização/compartilhamento e prova do gate de segurança de Delivery 4, incluindo
+  traversal relativo a descritores em ambientes adversariais; a API permanece isolada enquanto essa
+  prova não existir.
+
+## PD-25 — Parser Tree-sitter inicial e sob demanda
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementado no `carapana-tools`; parser local não conectado a runtime, provider ou UI.
+
+- Conforme escolha explícita do operador, a primeira seleção suporta Rust (`.rs`), TypeScript
+  (`.ts`, `.mts`, `.cts`) e TSX (`.tsx`). Arquivos JavaScript e Svelte não são inferidos como TSX nem
+  processados por fallback; gramáticas adicionais exigem uma fatia posterior.
+- O parser só executa para um caminho explícito e usa o leitor de workspace confinado/sem-follow, com
+  limite de 256 KiB, denylist e validação de UTF-8. Parser e caminhada da árvore têm limites de tempo,
+  nós e diagnósticos. O resultado contém idioma, tipo da raiz, estado de sintaxe e posições em bytes;
+  não contém source snippets, compilação, execução ou validação semântica.
+- `tree-sitter` e gramáticas Rust/TypeScript ficam em `carapana-tools`, pinados por versão exata e
+  lockfile; todas as dependências adicionadas são MIT. A escolha evita colocar parsers/gramáticas no
+  core e permite carga estritamente sob demanda.
+- Sintaxe inválida é um resultado diagnosticável, não falha de parsing; timeout, UTF-8 inválido,
+  extensão não suportada, grammar incompatível e falha de leitura são erros separados. Nenhum conteúdo
+  é enviado ao provider. Reavaliar a lista inicial quando outro formato passar a ser necessário e
+  antes de integrar o resultado a um contexto remoto.
+
+## PD-26 — Prévia de diff textual sem edição
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementada como função em memória; não lê, escreve ou aplica arquivos.
+
+- `carapana-tools` recebe dois textos já disponíveis ao chamador e produz uma prévia unified diff
+  limitada; entradas de até 256 KiB cada, orçamento de 250 ms e saída de até 1 MiB. Usa `similar`
+  pinado no manifesto/lockfile (Apache-2.0), com possível aproximação pelo prazo.
+- Controles de terminal e controles bidirecionais são substituídos para evitar spoofing de terminal.
+  A saída é somente para exibição e pode não preservar bytes ou ser aplicável como patch. Chamadores
+  devem tratar entradas/saídas como não confiáveis e aplicar as regras de segredos antes de exibir ou
+  compartilhar; nenhum texto é enviado ou persistido por esta função.
+- Separar a prévia da escrita evita que gerar um diff cause efeitos colaterais. Escrita atômica,
+  checkpoint, proteção contra mudança concorrente e approval seguem pendentes; não inferir autorização
+  de alteração a partir desta função.
+
+## PD-27 — Travessia de workspace relativa a descritores
+
+**Data:** 16 de outubro de 2026
+
+**Status:** primitive implementada isoladamente; gate geral e wiring de runtime continuam pendentes.
+
+- A listagem em `carapana-tools` não deve usar um walker que reabre caminhos ambientais. O crate
+  mantém a política de recursão, ignore, exclusões e limites; `carapana-storage` fornece somente a
+  primitive de enumeração direta, abrindo cada componente com `openat` + `O_NOFOLLOW` e enumerando
+  com `rustix::fs::Dir`/`statat(..., SYMLINK_NOFOLLOW)`.
+- Cada diretório precisa corresponder à identidade capturada quando foi descoberto. A primitive
+  aplica limite sobre todas as entradas examinadas (inclusive nomes protegidos e outros filesystems),
+  não retorna nomes protegidos, identifica symlinks sem segui-los e ignora entradas de outro filesystem.
+  Compara metadados da cadeia do workspace até o diretório antes/depois, além de reabrir o caminho
+  relativo para verificar a identidade. Mudanças/substituições observadas falham fechadas; ancestrais
+  externos ao workspace não participam da comparação para que atividade alheia (por exemplo, em `/tmp`)
+  não invalide a leitura. Leituras de arquivos continuam passando pela API segura de storage.
+- A escolha reaproveita `rustix` já usado pelo storage, sem `unsafe` e sem nova dependência. Manter
+  a semântica de ignore no crate de tools evita transferir política/indexação para storage; substituir
+  `WalkBuilder` é necessário porque ele não fornece a garantia descriptor-relative requerida.
+- A API continua read-only e isolada. A abertura relativa a descritores e a revalidação reduzem a
+  janela de substituição/escape e falham fechadas em mudanças observadas; não são lock do filesystem nem
+  prova contra toda mutação concorrente. Isso não constitui o gate completo: detecção de segredos no
+  conteúdo, autorizações, sandbox, escrita, processos e aprovação seguem independentes e bloqueiam
+  runtime wiring.

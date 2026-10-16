@@ -16,7 +16,10 @@ pub use user_database::{
     UserDatabaseError, open_user_database, user_data_directory, user_database_path,
 };
 pub use workspace::{
-    MAX_WORKSPACE_FILE_HASH_BYTES, WorkspaceFileMetadata, WorkspaceFileMetadataError,
+    MAX_WORKSPACE_DIRECTORY_READ_ENTRIES, MAX_WORKSPACE_FILE_HASH_BYTES,
+    MAX_WORKSPACE_FILE_READ_BYTES, WorkspaceDirectoryEntry, WorkspaceDirectoryEntryKind,
+    WorkspaceDirectoryIdentity, WorkspaceDirectoryListing, WorkspaceDirectoryReadError,
+    WorkspaceFileMetadata, WorkspaceFileMetadataError, WorkspaceFileReadError,
     WorkspaceFileValidation, WorkspaceFileValidationStatus, WorkspaceMetadata,
     WorkspaceMetadataError, WorkspaceValidationReport,
 };
