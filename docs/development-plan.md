@@ -3677,15 +3677,40 @@ Implementar:
 - reconnect;
 - model switching.
 
-Caso o delegated ChatGPT-plan integration dependa de habilitação externa ainda não concedida:
-
-- mock permanece para testes;
-- OpenAI API pode ser adapter temporário de desenvolvimento;
-- não criar workaround não oficial.
+O primeiro provider é exclusivamente SIWC oficial para contas elegíveis. Se o grant não permitir
+uso do plano, manter o login com status de inferência desabilitada e solicitar escolha explícita;
+não exigir API paga nem criar workaround não oficial.
 
 Comprovar auth/inferência/capacidades na conta ChatGPT autorizada, sem tools executáveis
 nesta fase. Implementar modelos/variantes sem fallback silencioso, confirmação ao trocar
-provider e espera/retries/cota conforme PD-10. API paga não vira requisito do produto.
+provider e tratamento explícito de cotas conforme PD-10. Não repetir inferência automaticamente.
+API paga não vira requisito do produto.
+
+### Progresso do Delivery 3 — 13 de outubro de 2026
+
+- `carapana-core::provider` contém catálogo puro de provider/modelo/variante, capabilities
+  tipadas e resolução exata sem fallback. A fatia não adiciona adapter, autenticação, rede,
+  inferência ou execução de tools; decisão em PD-20.
+- O contrato mock-only usa `futures-core::Stream`, eventos/errors tipados e cancelamento
+  cooperativo runtime-independent. Não escolhe executor, não faz retries/reconnect e não conecta
+  o stream ao daemon/session engine; pedidos de tool são somente dados. Decisão em PD-21.
+- Em 13/10/2026 o operador autorizou explicitamente implementar SIWC oficial, autenticação,
+  inferência real e envio de contexto ao provider, sem estender a autorização a tools/tarefas,
+  subprocessos, autonomia, deploy ou merge.
+- Implementada a primeira fatia SIWC em `carapana-openai`: dynamic registration oficial, callback
+  loopback/PKCE, state/nonce, validação de ID token/JWKS, checagem de escopo/identidade e persistência
+  privada owner-only fora do SQLite. Refresh token é rotacionado sob lock interprocesso por conta.
+- Implementado catálogo de modelos visíveis e adapter Responses SSE com `store:false`, streaming,
+  cancelamento, limites de tamanho, erros/cotas tipados e sem retries. Tool calls inesperadas continuam
+  dados inertes e não são enviadas na requisição.
+- CLI agora oferece `chatgpt sign-in`, `accounts`, `models` e `smoke-test`; o último exige
+  `--confirm-remote` e envia somente um prompt sintético fixo, sem sessão/workspace. Nenhum login,
+  chamada real de inferência ou envio de contexto foi executado durante os testes locais.
+- Testes usam o cliente de produção contra servidor HTTP falso local; incluem callbacks loopback,
+  rotação de refresh, segurança de arquivos, erros, streaming e cancelamento. O teste real na conta
+  autorizada ainda é um gate manual e não deve entrar nos testes comuns.
+- Tools executáveis, execução de tarefas/processos e autonomia seguem desativadas. A fila e o daemon
+  continuam desconectados do adapter nesta entrega.
 
 ---
 
@@ -3720,6 +3745,57 @@ Antecipar a camada mínima de segurança, sem esperar o Delivery 6 completo:
 Controles devem ser comprovados antes de ativar a capacidade correspondente. Se não
 for possível garantir proteção, bloquear a capacidade. Essas implementações são após
 aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
+
+### Progresso do Delivery 4 — 16 de outubro de 2026
+
+- A primitive `WorkspaceMetadata::read_file` em `carapana-storage::workspace` valida a identidade do
+  workspace e abre arquivos Unix sem seguir symlinks. Aceita caminho relativo, arquivo regular e até
+  256 KiB; `read_file_with_limit` permite um limite menor. Bloqueia nomes sensíveis conhecidos e
+  falha em plataformas sem enforcement comprovado. Decisão PD-23.
+- O novo crate `carapana-tools` lista arquivos relativos com `.gitignore`, `.ignore` e
+  `.carapanaignore`, sem regras globais/ancestrais, sem symlinks ou travessia de filesystem, com
+  exclusões padrão e limites de profundidade/entradas. Busca literal reutiliza o leitor seguro e limita
+  arquivos, bytes e resultados. Decisão PD-24.
+- Ignore files são lidos por `WorkspaceMetadata::read_file` e compilados de memória; a camada do
+  parser não reabre caminhos. A enumeração agora é relativa a descritores em `carapana-storage`: abre
+  cada componente com `openat`/`O_NOFOLLOW`, enumera via `rustix::fs::Dir` e classifica entradas com
+  `statat(..., SYMLINK_NOFOLLOW)`. `carapana-tools` conserva a política de recursão/ignore; cada
+  diretório usa a identidade descoberta, limite de entradas e revalidação da cadeia interna do
+  workspace antes/depois. O orçamento conta também entradas omitidas por sensibilidade ou filesystem.
+  Mudanças/substituições observadas falham fechadas; entradas protegidas e filesystems diferentes não
+  são retornados. Decisão PD-27.
+- Parser Tree-sitter sob demanda suporta Rust, TypeScript e TSX, conforme escolha do operador. Lê
+  somente um arquivo explícito pelo leitor seguro; limita source, tempo, nós e diagnósticos e não
+  devolve trechos de código. JavaScript/Svelte continuam fora do escopo inicial. Decisão PD-25.
+- Prévia unified diff em memória compara dois textos fornecidos pelo chamador, sem ler nem alterar
+  arquivos; limita entradas/tempo/saída e substitui controles de terminal/bidi. É somente visualização,
+  não produz patch aplicável. Decisão PD-26.
+- PD-28 adiciona snapshot efêmero não serializável e `WorkspaceMetadata::replace_file_atomically`, só
+  para arquivos existentes de até 256 KiB vinculados ao snapshot. Usa temp owner-only, revalida bytes,
+  metadata, extended attributes e cadeia de diretórios, rejeita symlinks, hard links, atributos
+  estendidos, arquivos protegidos e metadata não preservável; o rename é relativo a descritores e o
+  resultado pós-rename pode ser incerto. O arquivo passa brevemente por mode owner-only após o rename;
+  crash/falha de cleanup pode deixar um temporário oculto sem recovery automático. Isso detecta conflitos
+  observados, mas não é compare-and-swap: uma escrita/remoção externa na janela final ainda pode vencer;
+  não habilita edição concorrente nem runtime.
+- Testes de filesystem real cobrem leitura e limites, traversal, symlinks em arquivo/diretório,
+  ignore files symlink/oversized, diretório não regular, nomes protegidos, regras ignore e precedência,
+  enumeração relativa a descritores, substituição de diretório antes e durante a revalidação e limites
+  de entradas; também cobrem matchers compilados de bytes lidos sem reabertura, exclusão de regras
+  ancestrais, profundidade, arquivos ignorados, busca literal/case ASCII, binários, UTF-8 inválido,
+  orçamento aplicado no limite de leitura, snippets sem controles de terminal e parser real de
+  Rust/TypeScript/TSX com erros de sintaxe, posições, limites e ausência de source no resultado. A
+  escrita tem regressões para substituição/mode, conflito e destino removido, symlink/substituição de
+  diretório, workspace errado, limite de bytes, hard links e arquivos com extended attributes.
+- As APIs continuam desconectadas do provider, `ToolCallRequested`, daemon, CLI/TUI, sessão e fila;
+  nenhum conteúdo foi enviado. Ainda faltam diff ligado a arquivos/edições, Git/worktree, artifacts,
+  execução e prova do gate de segurança. O diff atual é apenas prévia em memória. A denylist de nomes
+  não detecta segredos em conteúdo; a escrita não coordena processos externos, e traversal/writes não
+  devem ser ligados em runtime antes das revisões e gates próprios.
+- Delivery 4 permanece incompleto. A implementação descriptor-relative continua isolada e não está
+  ligada a runtime; ainda exige revisão/gates próprios e não equivale a proteção de conteúdo secreto,
+  autorização, sandbox ou controle de execução. Não inferir autorização ou segurança a partir dessas
+  primitives; cada capacidade seguinte exige enforcement e testes próprios antes de qualquer wiring.
 
 ---
 

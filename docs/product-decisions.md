@@ -130,7 +130,35 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
 - Não repetir automaticamente push/deploy/operação com resultado incerto; verificar antes.
 - Retomada revalida permissões e arquivos. Após espera longa, invalidar leituras antigas,
   reler arquivos afetados, conferir diff e adaptar o plano.
-- Conflitos com alterações do operador exigem confirmação, inclusive em Yolo.
+- Verificação metadata-only (identidade, tipo, permissões, tamanho e timestamps) não prova
+  que o conteúdo permaneceu igual e nunca libera retomada sozinha. O fingerprint limitado abaixo
+  é a única leitura/hash aprovada nesta fatia; expansão exige decisão própria.
+- Fingerprint de conteúdo aprovado somente para paths relativos explicitamente selecionados:
+  SHA-256 local de arquivos regulares até 1 MiB. Negar nomes iniciados por `.env`, componentes
+  `.ssh`/`.aws`, nomes contendo `secret`/`credential` (sem diferenciar maiúsculas) e extensões
+  `.pem`/`.key`. Não recursar, seguir symlinks, persistir conteúdo ou enviar bytes para IPC,
+  logs, modelo ou memória; persistir apenas o digest. Fingerprint não autoriza retomada sozinho.
+- Revisão read-only revalida somente os paths explicitamente registrados e reporta cada um
+  independentemente (`unchanged`, `changed`, `missing`, `unreadable`, `unsafe`, `too large`,
+  `unavailable`). Falha da raiz é global/fail-closed. A revisão não altera sessão, fila ou
+  workspace e não limpa a exigência de revalidação. Pelo socket Unix privado do mesmo usuário,
+  é permitido expor somente path relativo + status ao CLI/TUI; nunca conteúdo, digest, metadata
+  stat ou path absoluto. A visualização não confirma conflitos nem libera retomada.
+- Exceção limitada à criação explícita de uma sessão: a raiz absoluta do workspace pode ser
+  enviada como input pelo socket Unix privado. O daemon não a devolve em respostas nem a registra
+  em logs/erros. Essa exceção não altera o contrato de revisão, que continua expondo somente
+  paths relativos e status.
+- Política v1 de retomada após recovery: exigir revisão read-only fresca e confirmação humana
+  explícita de retomada, inclusive quando todos os paths reportam `unchanged`; metadata e
+  fingerprints, isoladamente, nunca autorizam retomada. `changed`, `missing` e `too_large`
+  exigem reconhecimento explícito por path. `unsafe`, `unreadable`, `unavailable` e qualquer
+  mudança na identidade da raiz bloqueiam retomada até serem resolvidos e revisados novamente.
+  O reconhecimento fica vinculado à identidade da raiz e às evidências locais disponíveis
+  (metadata stat e digest somente quando já autorizado). Qualquer mudança detectável após o
+  reconhecimento invalida a autorização e mantém a sessão pausada; metadata stat-only não
+  detecta alteração de conteúdo que preserve todos os metadados. Nunca retomar
+  automaticamente nem permitir bypass por Yolo. Conflitos com alterações do operador exigem
+  confirmação, inclusive em Yolo.
 - `Parar` interrompe o agente, cancela comandos e encerra processos temporários iniciados
   para o trabalho, com supervisão e encerramento seguro (dev server, API local, serviço de teste).
 - Não encerrar serviços anteriores. Processos marcados pelo operador como `Manter rodando`
@@ -186,6 +214,12 @@ conveniência não substitui essa comprovação.
 Pasta-limite é o diretório de abertura, não a raiz Git. Abrir em `repo/backend` não
 libera ações destrutivas automaticamente em `repo/frontend`. Mostrar o limite;
 ampliá-lo exige escolha explícita do operador.
+
+Para recovery, persistir a identidade da pasta-limite como caminho absoluto e o par
+device/inode observado no filesystem. Não canonicalizar nem seguir symlinks ao capturar
+ou revalidar essa identidade. Se o caminho deixar de existir, contiver symlink ou apontar
+para outra identidade, manter a sessão pausada. Esse registro é metadado, não autorização;
+não habilita retomada nem amplia permissões.
 
 ### Worktrees e alterações anteriores
 
@@ -409,3 +443,286 @@ não autorizam antecipar runtime ao Delivery 0.
 
 No Delivery 0, evidências são de interação com mocks. Enforcement, integrações,
 performance e execução só são declarados validados com testes reais na etapa posterior.
+
+## PD-18 — Hibernação base e limite da supervisão de processos
+
+- Na fundação atual, hibernação é uma transição explícita do operador e altera somente o
+  estado persistido. Só pode ocorrer para sessão pausada, sem mensagem ativa e sem recovery
+  pendente; fila, seleções e histórico são preservados.
+- Acordar uma sessão hibernada sempre volta a `paused`. Nunca inicia mensagens da fila.
+- Essa transição não promete liberar working set, caches ou processos: a fundação atual não
+  possui esses recursos de runtime. Hibernação automática/reclaim só será implementada com
+  sinais de idle/pressão medidos e cleanup comprovado.
+- Supervisão efetiva só pode afetar processos criados e identificados pelo Carapanã; processos
+  anteriores ou marcados `Manter rodando` não são encerrados. A autorização específica de
+  12 de outubro de 2026 cobre somente a primitive definida em PD-19; não habilita, por si,
+  provider, tools, execução de tarefas ou autonomia. Contratos/estado inertes não implicam
+  capacidade operacional.
+
+## PD-19 — Supervisor local de processos próprios
+
+**Data:** 12 de outubro de 2026
+
+**Status:** aprovado para a fundação da Delivery 2; provider, tools e execução de tarefas seguem
+desativados.
+
+- O supervisor é Unix-only nesta entrega e permanece fora dos contratos IPC, CLI e TUI. Ele é
+  uma primitive interna para código futuro explicitamente autorizado; enfileirar/retomar mensagem
+  não chama o supervisor.
+- A API interna permite criar, listar, parar e reiniciar somente identificadores próprios; restart
+  encerra o grupo anterior antes de tentar iniciar a nova especificação no mesmo owner session.
+- A façade do `DaemonService` exige que a sessão proprietária exista no SQLite e que stop/restart
+  usem a mesma sessão registrada no processo. Esses métodos seguem indisponíveis no IPC.
+- Executar um binário absoluto já existente com argv separado, sem shell, sem herdar ambiente e
+  com stdin/stdout/stderr em `/dev/null`. Limitar quantidade/tamanho de args, caminho e processos
+  gerenciados; não registrar executable, args, cwd ou payload de controle.
+- Um modo privado do próprio binário Carapanã atua como guardian de cada processo e líder do
+  process group dedicado; o executável gerenciado herda esse grupo. O guardian recebe comandos em
+  pipes privados e, em stop, SIGINT/SIGTERM ou EOF do daemon, sinaliza o grupo com SIGTERM, aguarda
+  800 ms e então SIGKILL (incluindo a si próprio). Permanecer vivo como âncora durante a limpeza
+  impede reutilização do PGID enquanto ele envia sinais. O daemon aguarda os guardians por até 3 s.
+  Nunca procurar/alvejar processos por nome, workspace ou PID externo.
+- `KeepRunning` é uma política explícita de detach: shutdown da sessão/daemon ou saída natural do
+  líder não sinaliza o grupo. Uma parada direta e explícita de um identificador ainda controlado
+  pode encerrá-lo. Processos preservados não são re-adotados depois. Um gerenciador externo que
+  sinalize todos os processos de um cgroup ainda pode afetá-los; a política só controla sinais
+  enviados pelo supervisor Carapanã.
+- Os processos são identificados somente pela resposta do guardian recém-iniciado e pela relação
+  viva de pipes/handles: PID do executável e PGID/ PID do guardian são distintos. Não se restaura
+  identidade a partir de PIDs persistidos; após detach ou perda do guardian, o processo não é
+  re-adotado nem sinalizado pelo número antigo.
+- Trade-off: um guardian extra por processo consome recursos, mas o EOF permite cleanup depois de
+  crash do daemon, ao contrário de `Child` direto; um supervisor central seria mais econômico,
+  porém teria ownership e reconexão mais complexos. Process groups não contêm descendentes que
+  deliberadamente façam detach/setsid, nem sobrevivem a SIGKILL do guardian, encerramento forçado
+  do host ou falha da máquina; esses limites não são anunciados como garantias.
+
+## PD-20 — Catálogo puro de capacidades de provider
+
+- A primeira fatia do Delivery 3 mantém o catálogo de provider/modelo/variante como dados puros
+  em `carapana-core`, separado de transporte, autenticação, persistência e IPC. O protocolo atual
+  continua carregando os identificadores capturados como strings.
+- A resolução valida a seleção exata e retorna capabilities declaradas para aquela variante;
+  provider/modelo/variante ausentes ou incompatíveis falham explicitamente, sem fallback.
+- Capabilities são metadados, não autorização: `tool_calling` não habilita tool executável.
+  Esta fatia usa somente catálogos de teste; não realiza auth, chamadas de rede ou inferência.
+- Adapter ChatGPT real, uso de credenciais, inferência e prova na conta autorizada continuam
+  bloqueados até autorização específica e comprovação conforme PD-02/PD-17.
+
+## PD-21 — Contrato assíncrono de streaming de provider
+
+**Data:** 12 de outubro de 2026
+
+**Status:** aprovado para contrato e testes mock-only; não habilita integração real.
+
+- `carapana-core` define request, eventos e errors tipados em torno de `futures-core::Stream`.
+  O core não escolhe nem depende de executor async; adapters futuros fornecem a stream.
+- Cancelamento é um token compartilhável e independente de runtime. Adapters devem observar
+  seu future de cancelamento e encerrar o transporte/stream; o consumidor pode também descartar
+  a stream. A interface não promete retry, reconnect ou cancelamento de trabalho remoto que o
+  adapter não consiga interromper.
+- Mensagens e seleção resolvida são passadas ao adapter somente por um futuro chamador, que deve
+  aplicar a confirmação de compartilhamento PD-10 antes de enviar conteúdo remoto. Esta decisão
+  não adiciona wiring de execução.
+- Texto e pedidos de tool são eventos de dados não confiáveis. `ToolCallRequested` não executa
+  tool nem concede autorização; tools continuam fora desta fase. Errors tipados preservam
+  rate-limit e `retry_after`, mas esta camada não repete automaticamente.
+- Preferido sobre callback síncrono para manter consumers não bloqueantes e adapters de rede
+  assíncronos sem impor runtime ao core. Reavaliar somente se o runtime/adapters aprovados exigirem
+  outra política de cancelamento.
+
+## PD-22 — Integração oficial SIWC fora do core
+
+**Data:** 13 de outubro de 2026
+
+**Status:** aprovado para o Delivery 3, com autorização explícita do operador.
+
+- O provider ChatGPT real fica em um crate de integração separado (`carapana-openai`); `carapana-core`
+  permanece sem transporte, OAuth, runtime ou dependência de API externa.
+- Usar exclusivamente o fluxo open-source oficial Sign in with ChatGPT: dynamic client registration,
+  authorization code + PKCE, callback loopback em `127.0.0.1` com `/auth/callback`, validação de
+  state/nonce e ID token por JWKS, audience/issuer/expiry, e uso somente quando o token conceder
+  `chatgpt.tokens.use.direct`. Não reaproveitar credenciais Codex, endpoint privado ou API key paga.
+- Tokens ficam fora do SQLite de sessões, em arquivos separados dentro do diretório privado do
+  usuário (`0700` no diretório, `0600` no arquivo), escritos atomicamente; não registrar nem incluir
+  credenciais em erros, logs, prompts, contexto ou commits. Esta proteção de filesystem não é
+  criptografia em repouso e deve ser informada como limitação.
+- Reautorizar uma conta reutiliza o client ID e `ext_agent_host_id` da conta, valida a identidade
+  novamente e usa `id_token_hint`/`login_hint` apenas no authorize URL; pedir consentimento novamente
+  (`prompt=consent`) exige uma escolha explícita do operador. Refresh usa o client ID emitido,
+  `resource=https://api.openai.com/v1`, mantém o grant, grava o refresh-token rotacionado e é
+  serializado por conta entre processos. Em erro terminal de refresh, limpar o refresh token inválido,
+  conservar o mapeamento da conta e exigir novo sign-in; erros transitórios preservam as credenciais.
+- Descoberta de modelos usa o catálogo da conta (`GET /v1/models`, somente itens `visibility=list`).
+  Inferência usa apenas `POST /v1/responses`, `store:false`, `stream:true`, sem redirecionamentos;
+  só `response.completed` confirma sucesso. O stream observa cancelamento e não reenvia inferência
+  automaticamente. `retry_after`, status, códigos, parâmetro, request ID e a forma do erro remoto são
+  preservados sem expor corpo bruto.
+- O primeiro smoke test real usa apenas um prompt fixo sintético, sem contexto de sessão/workspace.
+  A CLI exige `--confirm-remote` antes de enviar esse prompt. O envio de contexto real depende de
+  consentimento explícito por provider conforme PD-10. O login oficial e a autorização de escopos no
+  navegador não conectam a fila nem iniciam execução.
+- Nenhuma tool será enviada ou executada nesta fase. `ToolCallRequested` permanece saída inerte; não
+  ligar provider ao daemon, fila, tarefas, subprocessos ou modo autônomo.
+- Testes usam cliente de produção contra servidor HTTP local falso; testes normais nunca acessam
+  OpenAI nem usam tokens reais. Reavaliar armazenamento se o produto passar a exigir proteção contra
+  leitura por outros processos do mesmo usuário ou multiusuário no mesmo host.
+
+## PD-23 — Primitive de leitura limitada do workspace
+
+**Data:** 14 de outubro de 2026
+
+**Status:** aplicada à primitive local isolada; não habilita tools nem envio de conteúdo.
+
+- `carapana-storage::WorkspaceMetadata::read_file` reutiliza a identidade do workspace e a abertura
+  Unix com `openat`/`O_NOFOLLOW` já usada pelas observações de recovery, evitando uma segunda
+  implementação de resolução de caminhos. A escolha mantém validação e leitura presas à identidade
+  capturada; não significa que o crate esteja autorizado a persistir ou compartilhar o conteúdo.
+- A operação aceita somente caminho relativo dentro do workspace, arquivo regular e no máximo
+  256 KiB. Rejeita symlinks em qualquer componente, caminhos protegidos conhecidos (incluindo env,
+  credenciais/configurações, chaves privadas e estado Terraform), troca de identidade/metadados durante
+  a leitura e qualquer plataforma sem a primitiva comprovada. Arquivos são retornados como bytes ao
+  chamador local; `read_file_with_limit` permite ao chamador impor um limite menor, nunca maior que
+  256 KiB. Não há conversão, filtragem de saída ou detecção de segredos no conteúdo.
+- A lista de nomes protegidos é defesa conservadora, não classificador completo de segredos. A seleção
+  do workspace e o limite de caminho não substituem autorização por ação, revisão de conteúdo, sandbox,
+  filtragem de outputs nem consentimento de compartilhamento com provider.
+- A primitive não é ligada ao provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. Não há
+  listagem/recursão, busca, escrita, shell ou execução de processos. Esses recursos exigem slices e
+  evidências próprias; capacidade do provider continua sendo dado inerte conforme PD-20/PD-21.
+- Trade-off: manter a operação junto das primitivas de identidade/recovery evita duplicação de uma
+  fronteira sensível e permite testes diretos contra filesystem real. A API não é uma aprovação de
+  separar ou ativar o futuro executor de tools; a arquitetura poderá extrair um crate coeso quando
+  existirem contratos e capacidades além desta leitura isolada.
+
+## PD-24 — Inspeção local isolada em `carapana-tools`
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementada como API local não conectada; não ativa execução nem compartilhamento remoto.
+
+- A listagem e a busca pertencem ao novo crate `carapana-tools`; `carapana-storage` continua dono da
+  identidade persistida do workspace e da abertura/leitura segura. A extração foi feita quando a
+  capacidade deixou de ser uma única primitive. Nenhum dos crates chama provider, daemon, CLI/TUI,
+  fila ou executor.
+- Os arquivos de regras são lidos por `WorkspaceMetadata::read_file` (abertura Unix sem-follow,
+  caminho confinado e limite de bytes) e compilados em memória; o parser não reabre paths. A leitura
+  protege a configuração contra symlink/TOCTOU. O walker de diretórios, porém, não é descritor-relativo
+  e ainda exige revisão contra troca concorrente de paths antes de qualquer runtime wiring.
+- A listagem usa `ignore` com versão exata e lockfile para semântica conhecida. `.ignore` tem
+  precedência sobre `.gitignore`; `.carapanaignore` tem precedência sobre ambas. Configuração global e
+  regras ancestrais são desativadas para tornar o resultado local ao workspace. Links simbólicos e outros
+  filesystems não são percorridos; `.git`, `node_modules`, `target`, `dist`, `build`, `.cache` e
+  `vendor` são excluídos por padrão. Profundidade e quantidade de entradas/arquivos são limitadas.
+- Busca é literal e somente leitura, limitada a 512 arquivos, 8 MiB lidos e 200 linhas de resultado;
+  `read_file_with_limit` aplica o orçamento restante durante cada leitura, além do teto de 256 KiB
+  por arquivo e das proteções de `WorkspaceMetadata::read_file`. Busca sem distinção
+  de caixa ignora caixa ASCII. Snippets substituem controles de terminal e formatação bidirecional,
+  mas ainda são dados não confiáveis e podem conter segredos em arquivos com nomes não reconhecidos;
+  consumidores devem escapar caminhos antes de renderizá-los.
+- Preferido sobre manter traversal em `carapana-storage`, pois storage não deve possuir indexação ou
+  comportamento de ferramentas; também preferido sobre implementar padrões ignore manualmente, para
+  não divergir da semântica convencional. A dependência `ignore` usa a licença MIT disponível no
+  pacote dual MIT/Unlicense e é fixada no manifesto e no lockfile.
+- Listagem/busca não são approvals e não implicam envio ao modelo. Qualquer wiring futuro exige
+  contratos de autorização/compartilhamento e prova do gate de segurança de Delivery 4, incluindo
+  traversal relativo a descritores em ambientes adversariais; a API permanece isolada enquanto essa
+  prova não existir.
+
+## PD-25 — Parser Tree-sitter inicial e sob demanda
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementado no `carapana-tools`; parser local não conectado a runtime, provider ou UI.
+
+- Conforme escolha explícita do operador, a primeira seleção suporta Rust (`.rs`), TypeScript
+  (`.ts`, `.mts`, `.cts`) e TSX (`.tsx`). Arquivos JavaScript e Svelte não são inferidos como TSX nem
+  processados por fallback; gramáticas adicionais exigem uma fatia posterior.
+- O parser só executa para um caminho explícito e usa o leitor de workspace confinado/sem-follow, com
+  limite de 256 KiB, denylist e validação de UTF-8. Parser e caminhada da árvore têm limites de tempo,
+  nós e diagnósticos. O resultado contém idioma, tipo da raiz, estado de sintaxe e posições em bytes;
+  não contém source snippets, compilação, execução ou validação semântica.
+- `tree-sitter` e gramáticas Rust/TypeScript ficam em `carapana-tools`, pinados por versão exata e
+  lockfile; todas as dependências adicionadas são MIT. A escolha evita colocar parsers/gramáticas no
+  core e permite carga estritamente sob demanda.
+- Sintaxe inválida é um resultado diagnosticável, não falha de parsing; timeout, UTF-8 inválido,
+  extensão não suportada, grammar incompatível e falha de leitura são erros separados. Nenhum conteúdo
+  é enviado ao provider. Reavaliar a lista inicial quando outro formato passar a ser necessário e
+  antes de integrar o resultado a um contexto remoto.
+
+## PD-26 — Prévia de diff textual sem edição
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementada como função em memória; não lê, escreve ou aplica arquivos.
+
+- `carapana-tools` recebe dois textos já disponíveis ao chamador e produz uma prévia unified diff
+  limitada; entradas de até 256 KiB cada, orçamento de 250 ms e saída de até 1 MiB. Usa `similar`
+  pinado no manifesto/lockfile (Apache-2.0), com possível aproximação pelo prazo.
+- Controles de terminal e controles bidirecionais são substituídos para evitar spoofing de terminal.
+  A saída é somente para exibição e pode não preservar bytes ou ser aplicável como patch. Chamadores
+  devem tratar entradas/saídas como não confiáveis e aplicar as regras de segredos antes de exibir ou
+  compartilhar; nenhum texto é enviado ou persistido por esta função.
+- Separar a prévia da escrita evita que gerar um diff cause efeitos colaterais. Escrita atômica,
+  checkpoint, proteção contra mudança concorrente e approval seguem pendentes; não inferir autorização
+  de alteração a partir desta função.
+
+## PD-27 — Travessia de workspace relativa a descritores
+
+**Data:** 16 de outubro de 2026
+
+**Status:** primitive implementada isoladamente; gate geral e wiring de runtime continuam pendentes.
+
+- A listagem em `carapana-tools` não deve usar um walker que reabre caminhos ambientais. O crate
+  mantém a política de recursão, ignore, exclusões e limites; `carapana-storage` fornece somente a
+  primitive de enumeração direta, abrindo cada componente com `openat` + `O_NOFOLLOW` e enumerando
+  com `rustix::fs::Dir`/`statat(..., SYMLINK_NOFOLLOW)`.
+- Cada diretório precisa corresponder à identidade capturada quando foi descoberto. A primitive
+  aplica limite sobre todas as entradas examinadas (inclusive nomes protegidos e outros filesystems),
+  não retorna nomes protegidos, identifica symlinks sem segui-los e ignora entradas de outro filesystem.
+  Compara metadados da cadeia do workspace até o diretório antes/depois, além de reabrir o caminho
+  relativo para verificar a identidade. Mudanças/substituições observadas falham fechadas; ancestrais
+  externos ao workspace não participam da comparação para que atividade alheia (por exemplo, em `/tmp`)
+  não invalide a leitura. Leituras de arquivos continuam passando pela API segura de storage.
+- A escolha reaproveita `rustix` já usado pelo storage, sem `unsafe` e sem nova dependência. Manter
+  a semântica de ignore no crate de tools evita transferir política/indexação para storage; substituir
+  `WalkBuilder` é necessário porque ele não fornece a garantia descriptor-relative requerida.
+- A API continua read-only e isolada. A abertura relativa a descritores e a revalidação reduzem a
+  janela de substituição/escape e falham fechadas em mudanças observadas; não são lock do filesystem nem
+  prova contra toda mutação concorrente. Isso não constitui o gate completo: detecção de segredos no
+  conteúdo, autorizações, sandbox, escrita, processos e aprovação seguem independentes e bloqueiam
+  runtime wiring.
+
+## PD-28 — Snapshot e substituição atômica isolada
+
+**Data:** 16 de outubro de 2026
+
+**Status:** aplicada como primitive local isolada; não habilita edição pelo agente nem wiring de runtime.
+
+- `carapana-storage` oferece snapshot em memória de um arquivo regular, não sensível, com limite de
+  256 KiB, conteúdo e metadata capturados pelo mesmo descritor; o snapshot não é serializável nem
+  imprimível por `Debug`. A escrita recebe esse snapshot, não um path/conteúdo-base livre, vinculando a
+  proposta ao workspace, path, identidade, bytes e atributos observados.
+- A primeira operação substitui somente arquivo existente. Rejeita criação, remoção, symlinks,
+  componentes inválidos, outro filesystem, hard links, arquivos grandes, qualquer extended attribute
+  ou metadata/ownership que não possa preservar. Exige conteúdo novo de até 256 KiB. Cria temporário
+  exclusivo e owner-only no mesmo diretório aberto relativamente a descritores; conteúdo e mode básico
+  são sincronizados, o snapshot é revalidado e o rename é atômico. O arquivo substituto fica owner-only
+  durante o rename e só depois recebe o mode básico anterior, para não expor o temporário com permissões
+  mais amplas. Erro de sync, ajuste de mode ou validação após rename é reportado como resultado incerto;
+  o chamador não deve repetir cegamente. Erro normal tenta remover o temporário; crash ou falha nessa
+  limpeza pode deixar um arquivo oculto owner-only, sem rotina automática de recovery nesta fatia.
+- A comparação exata de conteúdo/metadata/atributos imediatamente antes do rename detecta conflitos
+  observados, mas não é compare-and-swap do filesystem nem lock contra editores externos. Uma mutação
+  adversarial entre a última validação e o rename ainda pode vencer a corrida; se outro processo
+  remover o destino exatamente nessa janela, o rename pode recriá-lo. Escritores Carapanã e externos
+  precisam de coordenação/approval próprios antes de qualquer ativação.
+- O temporário preserva owner/group somente quando a identidade herdada ao criá-lo coincide com o
+  arquivo observado; atributos estendidos e arquivos com hard links são recusados. Filesystem ACLs
+  não representadas por extended attributes, flags de filesystem, durabilidade e o breve intervalo
+  owner-only após rename ainda precisam de prova por OS/filesystem. Qualquer falha antes do rename
+  falha fechada; após rename o resultado pode ser incerto.
+- O primitive permanece local, bloqueado para paths protegidos e sem integração com `carapana-tools`,
+  diff, approvals, provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. A prévia de diff
+  continua visualização em memória. Wiring exige fechar limitações de concorrência/metadata e todos os
+  gates independentes de conteúdo/segredos, autorização, sandbox e teste.

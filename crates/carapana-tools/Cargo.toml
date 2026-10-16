@@ -1,0 +1,18 @@
+[package]
+name = "carapana-tools"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Bounded, read-only workspace discovery and search primitives for Carapanã"
+
+[lints]
+workspace = true
+
+[dependencies]
+carapana-storage = { path = "../carapana-storage" }
+ignore = "=0.4.33"
+similar = "=3.2.0"
+tree-sitter = "=0.27.0"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
