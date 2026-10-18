@@ -2024,7 +2024,10 @@ mod tests {
         );
         assert_eq!(session.queued_messages, queued_messages);
         let reviewed_session = registry.get("session-2").unwrap();
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(reviewed_session.event_sequence, 6);
+        #[cfg(target_os = "macos")]
+        assert_eq!(reviewed_session.event_sequence, 5);
         assert!(!reviewed_session.recovery_needs_revalidation);
 
         shutdown.store(true, Ordering::Release);

@@ -3816,6 +3816,15 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   `WorkspaceFileSnapshot`, carrega o path pelo mesmo objeto emprestado, rejeita conteúdo-base que não
   seja UTF-8 e reutiliza os limites/sanitização do preview existente. Testes cobrem associação ao path,
   ausência de escrita e recusa de UTF-8 inválido. A capacidade segue local e sem aplicação ou wiring.
+- O parser puro de `git status --porcelain=v2 -z --branch` preserva paths como bytes e modela status de
+  index/worktree, rename/copy, conflitos e metadados básicos de branch. Limita stdout recebido a 4 MiB,
+  20.000 entradas e 16 KiB por path; não invoca Git, toca filesystem, autoriza caminhos ou faz wiring.
+  Decisão PD-30; executar o CLI e conectar a saída continuam dependentes dos gates de processo e segurança.
+- O run 39136617620 passou Rust/Linux. macOS/Rust encontrou uma expectativa de teste desatualizada: a
+  observação de filename não UTF-8 é omitida nessa plataforma, reduzindo `event_sequence` esperado de 6
+  para 5; a asserção agora é específica por plataforma e o teste passou localmente em Linux. Web/Linux
+  repetiu as quatro falhas conhecidas de screenshot (`home-light/dark`, desktop/mobile), sem alteração de
+  baseline.
 - Adicionada a seção 185 ao final do plano para avaliar Brotli e Zstandard em tráfego local/remoto,
   com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
   licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.

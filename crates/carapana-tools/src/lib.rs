@@ -4,11 +4,17 @@
 //! runner. Returned file contents remain untrusted and may contain secrets despite filename filters.
 
 mod diff;
+mod git;
 mod parser;
 
 pub use diff::{
     MAX_DIFF_OUTPUT_BYTES, MAX_DIFF_SOURCE_BYTES, MAX_DIFF_TIME_MILLISECONDS, SnapshotDiffPreview,
     TextDiffPreview, TextDiffPreviewError, create_snapshot_diff_preview, create_text_diff_preview,
+};
+pub use git::{
+    GitBranchStatus, GitStatusCode, GitStatusEntry, GitStatusEntryKind, GitStatusParseError,
+    GitStatusSnapshot, MAX_GIT_STATUS_ENTRIES, MAX_GIT_STATUS_OUTPUT_BYTES,
+    MAX_GIT_STATUS_PATH_BYTES, parse_git_status_v2,
 };
 pub use parser::{
     MAX_PARSE_DIAGNOSTICS, MAX_PARSE_NODES, MAX_PARSE_TIME_MILLISECONDS, ParsedWorkspaceFile,

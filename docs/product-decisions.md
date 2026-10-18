@@ -749,3 +749,25 @@ desativados.
   associasse a prévia ao arquivo errado. O empréstimo evita clonar os até 256 KiB do snapshot e torna a
   dependência temporal explícita; edições concorrentes, autorização e aplicação permanecem fora desta
   decisão.
+
+## PD-30 — Parser limitado de status Git, sem subprocesso
+
+**Data:** 18 de outubro de 2026
+
+**Status:** implementado como parser puro em `carapana-tools`; não executa Git nem acessa o workspace.
+
+- A integração futura usa `git status --porcelain=v2 -z --branch` como fonte de verdade, em vez de
+  reconstruir status a partir da index/worktree. Esta fatia somente interpreta bytes já fornecidos pelo
+  chamador; não inicia subprocessos, lê configuração Git, acessa credenciais/rede ou modifica arquivos.
+- A saída preserva caminhos brutos (incluindo bytes não UTF-8), status separados de index/worktree,
+  caminhos de origem/destino em rename/copy e metadados básicos de branch. Paths são dados não confiáveis:
+  não autorizam acesso, não devem ser unidos a uma raiz sem confinamento separado e precisam de escaping
+  antes de exibição.
+- O parser limita o buffer a 4 MiB, 20.000 entradas e 16 KiB por caminho; registros incompletos,
+  duplicação de metadados conhecidos e records desconhecidos falham fechados. Headers desconhecidos são
+  ignorados para compatibilidade futura. O executor que vier a coletar stdout ainda deverá interromper
+  a captura no limite, pois validar o tamanho após receber um buffer não limita a memória do processo pai.
+- Preferido sobre parsing de nomes delimitados por newline/saída humana, que não preservaria paths com
+  newlines ou bytes inválidos, e sobre implementar semântica Git própria. Esta primitive não é approval,
+  detecção de branch protegida, sincronização de worktrees nem autorização de commit/push; execução de
+  Git e wiring continuam bloqueados pelos gates de processo, segredos, autorização e concorrência.
