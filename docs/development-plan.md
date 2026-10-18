@@ -3838,10 +3838,18 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   `sleep_binary()`, já localizado de forma portátil pelo mesmo arquivo de teste; o caso agora descreve
   explicitamente um executável que não implementa o protocolo do host e passou localmente. Revalidar no
   próximo CI.
+- O run 39139075795 confirmou no macOS a correção anterior: passaram 13 testes unitários da CLI, 17
+  `daemon_process` e 12 testes `process_supervisor` (2 fixtures ignorados). Falhou o smoke test PTY porque
+  o `tempfile.TemporaryDirectory` do script Python usou o padrão macOS `/var/folders`; o validator recusou
+  corretamente o componente symlink `/var`. O script agora aloca sob `/tmp` canonicalizado com prefixo
+  curto e verifica o limite de socket `<104` bytes em Darwin. O teste PTY focado passou localmente; aguardar
+  CI para confirmar no macOS.
 - Web/Linux repetiu as quatro falhas conhecidas de screenshot (`home-light/dark`, desktop/mobile) no run
   39137785894; sem evidência nova de causa, baseline não foi alterado.
 - Web/Linux repetiu as mesmas quatro falhas de screenshots no run 39138681004; sem evidência nova, baseline
   continua intocado.
+- Web/Linux repetiu as quatro falhas de screenshots no run 39139075795; sem evidência nova, baseline segue
+  intocado.
 - Adicionada a seção 185 ao final do plano para avaliar Brotli e Zstandard em tráfego local/remoto,
   com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
   licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.

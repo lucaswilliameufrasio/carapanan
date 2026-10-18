@@ -19,7 +19,8 @@ from pathlib import Path
 
 binary = os.path.abspath(sys.argv[1])
 database_path = Path(sys.argv[2])
-with tempfile.TemporaryDirectory(prefix="carapana-tui-pty-") as temporary:
+temporary_root = os.path.realpath("/tmp")
+with tempfile.TemporaryDirectory(prefix="c-", dir=temporary_root) as temporary:
     root = Path(temporary)
     home = root / "home"
     data_home = root / "xdg"
@@ -38,6 +39,10 @@ with tempfile.TemporaryDirectory(prefix="carapana-tui-pty-") as temporary:
         TERM="xterm-256color",
     )
 
+    socket_path = carapana_data / "daemon.sock"
+    if sys.platform == "darwin" and len(os.fsencode(socket_path)) >= 104:
+        raise AssertionError("daemon socket path exceeds the Darwin SUN_LEN limit")
+
     daemon = subprocess.Popen(
         [binary, "daemon"],
         env=environment,
@@ -46,7 +51,6 @@ with tempfile.TemporaryDirectory(prefix="carapana-tui-pty-") as temporary:
     )
     tui = None
     master = slave = None
-    socket_path = carapana_data / "daemon.sock"
     try:
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and not socket_path.exists():
