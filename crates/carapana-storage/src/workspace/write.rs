@@ -862,10 +862,12 @@ mod tests {
                 .unwrap_or_default()
                 .as_nanos();
             let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "carapana-workspace-write-{}-{timestamp}-{sequence}",
-                std::process::id()
-            ));
+            let path = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!(
+                    "carapana-workspace-write-{}-{timestamp}-{sequence}",
+                    std::process::id()
+                ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }

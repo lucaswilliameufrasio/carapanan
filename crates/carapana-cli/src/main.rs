@@ -822,7 +822,9 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir()
+            // macOS exposes its temp directory through /var, a symlink rejected by path checks.
+            let path = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
                 .join(format!("carapana-cli-{}-{nonce}-{id}", std::process::id()));
             fs::create_dir(&path).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -867,6 +869,13 @@ mod tests {
         ] {
             assert_eq!(review_status_label(status), expected);
         }
+    }
+
+    #[test]
+    fn should_create_private_test_directories_from_a_canonical_temp_path() {
+        let directory = PrivateDir::new();
+
+        assert_eq!(fs::canonicalize(&directory.0).unwrap(), directory.0);
     }
 
     #[test]

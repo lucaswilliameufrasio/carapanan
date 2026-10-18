@@ -279,10 +279,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "carapana-tools-parser-{}-{nonce}-{id}",
-                std::process::id()
-            ));
+            let path = std::fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!(
+                    "carapana-tools-parser-{}-{nonce}-{id}",
+                    std::process::id()
+                ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }

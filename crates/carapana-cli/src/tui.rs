@@ -1454,7 +1454,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
     use std::{
         fs,
-        os::unix::{ffi::OsStringExt, fs::PermissionsExt},
+        os::unix::fs::PermissionsExt,
         path::PathBuf,
         sync::{
             Arc,
@@ -1463,6 +1463,9 @@ mod tests {
         thread,
         time::SystemTime,
     };
+
+    #[cfg(not(target_os = "macos"))]
+    use std::os::unix::ffi::OsStringExt;
 
     struct PrivateDir(PathBuf);
 
@@ -1491,10 +1494,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "carapana-cli-tui-{}-{nonce}-{id}",
-                std::process::id()
-            ));
+            let path = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!(
+                    "carapana-cli-tui-{}-{nonce}-{id}",
+                    std::process::id()
+                ));
             fs::create_dir(&path).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
             Self(path)
@@ -1802,15 +1807,19 @@ mod tests {
             b"stat-only control file",
         )
         .unwrap();
-        let non_utf8_name = std::ffi::OsString::from_vec(vec![
-            b'n', 0xff, b'a', b'm', b'e', b'.', b't', b'x', b't',
-        ]);
-        let non_utf8_path = PathBuf::from(&non_utf8_name);
-        fs::write(
-            workspace_path.join(&non_utf8_path),
-            b"synthetic TUI filename contents",
-        )
-        .unwrap();
+        #[cfg(not(target_os = "macos"))]
+        let non_utf8_path = {
+            let name = std::ffi::OsString::from_vec(vec![
+                b'n', 0xff, b'a', b'm', b'e', b'.', b't', b'x', b't',
+            ]);
+            let path = PathBuf::from(&name);
+            fs::write(
+                workspace_path.join(&path),
+                b"synthetic TUI filename contents",
+            )
+            .unwrap();
+            path
+        };
         registry
             .create_with_workspace(
                 "session-2",
@@ -1830,6 +1839,7 @@ mod tests {
         registry
             .observe_workspace_file("session-2", "escape\u{1b}[31m.txt", 12)
             .unwrap();
+        #[cfg(not(target_os = "macos"))]
         registry
             .observe_workspace_file("session-2", &non_utf8_path, 13)
             .unwrap();
@@ -1863,7 +1873,10 @@ mod tests {
             .workspace_review
             .as_ref()
             .unwrap_or_else(|| panic!("workspace review missing: {:?}", app.error));
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(review.files.len(), 5);
+        #[cfg(target_os = "macos")]
+        assert_eq!(review.files.len(), 4);
         assert_eq!(review.files[0].path, "review.txt");
         assert_eq!(review.files[0].status, WorkspaceFileReviewStatus::Changed);
         assert_eq!(review.files[1].path, "line\nbreak.txt");
@@ -1872,9 +1885,13 @@ mod tests {
         assert_eq!(review.files[2].status, WorkspaceFileReviewStatus::Unchanged);
         assert_eq!(review.files[3].path, "escape\u{1b}[31m.txt");
         assert_eq!(review.files[3].status, WorkspaceFileReviewStatus::Unchanged);
-        let safe_non_utf8_name = non_utf8_name.to_string_lossy();
-        assert_eq!(review.files[4].path, safe_non_utf8_name);
-        assert_eq!(review.files[4].status, WorkspaceFileReviewStatus::Unchanged);
+        #[cfg(not(target_os = "macos"))]
+        let safe_non_utf8_name = {
+            let safe_name = non_utf8_path.to_string_lossy();
+            assert_eq!(review.files[4].path, safe_name);
+            assert_eq!(review.files[4].status, WorkspaceFileReviewStatus::Unchanged);
+            safe_name
+        };
         let detail = super::detail_lines(
             app.detail.as_ref().unwrap(),
             app.workspace_review.as_ref(),
@@ -1908,10 +1925,11 @@ mod tests {
                 .iter()
                 .any(|line| line.to_string().contains("escape\\u{1b}[31m.txt"))
         );
+        #[cfg(not(target_os = "macos"))]
         assert!(
             detail
                 .iter()
-                .any(|line| line.to_string().contains(safe_non_utf8_name.as_ref()))
+                .any(|line| { line.to_string().contains(safe_non_utf8_name.as_ref()) })
         );
         assert!(
             detail
@@ -1948,6 +1966,7 @@ mod tests {
         assert!(rendered.contains("line\\nbreak.txt"));
         assert!(rendered.contains("tab\\tbreak.txt"));
         assert!(rendered.contains("escape\\u{1b}[31m.txt"));
+        #[cfg(not(target_os = "macos"))]
         assert!(rendered.contains(safe_non_utf8_name.as_ref()));
         assert!(rendered.contains("changed"));
         assert!(rendered.contains("unchanged"));

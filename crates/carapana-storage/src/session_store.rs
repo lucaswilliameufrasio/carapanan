@@ -1485,10 +1485,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "carapana-session-workspace-{}-{nonce}-{id}",
-                std::process::id()
-            ));
+            let path = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!(
+                    "carapana-session-workspace-{}-{nonce}-{id}",
+                    std::process::id()
+                ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -1498,10 +1500,12 @@ mod tests {
         static NEXT_TEST_DATABASE_ID: AtomicU64 = AtomicU64::new(0);
         loop {
             let id = NEXT_TEST_DATABASE_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "carapana-session-{}-{nonce}-{id}.sqlite3",
-                std::process::id()
-            ));
+            let path = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!(
+                    "carapana-session-{}-{nonce}-{id}.sqlite3",
+                    std::process::id()
+                ));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => {
                     drop(file);

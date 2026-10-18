@@ -580,7 +580,8 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir()
+            let path = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
                 .join(format!("carapana-ipc-{}-{nonce}-{id}", std::process::id()));
             fs::create_dir(&path).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();

@@ -499,7 +499,11 @@ mod tests {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            Self(std::env::temp_dir().join(format!("carapana-storage-{nonce}.sqlite3")))
+            Self(
+                std::fs::canonicalize(std::env::temp_dir())
+                    .unwrap()
+                    .join(format!("carapana-storage-{nonce}.sqlite3")),
+            )
         }
     }
 

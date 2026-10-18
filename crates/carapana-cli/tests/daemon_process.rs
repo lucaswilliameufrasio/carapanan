@@ -5,13 +5,16 @@ use carapana_storage::{SessionRegistry, StoredSessionStatus, WorkspaceMetadata};
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::{ffi::OsStringExt, fs::PermissionsExt},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant, SystemTime},
 };
+
+#[cfg(not(target_os = "macos"))]
+use std::os::unix::ffi::OsStringExt;
 
 struct DaemonGuard(std::process::Child);
 
@@ -48,10 +51,12 @@ impl PrivateDir {
             .unwrap()
             .as_nanos();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "carapana-cli-process-{}-{nonce}-{id}",
-            std::process::id()
-        ));
+        let path = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "carapana-cli-process-{}-{nonce}-{id}",
+                std::process::id()
+            ));
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
@@ -1368,6 +1373,7 @@ fn should_keep_sensitive_root_workspace_review_relative_and_read_only_over_daemo
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
 fn should_report_a_missing_non_utf8_workspace_name_as_relative_valid_json() {
     let directory = PrivateDir::new();
     let data_directory = user_data_directory(&directory);
