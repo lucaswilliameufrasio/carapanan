@@ -3831,8 +3831,17 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   `/tmp`, porém o prefixo comprido do fixture mais os componentes de HOME ultrapassavam o limite. A
   regressão simulada de caminho Darwin falhou antes da correção e passou após encurtar só o nome da pasta
   temporária; os 18 testes `daemon_process` passaram localmente. Aguardando CI após o próximo push.
+- No run 39138681004, a correção de caminho confirmou no macOS: os 13 testes unitários da CLI e os 17
+  `daemon_process`, incluindo a asserção de `SUN_LEN`, passaram. O job falhou depois em
+  `process_supervisor::should_reject_an_unavailable_private_host_without_leaking_specification`: o
+  fixture hardcoded `/bin/true` não pôde ser canonicalizado (HostUnavailable) no runner macOS. Trocado por
+  `sleep_binary()`, já localizado de forma portátil pelo mesmo arquivo de teste; o caso agora descreve
+  explicitamente um executável que não implementa o protocolo do host e passou localmente. Revalidar no
+  próximo CI.
 - Web/Linux repetiu as quatro falhas conhecidas de screenshot (`home-light/dark`, desktop/mobile) no run
   39137785894; sem evidência nova de causa, baseline não foi alterado.
+- Web/Linux repetiu as mesmas quatro falhas de screenshots no run 39138681004; sem evidência nova, baseline
+  continua intocado.
 - Adicionada a seção 185 ao final do plano para avaliar Brotli e Zstandard em tráfego local/remoto,
   com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
   licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.

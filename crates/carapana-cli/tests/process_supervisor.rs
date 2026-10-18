@@ -458,8 +458,8 @@ fn should_reject_process_ownership_for_a_missing_session() {
 }
 
 #[test]
-fn should_reject_an_unavailable_private_host_without_leaking_specification() {
-    let mut supervisor = ProcessSupervisor::new(Path::new("/bin/true")).unwrap();
+fn should_reject_a_non_host_executable_without_leaking_specification() {
+    let mut supervisor = ProcessSupervisor::new(sleep_binary()).unwrap();
     let error = supervisor
         .spawn_owned_process(
             "test-session",
