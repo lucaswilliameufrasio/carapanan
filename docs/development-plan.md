@@ -3857,6 +3857,10 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   intocado.
 - Web/Linux repetiu as mesmas quatro screenshots no run 39139671799; sem causa nova, baseline segue
   intocado. Rust/Linux passou; Rust/macOS falhou apenas no `tcgetattr` pós-saída do TUI.
+- Run 39140326674, no commit 0dfb674, passou `make verify-rust` em Ubuntu e macOS; o smoke PTY e as
+  correções de socket/processo ficaram verdes nas duas plataformas. Web/Linux falhou somente nas quatro
+  golden screenshots já conhecidas (`home-light/dark`, desktop/mobile). Nenhuma baseline foi alterada;
+  PR #25 segue draft/open, sem merge/deploy.
 - Adicionada a seção 185 ao final do plano para avaliar Brotli e Zstandard em tráfego local/remoto,
   com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
   licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.
