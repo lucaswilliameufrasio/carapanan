@@ -865,6 +865,14 @@ fn read_workspace_directory_no_follow(
             AtFlags::SYMLINK_NOFOLLOW,
         )
         .map_err(|error| map_directory_open_error(error, &child_relative_path))?;
+        #[cfg(target_os = "macos")]
+        let device = u64::try_from(stat.st_dev).map_err(|_| {
+            WorkspaceDirectoryReadError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "filesystem returned an invalid device identifier",
+            ))
+        })?;
+        #[cfg(not(target_os = "macos"))]
         let device = stat.st_dev;
         if device != workspace.device {
             continue;

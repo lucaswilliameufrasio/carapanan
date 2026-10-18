@@ -362,7 +362,7 @@ fn replace_file_atomically_unix(
 
     if rustix::fs::fchmod(
         temporary_file.as_fd(),
-        rustix::fs::Mode::from_bits_truncate(original_mode & 0o777),
+        mode_from_permission_bits(original_mode & 0o777),
     )
     .is_err()
         || temporary_file.sync_all().is_err()
@@ -378,6 +378,29 @@ fn replace_file_atomically_unix(
     }
 
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn mode_from_permission_bits(bits: u32) -> rustix::fs::Mode {
+    use rustix::fs::Mode;
+
+    let mut mode = Mode::empty();
+    for (permission_bit, mode_flag) in [
+        (0o400, Mode::RUSR),
+        (0o200, Mode::WUSR),
+        (0o100, Mode::XUSR),
+        (0o040, Mode::RGRP),
+        (0o020, Mode::WGRP),
+        (0o010, Mode::XGRP),
+        (0o004, Mode::ROTH),
+        (0o002, Mode::WOTH),
+        (0o001, Mode::XOTH),
+    ] {
+        if bits & permission_bit != 0 {
+            mode |= mode_flag;
+        }
+    }
+    mode
 }
 
 impl WorkspaceMetadata {
@@ -818,7 +841,9 @@ impl FileSignature {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_WORKSPACE_FILE_WRITE_BYTES, WorkspaceFileWriteError};
+    use super::{
+        MAX_WORKSPACE_FILE_WRITE_BYTES, WorkspaceFileWriteError, mode_from_permission_bits,
+    };
     use crate::WorkspaceMetadata;
     use std::{
         fs,
@@ -850,6 +875,22 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_map_each_basic_permission_bit_to_portable_rustix_flags() {
+        let mode = mode_from_permission_bits(0o777);
+        let expected = rustix::fs::Mode::RUSR
+            | rustix::fs::Mode::WUSR
+            | rustix::fs::Mode::XUSR
+            | rustix::fs::Mode::RGRP
+            | rustix::fs::Mode::WGRP
+            | rustix::fs::Mode::XGRP
+            | rustix::fs::Mode::ROTH
+            | rustix::fs::Mode::WOTH
+            | rustix::fs::Mode::XOTH;
+        assert_eq!(mode, expected);
     }
 
     #[cfg(unix)]
