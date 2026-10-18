@@ -822,8 +822,8 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            // macOS exposes its temp directory through /var, a symlink rejected by path checks.
-            let path = fs::canonicalize(std::env::temp_dir())
+            // `/tmp` is short on macOS, where Unix socket paths have a small `SUN_LEN` limit.
+            let path = fs::canonicalize("/tmp")
                 .unwrap()
                 .join(format!("carapana-cli-{}-{nonce}-{id}", std::process::id()));
             fs::create_dir(&path).unwrap();
@@ -872,10 +872,12 @@ mod tests {
     }
 
     #[test]
-    fn should_create_private_test_directories_from_a_canonical_temp_path() {
+    fn should_create_short_canonical_socket_paths_for_tests() {
         let directory = PrivateDir::new();
+        let socket_path = directory.0.join("daemon.sock");
 
         assert_eq!(fs::canonicalize(&directory.0).unwrap(), directory.0);
+        assert!(socket_path.to_str().unwrap().len() < 104);
     }
 
     #[test]

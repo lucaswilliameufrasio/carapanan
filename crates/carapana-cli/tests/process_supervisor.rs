@@ -35,12 +35,10 @@ impl PrivateDir {
             .unwrap()
             .as_nanos();
         let id = NEXT_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
-        let path = fs::canonicalize(std::env::temp_dir())
-            .unwrap()
-            .join(format!(
-                "carapana-process-test-{}-{nonce}-{id}",
-                std::process::id()
-            ));
+        let path = fs::canonicalize("/tmp").unwrap().join(format!(
+            "carapana-process-test-{}-{nonce}-{id}",
+            std::process::id()
+        ));
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
