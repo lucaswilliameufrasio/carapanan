@@ -17,6 +17,20 @@ import time
 from pathlib import Path
 
 
+if len(sys.argv) == 4 and sys.argv[1] == "__pty_session__":
+    terminal_fd = int(sys.argv[2])
+    tui_result = subprocess.run(
+        [sys.argv[3], "tui"],
+        stdin=terminal_fd,
+        stdout=terminal_fd,
+        stderr=terminal_fd,
+        check=False,
+    )
+    print(tui_result.returncode, flush=True)
+    sys.stdin.readline()
+    raise SystemExit(tui_result.returncode)
+
+
 binary = os.path.abspath(sys.argv[1])
 database_path = Path(sys.argv[2])
 temporary_root = os.path.realpath("/tmp")
@@ -49,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix="c-", dir=temporary_root) as temporary:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
-    tui = None
+    terminal_session = None
     master = slave = None
     try:
         deadline = time.monotonic() + 5
@@ -69,12 +83,19 @@ with tempfile.TemporaryDirectory(prefix="c-", dir=temporary_root) as temporary:
         def acquire_controlling_terminal():
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
-        tui = subprocess.Popen(
-            [binary, "tui"],
+        terminal_session = subprocess.Popen(
+            [
+                sys.executable,
+                os.path.abspath(__file__),
+                "__pty_session__",
+                str(slave),
+                binary,
+            ],
             env=environment,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
             start_new_session=True,
             pass_fds=(slave,),
             preexec_fn=acquire_controlling_terminal,
@@ -89,8 +110,16 @@ with tempfile.TemporaryDirectory(prefix="c-", dir=temporary_root) as temporary:
         def read_until(predicate, timeout=5):
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
-                ready, _, _ = select.select([master], [], [], 0.05)
-                if ready:
+                descriptors = [master]
+                if terminal_session.stdout is not None:
+                    descriptors.append(terminal_session.stdout)
+                ready, _, _ = select.select(descriptors, [], [], 0.05)
+                if terminal_session.stdout in ready:
+                    exit_status = terminal_session.stdout.readline().strip()
+                    raise AssertionError(
+                        f"TUI exited before rendering the expected state: {exit_status}"
+                    )
+                if master in ready:
                     try:
                         chunk = os.read(master, 65536)
                     except OSError:
@@ -100,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix="c-", dir=temporary_root) as temporary:
                     output.extend(chunk)
                     if predicate(output):
                         return
-                if tui.poll() is not None:
+                if terminal_session.poll() is not None:
                     break
             raise AssertionError(
                 f"TUI did not render expected state; output={bytes(output)!r}"
@@ -116,18 +145,30 @@ with tempfile.TemporaryDirectory(prefix="c-", dir=temporary_root) as temporary:
         os.write(master, b"q")
 
         deadline = time.monotonic() + 5
-        while tui.poll() is None and time.monotonic() < deadline:
-            ready, _, _ = select.select([master], [], [], 0.05)
-            if ready:
+        assert terminal_session.stdout is not None
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select(
+                [master, terminal_session.stdout], [], [], 0.05
+            )
+            if terminal_session.stdout in ready:
+                break
+            if master in ready:
                 try:
                     output.extend(os.read(master, 65536))
                 except OSError:
                     pass
-        assert tui.poll() is not None, "q did not exit the TUI"
-        assert tui.returncode == 0, f"TUI exited with {tui.returncode}"
+        assert terminal_session.stdout in ready, "q did not exit the TUI"
+        tui_returncode = terminal_session.stdout.readline().strip()
+        assert tui_returncode == "0", f"TUI exited with {tui_returncode}"
+        assert terminal_session.poll() is None, "PTY session ended before terminal inspection"
         assert b"\x1b[?1049h" in output, "TUI did not enter alternate screen"
         assert b"\x1b[?1049l" in output, "TUI did not restore alternate screen"
         assert termios.tcgetattr(slave) == original_terminal, "TUI did not restore terminal modes"
+        assert terminal_session.stdin is not None
+        terminal_session.stdin.write("\n")
+        terminal_session.stdin.flush()
+        terminal_session.wait(timeout=5)
+        assert terminal_session.returncode == 0, "PTY session helper did not exit cleanly"
 
         sessions = subprocess.run(
             [binary, "sessions", "--json"],
@@ -156,9 +197,12 @@ with tempfile.TemporaryDirectory(prefix="c-", dir=temporary_root) as temporary:
         assert daemon.poll() is None, "read-only TUI unexpectedly stopped the daemon"
         print("real PTY startup, read-only view, q exit and terminal restoration: passed")
     finally:
-        if tui is not None and tui.poll() is None:
-            tui.terminate()
-            tui.wait(timeout=5)
+        if terminal_session is not None and terminal_session.poll() is None:
+            try:
+                os.killpg(terminal_session.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            terminal_session.wait(timeout=5)
         if daemon.poll() is None:
             daemon.send_signal(signal.SIGTERM)
             daemon.wait(timeout=5)

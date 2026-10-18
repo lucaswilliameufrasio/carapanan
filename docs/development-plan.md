@@ -3844,12 +3844,19 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   corretamente o componente symlink `/var`. O script agora aloca sob `/tmp` canonicalizado com prefixo
   curto e verifica o limite de socket `<104` bytes em Darwin. O teste PTY focado passou localmente; aguardar
   CI para confirmar no macOS.
+- O run 39139671799 confirmou `/tmp` e o socket no macOS: passaram 13 testes unitários da CLI,
+  17 `daemon_process` e 12 `process_supervisor` (2 fixtures ignorados), mas `tui_process` recebeu `EIO`
+  em `tcgetattr(slave)` depois que o TUI (líder da sessão PTY) saiu. A leitura não chegou a comparar flags,
+  então não demonstra falha de restauração. O smoke agora mantém um supervisor/líder de sessão vivo enquanto
+  verifica as flags restauradas, e só então o libera; o teste focado passou no Linux. Revalidar no macOS.
 - Web/Linux repetiu as quatro falhas conhecidas de screenshot (`home-light/dark`, desktop/mobile) no run
   39137785894; sem evidência nova de causa, baseline não foi alterado.
 - Web/Linux repetiu as mesmas quatro falhas de screenshots no run 39138681004; sem evidência nova, baseline
   continua intocado.
 - Web/Linux repetiu as quatro falhas de screenshots no run 39139075795; sem evidência nova, baseline segue
   intocado.
+- Web/Linux repetiu as mesmas quatro screenshots no run 39139671799; sem causa nova, baseline segue
+  intocado. Rust/Linux passou; Rust/macOS falhou apenas no `tcgetattr` pós-saída do TUI.
 - Adicionada a seção 185 ao final do plano para avaliar Brotli e Zstandard em tráfego local/remoto,
   com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
   licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.
