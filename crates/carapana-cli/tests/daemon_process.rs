@@ -51,10 +51,9 @@ impl PrivateDir {
             .unwrap()
             .as_nanos();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = fs::canonicalize("/tmp").unwrap().join(format!(
-            "carapana-cli-process-{}-{nonce}-{id}",
-            std::process::id()
-        ));
+        let path = fs::canonicalize("/tmp")
+            .unwrap()
+            .join(format!("c{}-{nonce}-{id}", std::process::id()));
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
@@ -136,6 +135,16 @@ fn wait_for_socket(child: &mut std::process::Child, socket: &Path) {
         thread::sleep(Duration::from_millis(20));
     }
     panic!("daemon did not bind socket before timeout");
+}
+
+#[test]
+fn should_keep_macos_daemon_process_socket_path_below_sun_len() {
+    let directory = PrivateDir::new();
+    let socket_path = directory
+        .0
+        .join("home/Library/Application Support/Carapana/daemon.sock");
+
+    assert!(socket_path.to_str().unwrap().len() < 104);
 }
 
 fn assert_cli_reads_and_stops_daemon(signal: &str) {

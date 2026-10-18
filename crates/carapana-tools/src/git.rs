@@ -26,7 +26,8 @@ pub enum GitStatusEntryKind {
 }
 
 /// Raw Git branch metadata. Values are untrusted bytes and must be escaped before display.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// This type intentionally does not implement `Debug` to avoid accidental path/branch logging.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct GitBranchStatus {
     pub object_id: Option<Vec<u8>>,
     pub head: Option<Vec<u8>>,
@@ -39,7 +40,8 @@ pub struct GitBranchStatus {
 ///
 /// Paths remain raw bytes: callers must not treat them as authorization or join them to a
 /// workspace until a separate confinement check has succeeded.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// This type intentionally does not implement `Debug` to avoid accidental path logging.
+#[derive(Clone, PartialEq, Eq)]
 pub struct GitStatusEntry {
     pub kind: GitStatusEntryKind,
     pub index_status: Option<GitStatusCode>,
@@ -48,7 +50,9 @@ pub struct GitStatusEntry {
     pub original_path: Option<Vec<u8>>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Parsed branch and path status metadata. Intentionally omits `Debug` because its fields can reveal
+/// workspace names and branch identifiers when logged.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct GitStatusSnapshot {
     pub branch: GitBranchStatus,
     pub entries: Vec<GitStatusEntry>,
@@ -362,6 +366,10 @@ mod tests {
         MAX_GIT_STATUS_OUTPUT_BYTES, MAX_GIT_STATUS_PATH_BYTES, parse_git_status_v2,
     };
 
+    fn assert_error<T>(result: Result<T, GitStatusParseError>, expected: GitStatusParseError) {
+        assert!(matches!(result, Err(actual) if actual == expected));
+    }
+
     #[test]
     fn should_parse_branch_status_and_path_records() {
         let output = b"# branch.oid abc123\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -1\0\
@@ -473,34 +481,34 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            assert_eq!(parse_git_status_v2(input), Err(expected));
+            assert_error(parse_git_status_v2(input), expected);
         }
     }
 
     #[test]
     fn should_enforce_output_entry_and_path_limits() {
         let oversized_output = vec![b'x'; MAX_GIT_STATUS_OUTPUT_BYTES + 1];
-        assert_eq!(
+        assert_error(
             parse_git_status_v2(&oversized_output),
-            Err(GitStatusParseError::OutputTooLarge)
+            GitStatusParseError::OutputTooLarge,
         );
 
         let mut too_many_entries = Vec::new();
         for _ in 0..=MAX_GIT_STATUS_ENTRIES {
             too_many_entries.extend_from_slice(b"? x\0");
         }
-        assert_eq!(
+        assert_error(
             parse_git_status_v2(&too_many_entries),
-            Err(GitStatusParseError::TooManyEntries)
+            GitStatusParseError::TooManyEntries,
         );
 
         let mut too_long_path = Vec::with_capacity(MAX_GIT_STATUS_PATH_BYTES + 3);
         too_long_path.extend_from_slice(b"? ");
         too_long_path.resize(MAX_GIT_STATUS_PATH_BYTES + 3, b'x');
         too_long_path.push(0);
-        assert_eq!(
+        assert_error(
             parse_git_status_v2(&too_long_path),
-            Err(GitStatusParseError::PathTooLarge)
+            GitStatusParseError::PathTooLarge,
         );
     }
 }

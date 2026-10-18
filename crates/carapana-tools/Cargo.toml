@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 license = "Apache-2.0"
-description = "Bounded, read-only workspace discovery and search primitives for Carapanã"
+description = "Bounded, read-only workspace and Git metadata inspection primitives for Carapanã"
 
 [lints]
 workspace = true

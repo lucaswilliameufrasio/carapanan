@@ -5,6 +5,7 @@
 
 mod diff;
 mod git;
+mod git_worktree;
 mod parser;
 
 pub use diff::{
@@ -15,6 +16,10 @@ pub use git::{
     GitBranchStatus, GitStatusCode, GitStatusEntry, GitStatusEntryKind, GitStatusParseError,
     GitStatusSnapshot, MAX_GIT_STATUS_ENTRIES, MAX_GIT_STATUS_OUTPUT_BYTES,
     MAX_GIT_STATUS_PATH_BYTES, parse_git_status_v2,
+};
+pub use git_worktree::{
+    GitWorktreeMetadata, GitWorktreeParseError, MAX_GIT_WORKTREE_METADATA_BYTES,
+    MAX_GIT_WORKTREE_OUTPUT_BYTES, MAX_GIT_WORKTREES, parse_git_worktree_list_porcelain,
 };
 pub use parser::{
     MAX_PARSE_DIAGNOSTICS, MAX_PARSE_NODES, MAX_PARSE_TIME_MILLISECONDS, ParsedWorkspaceFile,

@@ -3820,11 +3820,19 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   index/worktree, rename/copy, conflitos e metadados básicos de branch. Limita stdout recebido a 4 MiB,
   20.000 entradas e 16 KiB por path; não invoca Git, toca filesystem, autoriza caminhos ou faz wiring.
   Decisão PD-30; executar o CLI e conectar a saída continuam dependentes dos gates de processo e segurança.
-- O run 39136617620 passou Rust/Linux. macOS/Rust encontrou uma expectativa de teste desatualizada: a
-  observação de filename não UTF-8 é omitida nessa plataforma, reduzindo `event_sequence` esperado de 6
-  para 5; a asserção agora é específica por plataforma e o teste passou localmente em Linux. Web/Linux
-  repetiu as quatro falhas conhecidas de screenshot (`home-light/dark`, desktop/mobile), sem alteração de
-  baseline.
+- O parser puro de `git worktree list --porcelain -z` preserva paths/refs/reasons como bytes e modela
+  HEAD, branch, detached, bare, locked e prunable. Limita saída a 4 MiB, 256 worktrees, 16 KiB por path
+  e 4 KiB por metadado; não invoca Git, acessa paths ou equivale à detecção de sessões concorrentes.
+  Decisão PD-31; listagem operacional e UI de convivência continuam pendentes dos gates.
+- O run 39136617620 passou Rust/Linux e encontrou no macOS uma expectativa de `event_sequence` desatualizada
+  (6 vs. 5 porque o filename não UTF-8 é omitido); a asserção agora é por plataforma. No run seguinte,
+  39137785894, Linux/Rust passou, mas 12 testes `daemon_process` no macOS falharam porque o socket sob
+  `HOME/Library/Application Support/Carapana/daemon.sock` excedia `SUN_LEN`. A raiz temporária estava em
+  `/tmp`, porém o prefixo comprido do fixture mais os componentes de HOME ultrapassavam o limite. A
+  regressão simulada de caminho Darwin falhou antes da correção e passou após encurtar só o nome da pasta
+  temporária; os 18 testes `daemon_process` passaram localmente. Aguardando CI após o próximo push.
+- Web/Linux repetiu as quatro falhas conhecidas de screenshot (`home-light/dark`, desktop/mobile) no run
+  39137785894; sem evidência nova de causa, baseline não foi alterado.
 - Adicionada a seção 185 ao final do plano para avaliar Brotli e Zstandard em tráfego local/remoto,
   com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
   licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.

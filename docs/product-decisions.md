@@ -762,7 +762,8 @@ desativados.
 - A saída preserva caminhos brutos (incluindo bytes não UTF-8), status separados de index/worktree,
   caminhos de origem/destino em rename/copy e metadados básicos de branch. Paths são dados não confiáveis:
   não autorizam acesso, não devem ser unidos a uma raiz sem confinamento separado e precisam de escaping
-  antes de exibição.
+  antes de exibição. Os tipos que carregam caminhos/metadados não implementam `Debug`, evitando logs
+  acidentais de nomes e branches.
 - O parser limita o buffer a 4 MiB, 20.000 entradas e 16 KiB por caminho; registros incompletos,
   duplicação de metadados conhecidos e records desconhecidos falham fechados. Headers desconhecidos são
   ignorados para compatibilidade futura. O executor que vier a coletar stdout ainda deverá interromper
@@ -771,3 +772,22 @@ desativados.
   newlines ou bytes inválidos, e sobre implementar semântica Git própria. Esta primitive não é approval,
   detecção de branch protegida, sincronização de worktrees nem autorização de commit/push; execução de
   Git e wiring continuam bloqueados pelos gates de processo, segredos, autorização e concorrência.
+
+## PD-31 — Parser limitado de metadados de worktrees Git
+
+**Data:** 18 de outubro de 2026
+
+**Status:** implementado como parser puro em `carapana-tools`; não executa Git nem acessa worktree paths.
+
+- A integração futura usará `git worktree list --porcelain -z`; esta fatia só interpreta bytes recebidos,
+  preservando path, HEAD, ref de branch, razões e marcadores detached/bare/locked/prunable. O parser
+  limita stdout a 4 MiB, 256 worktrees, 16 KiB por path e 4 KiB por metadado; aceita OIDs SHA-1/SHA-256,
+  ignora fields desconhecidos e falha em registros conhecidos malformados/duplicados.
+- Caminhos e razões continuam dados não confiáveis: não são canonicalizados, abertos, usados como
+  autorização ou renderizados sem escaping. `locked`/`prunable` são metadados administrativos do Git,
+  não prova de posse do diretório nem sinal de que não exista sessão concorrente. O tipo não implementa
+  `Debug`, para evitar log acidental de caminhos e razões.
+- Preferido sobre parsing de saída humana delimitada por linhas, que não preserva newlines/bytes
+  inválidos. Listar worktrees, detectar sessões Carapanã concorrentes e escolher worktree versus
+  compartilhamento são etapas separadas; qualquer execução de Git/wiring continua bloqueada pelos gates
+  de processo, autorização, segredos, sandbox e concorrência.
