@@ -3797,6 +3797,23 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   autorização, sandbox ou controle de execução. Não inferir autorização ou segurança a partir dessas
   primitives; cada capacidade seguinte exige enforcement e testes próprios antes de qualquer wiring.
 
+### Progresso do Delivery 4 — 18 de outubro de 2026
+
+- O CI macOS revelou fixtures de teste sob `/var` (alias symlinkado de `/private/var`), que os validadores
+  de caminho corretamente recusam, além de testes que tentavam criar filenames com bytes não UTF-8
+  rejeitados pelo filesystem macOS (`EILSEQ`). Canonicalizamos as raízes temporárias somente nos testes
+  e mantivemos a cobertura de filenames não UTF-8 nas plataformas compatíveis; nenhuma proteção de
+  runtime foi afrouxada.
+- `TMPDIR=/var/tmp mise exec -- make verify` passou localmente depois da correção: formatação, lint,
+  check, build, 24 testes Vitest, 64 E2E, Clippy e testes Rust do workspace.
+- O run 39135075699 confirmou Rust/Linux verde; Rust/macOS falhou nos fixtures antes desta correção.
+  Web/Linux continuou falhando nas quatro golden screenshots que também falharam na `main` (`24e1c9c`,
+  run 38352209334). A divergência do renderer continua aberta; não atualizar snapshots sem validar
+  baseline. Reexecutar CI depois do push.
+- Adicionada a seção 185 ao final do plano para avaliar Brotli e Zstandard em tráfego local/remoto,
+  com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
+  licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.
+
 ---
 
 # 159. Delivery 5 — Context Engine
@@ -4359,3 +4376,31 @@ Não implementar daemon "só para ligar a tela".
 Mocks são suficientes.
 
 A primeira entrega existe para impedir exatamente que a engenharia produza um harness tecnicamente sofisticado com uma experiência ruim.
+
+---
+
+# 185. Avaliação de compressão dos dados transportados
+
+Antes de adicionar codecs a qualquer protocolo ou runtime, avaliar o uso de Brotli e Zstandard
+(`zstd`) para tráfego local e remoto, mantendo a ausência de compressão como baseline:
+
+- Cobrir IPC local daemon/CLI/TUI, incluindo frames JSON atualmente limitados a 64 KiB, e separar
+  essa análise de tráfego HTTP remoto do provider e de futuros remote attach/MCP.
+- Para tráfego remoto, verificar somente capacidades documentadas dos endpoints oficiais SIWC e
+  comportamento HTTP de request/response/stream SSE; não introduzir endpoint privado, proxy ou API
+  paga como requisito.
+- Comparar payloads sintéticos representativos — frames pequenos/grandes, envelopes JSON, eventos,
+  snapshots e diffs — medindo bytes transmitidos, taxa de compressão, latência p50/p95, CPU, pico de
+  memória e custo de compressão/decompressão em hardware modesto. Incluir casos em que o codec expande
+  payloads pequenos e fluxos contínuos.
+- Avaliar compatibilidade/negociação por versão e capacidade, limiar para ativar compressão e
+  comportamento com clientes antigos. Limites de tamanho descomprimido, razão de expansão, memória,
+  tempo e cancelamento devem ser independentes do limite do frame comprimido; rejeitar truncamento,
+  conteúdo malformado e decompression bombs sem alocação ilimitada.
+- Revisar riscos de oracle de compressão quando segredos e conteúdo controlável forem combinados,
+  particularmente sobre TLS; não comprimir esse tipo de payload sem análise e mitigação aprovadas.
+  Preservar o tratamento de secrets e a integridade/autenticidade do transporte.
+- Revisar licença, manutenção, compatibilidade Linux/macOS, impacto de dependência/binário e
+  interoperabilidade entre Rust e clientes futuros antes de escolher uma biblioteca.
+- Não escolher nem habilitar codec por antecipação: registrar resultados reprodutíveis e decisão
+  explícita antes de adicionar dependência, alterar o framing/contrato ou ativar compressão em produção.
