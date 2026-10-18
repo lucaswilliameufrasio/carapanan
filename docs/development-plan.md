@@ -3800,16 +3800,22 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 ### Progresso do Delivery 4 — 18 de outubro de 2026
 
 - O CI macOS revelou fixtures de teste sob `/var` (alias symlinkado de `/private/var`), que os validadores
-  de caminho corretamente recusam, além de testes que tentavam criar filenames com bytes não UTF-8
-  rejeitados pelo filesystem macOS (`EILSEQ`). Canonicalizamos as raízes temporárias somente nos testes
-  e mantivemos a cobertura de filenames não UTF-8 nas plataformas compatíveis; nenhuma proteção de
-  runtime foi afrouxada.
+  corretamente recusam, e casos de filenames não UTF-8 que o filesystem macOS rejeita (`EILSEQ`). Após
+  canonicalizar `/var`, um novo run mostrou que o prefixo de temp resultante tornava os caminhos de
+  socket maiores que `SUN_LEN`; os fixtures com socket agora usam `/tmp` canonicalizado e verificam o
+  limite de comprimento. A cobertura de filenames não UTF-8 permanece nas plataformas compatíveis; as
+  proteções de runtime não foram afrouxadas.
 - `TMPDIR=/var/tmp mise exec -- make verify` passou localmente depois da correção: formatação, lint,
   check, build, 24 testes Vitest, 64 E2E, Clippy e testes Rust do workspace.
-- O run 39135075699 confirmou Rust/Linux verde; Rust/macOS falhou nos fixtures antes desta correção.
-  Web/Linux continuou falhando nas quatro golden screenshots que também falharam na `main` (`24e1c9c`,
-  run 38352209334). A divergência do renderer continua aberta; não atualizar snapshots sem validar
-  baseline. Reexecutar CI depois do push.
+- O run 39135075699 confirmou Rust/Linux verde. No run 39135994968, Rust/Linux passou, macOS ainda
+  falhou por caminhos de socket acima de `SUN_LEN` após a canonicalização de `/var`, e Web/Linux
+  continuou falhando nas quatro golden screenshots que também falharam na `main` (`24e1c9c`, run
+  38352209334). A correção atual encurta somente os caminhos dos fixtures; reexecutar CI depois do push.
+  A divergência de screenshot continua como baseline aberto; não atualizar snapshots sem validar.
+- `carapana-tools` agora oferece `create_snapshot_diff_preview`: o diff deriva os bytes-base do
+  `WorkspaceFileSnapshot`, carrega o path pelo mesmo objeto emprestado, rejeita conteúdo-base que não
+  seja UTF-8 e reutiliza os limites/sanitização do preview existente. Testes cobrem associação ao path,
+  ausência de escrita e recusa de UTF-8 inválido. A capacidade segue local e sem aplicação ou wiring.
 - Adicionada a seção 185 ao final do plano para avaliar Brotli e Zstandard em tráfego local/remoto,
   com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
   licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.

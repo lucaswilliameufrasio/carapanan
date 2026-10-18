@@ -726,3 +726,26 @@ desativados.
   diff, approvals, provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. A prévia de diff
   continua visualização em memória. Wiring exige fechar limitações de concorrência/metadata e todos os
   gates independentes de conteúdo/segredos, autorização, sandbox e teste.
+
+## PD-29 — Prévia de diff vinculada a snapshot, sem aplicação
+
+**Data:** 18 de outubro de 2026
+
+**Status:** implementada como primitive isolada em `carapana-tools`; não habilita edição ou runtime.
+
+- A nova prévia recebe uma referência a `WorkspaceFileSnapshot` e texto proposto; não aceita um path
+  nem um texto-base livre, não reabre o workspace e não altera arquivos. A entrada-base vem somente dos
+  bytes limitados e capturados pelo snapshot.
+- O objeto de resposta retém um empréstimo do próprio snapshot e expõe o path relativo por acesso
+  controlado; ele não pode sobreviver ao snapshot ou ser associado a outro arquivo. Não implementa
+  serialização nem autoriza aplicação. A função reutiliza os limites e sanitização da prévia unified
+  diff existente e falha explicitamente se os bytes capturados não forem UTF-8 válido. Tanto o path
+  quanto o diff continuam dados não confiáveis e precisam de escaping apropriado na UI.
+- Mantemos a prévia em memória independente do `replace_file_atomically`: geração de diff não chama
+  escrita, approval, provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. Ausência de
+  detecção de segredos em conteúdo continua sendo limitação; o preview é dado local não confiável e não
+  deve ser compartilhado sem os gates próprios.
+- Preferida sobre receber `before`, `after` e path soltos, pois esse contrato permitiria que o chamador
+  associasse a prévia ao arquivo errado. O empréstimo evita clonar os até 256 KiB do snapshot e torna a
+  dependência temporal explícita; edições concorrentes, autorização e aplicação permanecem fora desta
+  decisão.

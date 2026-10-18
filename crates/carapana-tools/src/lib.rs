@@ -7,8 +7,8 @@ mod diff;
 mod parser;
 
 pub use diff::{
-    MAX_DIFF_OUTPUT_BYTES, MAX_DIFF_SOURCE_BYTES, MAX_DIFF_TIME_MILLISECONDS, TextDiffPreview,
-    TextDiffPreviewError, create_text_diff_preview,
+    MAX_DIFF_OUTPUT_BYTES, MAX_DIFF_SOURCE_BYTES, MAX_DIFF_TIME_MILLISECONDS, SnapshotDiffPreview,
+    TextDiffPreview, TextDiffPreviewError, create_snapshot_diff_preview, create_text_diff_preview,
 };
 pub use parser::{
     MAX_PARSE_DIAGNOSTICS, MAX_PARSE_NODES, MAX_PARSE_TIME_MILLISECONDS, ParsedWorkspaceFile,
