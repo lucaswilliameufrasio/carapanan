@@ -3897,6 +3897,19 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   Testes locais cobrem round-trip, bytes inválidos, stream truncado e limite absoluto de saída, não todos
   os orçamentos adversariais necessários para decoder de produção. Nenhum codec selecionado/habilitado,
   dependência adicionada ou runtime ligado.
+- Depois do run 39327747278, três ciclos de CI no PR #25 revelaram estados seguintes da sequência golden:
+  `home` (39330682251), `approval` (39331491596), `resources` (39331491596) e `providers`
+  (39332307370). As capturas Ubuntu correspondentes foram inspecionadas antes de atualizar apenas os
+  PNGs Ubuntu: commits `c98e848` (home), `dc9e269` (approval) e `138ac08` (resources); o run seguinte
+  também validou `provider-mapped-light` mobile. A alteração Providers atualmente em revisão contém
+  quatro capturas do run 39332307370 (providers claro/escuro desktop, providers escuro mobile e provider
+  customizado claro mobile). Nenhum baseline Linux foi alterado.
+- `TMPDIR=/var/tmp mise exec -- make verify` passou localmente após a atualização das capturas dos
+  estados Providers: formatação, lint, check, build, 24 testes web, 64 E2E, Clippy e suíte Rust completa.
+  O run 39332307370 passou Rust/Ubuntu, mas Web/Linux ainda falhou nos quatro goldens Providers. Rust/macOS
+  teve uma falha em `auth::tests::loopback_callback_rejects_wrong_state_then_accepts_the_active_registration`:
+  reset de conexão no fixture e `CallbackTimeout` após 300 s. Não houve alteração no teste de auth; aguardar
+  nova execução para distinguir intermitência de regressão.
 
 ---
 
