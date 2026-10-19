@@ -1,14 +1,17 @@
 # Avaliação exploratória de compressão — 19 de outubro de 2026
 
-**Status:** medições locais concluídas; compatibilidade remota parcialmente documentada; nenhum codec escolhido ou habilitado.
+**Status:** medições sintéticas one-shot e socket local concluídas; compatibilidade remota parcialmente documentada; nenhum codec escolhido ou habilitado.
 
 ## Escopo e método
 
 - O harness [`prototypes/compression_eval.py`](../prototypes/compression_eval.py) compara ausência de codec, Brotli nos níveis 4/6 e Zstandard nos níveis 1/3. Usa somente cargas sintéticas determinísticas: eventos/envelopes JSON, snapshots, diffs, frames no limite atual de 64 KiB, conteúdo opaco pouco compressível e uma sequência SSE sintética de aproximadamente 256 KiB.
+- O harness complementar [`prototypes/compression_transport_eval.py`](../prototypes/compression_transport_eval.py) mede round-trip em `AF_UNIX SOCK_STREAM socketpair`, com Brotli 4, Zstandard 1 e baseline sem codec. Inclui um frame sintético de 64 KiB e SSE sintético de 256 KiB dividido em 1.292 eventos; encoder e decoder são incrementais e cada evento comprimido é flushado antes do próximo.
 - Não abre arquivos do workspace, não lê credenciais e não faz chamadas de rede ou inferência. As cargas não contêm contexto real.
 - Cada perfil teve 30 aquecimentos e 300 amostras de compressão e descompressão, em três execuções seriais. O JSON com dados por execução, p50/p95, CPU por operação, tamanho e RSS está em [`docs/benchmarks/compression-evaluation-2026-10-19.json`](benchmarks/compression-evaluation-2026-10-19.json).
-- Testes do harness: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest prototypes.test_compression_eval` (3 testes; requer bibliotecas Brotli/Zstandard do sistema).
-- Os bytes medidos são os do corpo codificado, incluindo o framing interno do codec, mas excluem cabeçalhos `Content-Encoding`, prefixos IPC, enquadramento HTTP/TLS e tráfego de socket. Os tempos/CPU incluem o loop Python e a fronteira `ctypes`, não serialização JSON, transporte nem latência de rede. O caso SSE comprime uma sequência agregada em uma chamada _one-shot_; não mede flush, latência do primeiro evento ou streaming real.
+- O socket benchmark teve duas campanhas de aquecimento e três campanhas seriais de dez medições por perfil; a ordem dos perfis roda entre repetições. Inclui CPU das threads de envio/recepção, latência até o primeiro evento SSE completo e round-trip. Dados brutos por medição em [`docs/benchmarks/compression-transport-evaluation-2026-10-19.json`](benchmarks/compression-transport-evaluation-2026-10-19.json).
+- Reprodução do socket benchmark: `PYTHONDONTWRITEBYTECODE=1 python3 prototypes/compression_transport_eval.py --iterations 10 --campaigns 3 > docs/benchmarks/compression-transport-evaluation-2026-10-19.json`.
+- Testes: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest prototypes.test_compression_eval prototypes.test_compression_transport_eval` (8 testes; requer bibliotecas Brotli/Zstandard do sistema).
+- O benchmark one-shot exclui socket e transporte; o socket benchmark inclui `socketpair`, flushes e decoder incremental, mas exclui framing IPC do produto, cabeçalhos `Content-Encoding`, HTTP/TLS e rede remota. Ambos incluem Python/`ctypes`; nenhum resultado representa capacidade de produção.
 
 Ambiente: CachyOS Linux, kernel `7.2.3-1-cachyos`, x86_64, AMD Ryzen 9 7900 (12 núcleos/24 threads), Python 3.14.7, CLI Brotli 1.2.0 e Zstandard 1.5.7. É um host de alto desempenho, não hardware modesto. O pico RSS observado foi 19,8–25,9 MiB por processo Python, incluindo runtime e biblioteca nativa; não isola alocações do codec e não é uma comparação contra processo sem compressão. Nenhuma medição foi feita em macOS.
 
@@ -48,7 +51,22 @@ Microssegundos; valores são a mediana dos três p50/p95 por execução. CPU é 
 | SSE agregado 256 KiB | Zstd 1   |      94,8 / 136,3 |    42,2 / 58,7 |       99,8 / 44,0 | 20,7 MiB |
 | SSE agregado 256 KiB | Zstd 3   |      99,9 / 151,0 |    39,2 / 67,5 |      105,4 / 45,0 | 21,5 MiB |
 
-O caso opaco de 32 B expande 12,5% no Brotli e 28,1% no Zstd, antes de overhead de transporte. Os JSON estruturados comprimiram bastante; conteúdo opaco de 64 KiB caiu cerca de 17,7%, mas demandou mais tempo de descompressão que os casos estruturados. No host medido, Zstd foi mais rápido nos exemplos; o tamanho relativo variou por carga e nível. Isso não estabelece limiar: custos de IPC/rede, negociação, CPU em hardware modesto e dados reais não foram medidos.
+O caso opaco de 32 B expande 12,5% no Brotli e 28,1% no Zstd, antes de overhead de transporte. Os JSON estruturados comprimiram bastante; conteúdo opaco de 64 KiB caiu cerca de 17,7%, mas demandou mais tempo de descompressão que os casos estruturados. No host medido, Zstd foi mais rápido nos exemplos; o tamanho relativo variou por carga e nível. Isso não estabelece limiar: framing IPC real, custos da rede, negociação, CPU em hardware modesto e dados reais não foram medidos.
+
+## Socket local e SSE incremental
+
+Ambiente: o mesmo CachyOS/Linux x86_64 e Ryzen 9 7900 do ensaio anterior, Python 3.14.7, Brotli 1.2.0 e Zstandard 1.5.7. Cada perfil teve duas repetições de aquecimento e 30 medições cronometradas (3 campanhas seriais × 10); ordem rotativa. O receptor lê em blocos de 16 KiB. SSE é produzido sem atraso artificial e o compressor faz flush após cada evento, para expor o custo de preservar baixa latência. A fixture é verificada byte a byte após o round-trip; o decoder de teste limita a saída ao tamanho bruto conhecido da fixture.
+
+| Caso                        | Codec    | Bytes no socket (razão/raw) | Primeiro evento p50/p95 | Round-trip p50/p95 | CPU sender/receiver p50 |
+| --------------------------- | -------- | --------------------------: | ----------------------: | -----------------: | ----------------------: |
+| Frame 64 KiB                | Nenhum   |               65.536 (100%) |                       — |   0,117 / 0,422 ms |        0,018 / 0,066 ms |
+| Frame 64 KiB                | Brotli 4 |               3.128 (4,77%) |                       — |   0,668 / 1,027 ms |        0,413 / 0,182 ms |
+| Frame 64 KiB                | Zstd 1   |               2.441 (3,72%) |                       — |   0,334 / 0,964 ms |        0,129 / 0,164 ms |
+| SSE 256 KiB · 1.292 eventos | Nenhum   |              262.317 (100%) |        0,114 / 0,199 ms |   3,281 / 5,010 ms |        2,595 / 2,681 ms |
+| SSE 256 KiB · 1.292 eventos | Brotli 4 |             35.964 (13,71%) |        0,294 / 0,397 ms | 40,826 / 57,768 ms |      29,980 / 25,600 ms |
+| SSE 256 KiB · 1.292 eventos | Zstd 1   |             28.387 (10,82%) |        0,269 / 0,358 ms | 32,975 / 39,521 ms |      22,814 / 17,038 ms |
+
+Tempos em milissegundos; CPU é p50 do tempo de CPU das threads de envio/recepção, incluindo Python/`ctypes` e chamadas de socket, não uma atribuição isolada ao codec. O flush por evento reduziu bytes SSE em 86,3% (Brotli) e 89,2% (Zstd), mas neste socket local aumentou bastante CPU e round-trip; não comprimir foi mais rápido. Isso é evidência sobre esse padrão de flush e fixture, não uma decisão de codec: batching, framing real, outra cadência de produção, hardware modesto e rede podem mudar o resultado.
 
 ## Capacidades remotas oficiais e provider atual
 
@@ -60,10 +78,10 @@ O caso opaco de 32 B expande 12,5% no Brotli e 28,1% no Zstd, antes de overhead 
 ## Segurança, compatibilidade e distribuição
 
 - O IPC atual usa JSON com limite descomprimido de 64 KiB e não negocia codec nesta fatia. Qualquer mudança futura precisaria de versão/capacidade explícita, fallback sem compressão para clientes antigos e limites independentes para bytes comprimidos e descomprimidos. Limites remotos não substituem limites locais.
-- O harness testa round-trip válido, mas não conteúdo truncado/corrompido, expansão hostil, uso de memória sob ataque, timeout/cancelamento ou implementação incremental. Esses gates continuam obrigatórios; decoder local teria de limitar saída, janela/memória, razão e tempo antes de qualquer wiring.
+- Os testes incrementais cobrem round-trip, bytes inválidos, stream truncado e uma fixture altamente compressível que excede o limite absoluto de saída. O harness limita a saída em bytes, mas não implementa nem valida limites de janela/memória nativa, razão de expansão em todas as condições, orçamento de tempo/cancelamento ou comportamento sob ataque prolongado. Isso não é decoder de produção nem libera wiring.
 - Compressão de prompts pode expor comprimento observável sob TLS quando segredo e texto controlável compartilham o corpo. Não comprimir esse conteúdo até análise e mitigação aprovadas; TLS continua necessário para integridade/autenticidade do transporte.
 - O [Brotli upstream](https://github.com/google/brotli/blob/master/LICENSE) usa licença MIT; o software [Zstandard upstream](https://github.com/facebook/zstd/blob/dev/LICENSE) usa BSD de três cláusulas. Nenhuma biblioteca Rust/C foi adicionada. Licenças de wrappers/crates, manutenção, build/bundle em Linux/macOS e interoperabilidade exigem revisão específica se uma implementação for proposta.
 
 ## Conclusão
 
-Resultados locais reprodutíveis foram registrados sem escolher nem ativar codec. A avaliação não fecha os requisitos de hardware modesto, round-trip IPC/HTTP, SSE incremental ou compatibilidade SIWC; permanecem abertos. Medição remota futura exige autorização explícita para uma chamada oficial com prompt sintético fixo e confirmação de que não introduzirá uso pago. Contexto real permanece fora do escopo sem consentimento separado.
+Resultados locais reprodutíveis, inclusive socketpair e SSE incremental, foram registrados sem escolher nem ativar codec. A avaliação ainda não fecha hardware modesto/macOS, framing IPC real, HTTP/TLS, compatibilidade SIWC ou custo remoto. Medição remota futura exige autorização explícita para uma chamada oficial com prompt sintético fixo e confirmação de que não introduzirá uso pago. Contexto real permanece fora do escopo sem consentimento separado.

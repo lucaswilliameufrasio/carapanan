@@ -3872,15 +3872,31 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   estrutural visível, com diferenças concentradas nas bordas/rasterização do texto. A renderização de
   fontes do host é hipótese, não causa comprovada; a execução Playwright local com o snapshot Ubuntu
   passou nos quatro casos. Nenhum baseline foi alterado; manter a investigação aberta.
+- O run 39313363432 também passou nos dois jobs Rust. No Web/Linux, 60 testes passaram e somente os quatro
+  mesmos goldens falharam, com diferenças estáveis reportadas de 509/514 pixels no desktop e 30/8 no
+  mobile (aprox. 0,01%); nenhum baseline foi atualizado. PR #25 permanece draft/open, sem merge/deploy.
+- No primeiro gate local completo, os 64 E2E passaram, mas dois testes de processo leram `Active` logo
+  após observar o arquivo do socket. `DaemonService::open` reserva o socket antes de concluir recovery;
+  os testes agora aguardam um RPC `show` somente de leitura antes de inspecionar SQLite. Sem mudança no
+  runtime: os dois casos direcionados passaram e a suíte `daemon_process` passou três vezes consecutivas.
 - Criado harness local sem dependência/runtime ou rede para comparar ausência de codec, Brotli 4/6 e
   Zstandard 1/3 em nove cargas exclusivamente sintéticas, incluindo expansão para 32 B, JSON até o limite
   de 64 KiB, diffs e SSE agregado. Foram feitas três execuções de 300 amostras por fase; relatório e dados
   estão em [avaliação de compressão](compression-evaluation-2026-10-19.md) e
   [resultados JSON](benchmarks/compression-evaluation-2026-10-19.json).
+- Acrescentado benchmark experimental de socket local com streams nativos incrementais: frame sintético
+  de 64 KiB e SSE de 256 KiB dividido em 1.292 eventos, flush por evento, round-trip e latência do primeiro
+  evento. Três campanhas seriais de dez medições mostraram grande redução de bytes, mas round-trip/CPU
+  mais altos com flush por evento que sem compressão. Código e resultados ficam isolados em
+  `prototypes/compression_transport_eval.py` e
+  `docs/benchmarks/compression-transport-evaluation-2026-10-19.json`; isso não representa framing real,
+  HTTP/TLS ou rede, nem decide um codec.
 - Documentação oficial confirma `Content-Encoding: zstd` em request bodies de `POST /v1/responses` e
   limites documentados, mas não documenta compressão da resposta SSE. Compatibilidade desse caminho com
-  token SIWC, latência remota, SSE incremental e hardware modesto não foram validados; nenhuma chamada
-  remota foi feita. Nenhum codec selecionado/habilitado, dependência adicionada ou runtime ligado.
+  token SIWC, HTTP remoto e hardware modesto/macOS não foi validada; nenhuma chamada remota foi feita.
+  Testes locais cobrem round-trip, bytes inválidos, stream truncado e limite absoluto de saída, não todos
+  os orçamentos adversariais necessários para decoder de produção. Nenhum codec selecionado/habilitado,
+  dependência adicionada ou runtime ligado.
 
 ---
 
@@ -4473,18 +4489,24 @@ Antes de adicionar codecs a qualquer protocolo ou runtime, avaliar o uso de Brot
 - Não escolher nem habilitar codec por antecipação: registrar resultados reprodutíveis e decisão
   explícita antes de adicionar dependência, alterar o framing/contrato ou ativar compressão em produção.
 
-### Evidência preliminar — 19 de outubro de 2026
+### Evidência experimental parcial — 19 de outubro de 2026
 
 - A comparação local sintética de Brotli 4/6, Zstandard 1/3 e sem compressão está registrada em
   [`docs/compression-evaluation-2026-10-19.md`](compression-evaluation-2026-10-19.md), com dados por
   execução em [`docs/benchmarks/compression-evaluation-2026-10-19.json`](benchmarks/compression-evaluation-2026-10-19.json).
-- As cargas estruturadas comprimiram significativamente; um caso opaco de 32 B expandiu em ambos os
-  codecs. Medições são de codec one-shot/Python num host Linux de alto desempenho, não cobrem custo de
-  socket, framing, rede ou SSE incremental, e não satisfazem ainda o requisito de hardware modesto.
+- Complemento incremental usa socketpair Unix local, sem protocolo/IPC framing, com fixture sintética de
+  frame 64 KiB e SSE 256 KiB. Três campanhas de dez medições no Ryzen 9 7900 reduziram o stream SSE a
+  13,71% (Brotli 4) / 10,82% (Zstd 1) dos bytes; flush por evento aumentou o round-trip p50 para 40,826 /
+  32,975 ms versus 3,281 ms sem codec. Os valores e todas as amostras estão em
+  [`docs/benchmarks/compression-transport-evaluation-2026-10-19.json`](benchmarks/compression-transport-evaluation-2026-10-19.json).
+- O ensaio one-shot não inclui socket; o complementar mede socket local e flush incremental, mas nenhum
+  deles mede framing real, HTTP/TLS ou rede. Ambos são Python/ctypes em host Linux de alto desempenho e
+  não satisfazem ainda requisitos de hardware modesto/macOS.
 - A documentação oficial OpenAI consultada declara zstd em request HTTP Responses, com limites de
   tamanho/expansão; não documenta Brotli HTTP nem compressão da resposta SSE. Aceitação com credencial
   SIWC e eventual cobrança não foram testadas. Sem chamada remota, mudança de contrato ou seleção de codec.
-- Permanecem gates: round-trip IPC e HTTP autorizado com prompt sintético, negociação/fallback, threshold
-  baseado em custo de transporte, medição em hardware modesto e macOS, streaming incremental, decoder
-  bounded (tamanho/janela/razão/tempo/memória), testes malformed/truncated/bomb, revisão de oracle e
-  licenças das crates/builds candidatas.
+- Permanecem gates: integração com framing IPC real; HTTP oficial autorizado usando prompt sintético e
+  confirmação de custo/compatibilidade SIWC; negociação/fallback e threshold baseado em transporte;
+  medição em hardware modesto/macOS; decoder bounded por tamanho/janela/razão/tempo/memória/cancelamento;
+  análise de oracle e revisão de licenças/builds candidatas. Testes locais de stream inválido, truncado e
+  saída excessiva são exploratórios e não autorizam wiring.
