@@ -229,6 +229,16 @@ fn run_cli(directory: &PrivateDir, arguments: &[&str]) -> std::process::Output {
         .unwrap()
 }
 
+fn wait_for_daemon_ready(directory: &PrivateDir, session_id: &str) {
+    // The Unix socket is bound before startup recovery; a completed RPC is the readiness barrier.
+    let output = run_cli(directory, &["show", session_id, "--json"]);
+    assert!(
+        output.status.success(),
+        "daemon did not serve readiness request: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn run_cli_with_stdin(
     directory: &PrivateDir,
     arguments: &[&str],
@@ -562,6 +572,7 @@ fn should_keep_recovered_work_paused_after_unchanged_cli_workspace_review() {
     let (daemon, socket) = start_daemon(&directory);
     let mut daemon = DaemonGuard(daemon);
     wait_for_socket(&mut daemon, &socket);
+    wait_for_daemon_ready(&directory, "recovery-review");
 
     let registry = SessionRegistry::open(&database_path).unwrap();
     let before_review = registry.get("recovery-review").unwrap();
@@ -960,6 +971,7 @@ fn should_fail_closed_without_leaking_workspace_path_when_root_identity_changes(
     let (daemon, socket) = start_daemon(&directory);
     let mut daemon = DaemonGuard(daemon);
     wait_for_socket(&mut daemon, &socket);
+    wait_for_daemon_ready(&directory, "root-changed");
 
     let registry = SessionRegistry::open(&database_path).unwrap();
     let before_review = registry.get("root-changed").unwrap();
