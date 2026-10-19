@@ -3922,6 +3922,11 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   testes dos harnesses passaram no mesmo container; resultados brutos e limites observados estão em
   `docs/benchmarks/compression-*-2026-10-19-cpu-quota*.json` e a análise em
   `docs/compression-evaluation-2026-10-19.md`. Nenhum codec foi selecionado/habilitado e runtime não mudou.
+- No run 39334633010 (head `b290693`), Rust/Ubuntu e Rust/macOS passaram. Web/Linux chegou aos últimos
+  checkpoints golden e falhou somente em `provider-custom` desktop claro/escuro e `updates-installed`
+  mobile claro/escuro. Capturas, diffs e conteúdo foram revisados; atualizados apenas esses quatro PNGs
+  Ubuntu. Após a atualização, `TMPDIR=/var/tmp mise exec -- make verify` passou localmente, incluindo 64
+  E2E e a suíte Rust. A validação CI desses últimos baselines ainda está pendente; PR #25 segue draft/open.
 
 ---
 
