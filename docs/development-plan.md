@@ -3916,6 +3916,12 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   restritas à rasterização de texto. Atualizados somente esses quatro PNGs Ubuntu; o gate local completo
   voltou a passar, incluindo 24 testes web, 64 E2E e a suíte Rust. O run seguinte ainda precisa confirmar
   os baselines e validar o restante da sequência, inclusive `updates-installed`.
+- Para aprofundar a avaliação sem acesso a hardware modesto/macOS, os dois harnesses foram medidos em
+  container rootless offline com quota de 1 CPU e limite de 512 MiB. O processador físico continua sendo
+  um Ryzen 9 7900; portanto, é somente proxy de concorrência, não substituto de hardware lento. Os oito
+  testes dos harnesses passaram no mesmo container; resultados brutos e limites observados estão em
+  `docs/benchmarks/compression-*-2026-10-19-cpu-quota*.json` e a análise em
+  `docs/compression-evaluation-2026-10-19.md`. Nenhum codec foi selecionado/habilitado e runtime não mudou.
 
 ---
 

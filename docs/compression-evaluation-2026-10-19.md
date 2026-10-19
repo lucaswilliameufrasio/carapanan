@@ -68,6 +68,51 @@ Ambiente: o mesmo CachyOS/Linux x86_64 e Ryzen 9 7900 do ensaio anterior, Python
 
 Tempos em milissegundos; CPU é p50 do tempo de CPU das threads de envio/recepção, incluindo Python/`ctypes` e chamadas de socket, não uma atribuição isolada ao codec. O flush por evento reduziu bytes SSE em 86,3% (Brotli) e 89,2% (Zstd), mas neste socket local aumentou bastante CPU e round-trip; não comprimir foi mais rápido. Isso é evidência sobre esse padrão de flush e fixture, não uma decisão de codec: batching, framing real, outra cadência de produção, hardware modesto e rede podem mudar o resultado.
 
+## Proxy local com quota de recursos — não equivale a hardware modesto
+
+Para observar o efeito de limitar concorrência, os mesmos harnesses foram executados serialmente em um
+container rootless com quota de 1 CPU (`cpu.max = 100000 100000`) e memória máxima de 512 MiB. A rede
+ficou desabilitada, a raiz do container somente-leitura e apenas `prototypes/` foi montado somente-leitura.
+O container usou a imagem já disponível `mcr.microsoft.com/playwright:v1.58.2-noble`, Python 3.12.3,
+Brotli 1.1.0 e Zstandard 1.5.5. Os oito testes dos dois harnesses passaram nessa configuração.
+Reprodução a partir da raiz do checkout (o volume do código fica somente-leitura; a saída é gravada pelo
+shell no host):
+
+```sh
+docker run --rm --pull=never --cpus=1 --memory=512m --network=none --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m --user "$(id -u):$(id -g)" \
+  -v "$PWD/prototypes:/work/prototypes:ro" -w /tmp \
+  -e PYTHONDONTWRITEBYTECODE=1 mcr.microsoft.com/playwright:v1.58.2-noble \
+  python3 /work/prototypes/compression_eval.py --iterations 300 \
+  > docs/benchmarks/compression-evaluation-2026-10-19-cpu-quota.json
+
+docker run --rm --pull=never --cpus=1 --memory=512m --network=none --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=16m --user "$(id -u):$(id -g)" \
+  -v "$PWD/prototypes:/work/prototypes:ro" -w /tmp \
+  -e PYTHONDONTWRITEBYTECODE=1 mcr.microsoft.com/playwright:v1.58.2-noble \
+  python3 /work/prototypes/compression_transport_eval.py --iterations 10 --campaigns 3 \
+  > docs/benchmarks/compression-transport-evaluation-2026-10-19-cpu-quota.json
+```
+
+| Caso/protocolo                   | Codec    | Bytes (raw → enviados) |                     p50 / p95 |
+| -------------------------------- | -------- | ---------------------: | ----------------------------: |
+| Frame 64 KiB · one-shot          | Brotli 4 |         65.536 → 3.126 |           178 / 256 µs encode |
+| Frame 64 KiB · one-shot          | Zstd 1   |         65.536 → 2.441 |             34 / 36 µs encode |
+| Frame 64 KiB · socketpair        | Brotli 4 |         65.536 → 3.128 |   0,575 / 0,822 ms round-trip |
+| Frame 64 KiB · socketpair        | Zstd 1   |         65.536 → 2.441 |   0,296 / 0,471 ms round-trip |
+| SSE · 1.292 eventos · socketpair | Nenhum   |      262.317 → 262.317 |  3,307 / 22,604 ms round-trip |
+| SSE · 1.292 eventos · socketpair | Brotli 4 |       262.317 → 35.964 | 49,141 / 69,291 ms round-trip |
+| SSE · 1.292 eventos · socketpair | Zstd 1   |       262.317 → 28.387 | 33,335 / 61,259 ms round-trip |
+
+Os resultados completos (stdout original dos harnesses) estão em [one-shot sob quota](benchmarks/compression-evaluation-2026-10-19-cpu-quota.json)
+e [socket/SSE sob quota](benchmarks/compression-transport-evaluation-2026-10-19-cpu-quota.json); os limites
+observados e a proveniência comum estão no [manifesto do ambiente](benchmarks/compression-evaluation-2026-10-19-cpu-quota-environment.json).
+O one-shot usou 300 amostras por perfil; o socket, três campanhas seriais de dez medições. O quota limita
+a execução concorrente das threads de envio/recepção, mas o processador físico segue sendo o Ryzen 9 7900;
+512 MiB não foi um teste de pressão de memória. Estes dados não representam CPU de baixo consumo, macOS,
+rede real ou integração de protocolo. Não comparar tempos absolutos com o ensaio anterior: Python e versões
+nativas dos codecs diferem; compare perfis somente dentro da mesma campanha.
+
 ## Capacidades remotas oficiais e provider atual
 
 - A [documentação oficial de boas práticas](https://developers.openai.com/api/docs/guides/production-best-practices) documenta request bodies JSON com `Content-Encoding: zstd` para `POST /v1/responses`. Os corpos comprimido e descomprimido têm limite de 128 MiB, e a expansão é limitada a 100×; conteúdo inválido/incompleto recebe HTTP 400 e violações de limite HTTP 413. Não encontrei suporte documentado a Brotli para esses requests na documentação consultada.
@@ -84,4 +129,4 @@ Tempos em milissegundos; CPU é p50 do tempo de CPU das threads de envio/recepç
 
 ## Conclusão
 
-Resultados locais reprodutíveis, inclusive socketpair e SSE incremental, foram registrados sem escolher nem ativar codec. A avaliação ainda não fecha hardware modesto/macOS, framing IPC real, HTTP/TLS, compatibilidade SIWC ou custo remoto. Medição remota futura exige autorização explícita para uma chamada oficial com prompt sintético fixo e confirmação de que não introduzirá uso pago. Contexto real permanece fora do escopo sem consentimento separado.
+Resultados locais reprodutíveis, inclusive socketpair, SSE incremental e um proxy com quota de CPU, foram registrados sem escolher nem ativar codec. A avaliação ainda não fecha hardware modesto real/macOS, framing IPC real, HTTP/TLS, compatibilidade SIWC ou custo remoto. Medição remota futura exige autorização explícita para uma chamada oficial com prompt sintético fixo e confirmação de que não introduzirá uso pago. Contexto real permanece fora do escopo sem consentimento separado.
