@@ -3865,6 +3865,23 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   com comparação mensurável, compatibilidade/negociação, limites de descompressão, análise de oracle,
   licença/manutenção e decisão explícita antes de adicionar codec ou alterar framing.
 
+### Progresso do Delivery 4 — 19 de outubro de 2026
+
+- No run 39140644424, Rust/Linux e Rust/macOS passaram; Web/Linux repetiu somente as quatro falhas dos
+  goldens `home-light`/`home-dark` desktop/mobile. Os artefatos foram inspecionados: sem deslocamento
+  estrutural visível, com diferenças concentradas nas bordas/rasterização do texto. A renderização de
+  fontes do host é hipótese, não causa comprovada; a execução Playwright local com o snapshot Ubuntu
+  passou nos quatro casos. Nenhum baseline foi alterado; manter a investigação aberta.
+- Criado harness local sem dependência/runtime ou rede para comparar ausência de codec, Brotli 4/6 e
+  Zstandard 1/3 em nove cargas exclusivamente sintéticas, incluindo expansão para 32 B, JSON até o limite
+  de 64 KiB, diffs e SSE agregado. Foram feitas três execuções de 300 amostras por fase; relatório e dados
+  estão em [avaliação de compressão](compression-evaluation-2026-10-19.md) e
+  [resultados JSON](benchmarks/compression-evaluation-2026-10-19.json).
+- Documentação oficial confirma `Content-Encoding: zstd` em request bodies de `POST /v1/responses` e
+  limites documentados, mas não documenta compressão da resposta SSE. Compatibilidade desse caminho com
+  token SIWC, latência remota, SSE incremental e hardware modesto não foram validados; nenhuma chamada
+  remota foi feita. Nenhum codec selecionado/habilitado, dependência adicionada ou runtime ligado.
+
 ---
 
 # 159. Delivery 5 — Context Engine
@@ -4455,3 +4472,19 @@ Antes de adicionar codecs a qualquer protocolo ou runtime, avaliar o uso de Brot
   interoperabilidade entre Rust e clientes futuros antes de escolher uma biblioteca.
 - Não escolher nem habilitar codec por antecipação: registrar resultados reprodutíveis e decisão
   explícita antes de adicionar dependência, alterar o framing/contrato ou ativar compressão em produção.
+
+### Evidência preliminar — 19 de outubro de 2026
+
+- A comparação local sintética de Brotli 4/6, Zstandard 1/3 e sem compressão está registrada em
+  [`docs/compression-evaluation-2026-10-19.md`](compression-evaluation-2026-10-19.md), com dados por
+  execução em [`docs/benchmarks/compression-evaluation-2026-10-19.json`](benchmarks/compression-evaluation-2026-10-19.json).
+- As cargas estruturadas comprimiram significativamente; um caso opaco de 32 B expandiu em ambos os
+  codecs. Medições são de codec one-shot/Python num host Linux de alto desempenho, não cobrem custo de
+  socket, framing, rede ou SSE incremental, e não satisfazem ainda o requisito de hardware modesto.
+- A documentação oficial OpenAI consultada declara zstd em request HTTP Responses, com limites de
+  tamanho/expansão; não documenta Brotli HTTP nem compressão da resposta SSE. Aceitação com credencial
+  SIWC e eventual cobrança não foram testadas. Sem chamada remota, mudança de contrato ou seleção de codec.
+- Permanecem gates: round-trip IPC e HTTP autorizado com prompt sintético, negociação/fallback, threshold
+  baseado em custo de transporte, medição em hardware modesto e macOS, streaming incremental, decoder
+  bounded (tamanho/janela/razão/tempo/memória), testes malformed/truncated/bomb, revisão de oracle e
+  licenças das crates/builds candidatas.
