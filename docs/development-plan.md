@@ -3910,6 +3910,12 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   teve uma falha em `auth::tests::loopback_callback_rejects_wrong_state_then_accepts_the_active_registration`:
   reset de conexão no fixture e `CallbackTimeout` após 300 s. Não houve alteração no teste de auth; aguardar
   nova execução para distinguir intermitência de regressão.
+- O run 39333942349 passou Rust/Ubuntu e Rust/macOS (incluindo o teste de callback OAuth), mas Web/Linux
+  avançou e falhou somente em quatro estados seguintes: `provider-mapped` desktop claro/escuro e
+  `updates-available` mobile claro/escuro. As capturas e os baselines foram comparados; as diferenças são
+  restritas à rasterização de texto. Atualizados somente esses quatro PNGs Ubuntu; o gate local completo
+  voltou a passar, incluindo 24 testes web, 64 E2E e a suíte Rust. O run seguinte ainda precisa confirmar
+  os baselines e validar o restante da sequência, inclusive `updates-installed`.
 
 ---
 
