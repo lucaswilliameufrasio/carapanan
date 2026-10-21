@@ -7,7 +7,7 @@ use openidconnect::{
 use std::{
     error::Error,
     fmt,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     process::{Command, Stdio},
     thread,
@@ -20,6 +20,8 @@ const CALLBACK_PATH: &str = "/auth/callback";
 const DYNAMIC_CLIENT_ID: &str = "dynamic_agent_client";
 const APP_NAME: &str = "Carapanã";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_CALLBACK_REQUEST_BYTES: usize = 8192;
+const MAX_CALLBACK_REQUEST_LINE_BYTES: usize = 4096;
 const REFRESH_WINDOW: Duration = Duration::from_secs(300);
 const REQUESTED_SCOPES: [&str; 6] = [
     "openid",
@@ -356,10 +358,19 @@ struct CallbackRequest {
 }
 
 fn read_callback_request(stream: &mut TcpStream, expected_port: u16) -> Option<CallbackRequest> {
-    let mut reader = BufReader::new(stream);
+    // Accepted sockets can inherit nonblocking mode on BSD/macOS. Normalize explicitly so the
+    // configured read timeout, rather than packet scheduling, controls fragmented request reads.
+    stream.set_nonblocking(false).ok()?;
+    parse_callback_request(stream, expected_port)
+}
+
+fn parse_callback_request(reader: impl Read, expected_port: u16) -> Option<CallbackRequest> {
+    // Apply the byte bound before read_line can grow a String. One extra byte detects overflow.
+    let mut reader = BufReader::new(reader.take(MAX_CALLBACK_REQUEST_BYTES as u64 + 1));
     let mut first_line = String::new();
-    reader.read_line(&mut first_line).ok()?;
-    if first_line.len() > 4096 {
+    if reader.read_line(&mut first_line).ok()? == 0
+        || first_line.len() > MAX_CALLBACK_REQUEST_LINE_BYTES
+    {
         return None;
     }
     let mut parts = first_line.split_ascii_whitespace();
@@ -377,9 +388,11 @@ fn read_callback_request(stream: &mut TcpStream, expected_port: u16) -> Option<C
     let mut total_bytes = first_line.len();
     loop {
         let mut header = String::new();
-        reader.read_line(&mut header).ok()?;
+        if reader.read_line(&mut header).ok()? == 0 {
+            return None;
+        }
         total_bytes += header.len();
-        if total_bytes > 8192 {
+        if total_bytes > MAX_CALLBACK_REQUEST_BYTES {
             return None;
         }
         if header == "\r\n" || header == "\n" {
@@ -1001,6 +1014,101 @@ mod tests {
             ),
             Err(AuthError::ClientIdMismatch)
         ));
+    }
+
+    #[test]
+    fn callback_parser_stops_on_incomplete_headers_at_eof() {
+        struct GuardedEof<'a> {
+            remaining: &'a [u8],
+            eof_reads: usize,
+        }
+        impl Read for GuardedEof<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if self.remaining.is_empty() {
+                    self.eof_reads += 1;
+                    assert!(
+                        self.eof_reads <= 1,
+                        "callback parser retried an exhausted stream"
+                    );
+                    return Ok(0);
+                }
+                let count = output.len().min(self.remaining.len());
+                output[..count].copy_from_slice(&self.remaining[..count]);
+                self.remaining = &self.remaining[count..];
+                Ok(count)
+            }
+        }
+        let mut input = GuardedEof {
+            remaining: b"GET /auth/callback HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n",
+            eof_reads: 0,
+        };
+        assert!(super::parse_callback_request(&mut input, 1234).is_none());
+        assert_eq!(input.eof_reads, 1);
+    }
+
+    #[test]
+    fn callback_parser_bounds_line_and_header_reads_before_growing_buffers() {
+        let mut endless_line = std::io::repeat(b'x');
+        assert!(super::parse_callback_request(&mut endless_line, 1234).is_none());
+        let mut bytes = b"GET /auth/callback HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nX-Test: ".to_vec();
+        bytes.extend(vec![b'x'; super::MAX_CALLBACK_REQUEST_BYTES * 2]);
+        let mut input = std::io::Cursor::new(bytes);
+        assert!(super::parse_callback_request(&mut input, 1234).is_none());
+        assert_eq!(
+            input.position(),
+            super::MAX_CALLBACK_REQUEST_BYTES as u64 + 1
+        );
+    }
+
+    #[test]
+    fn callback_parser_requires_one_exact_host_and_a_complete_get_request() {
+        let valid = b"GET /auth/callback?synthetic=1 HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n";
+        assert_eq!(
+            super::parse_callback_request(&valid[..], 1234)
+                .unwrap()
+                .target,
+            "/auth/callback?synthetic=1"
+        );
+        for invalid in [
+            "GET /auth/callback HTTP/1.1\r\nHost: attacker.invalid\r\n\r\n",
+            "GET /auth/callback HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nHost: 127.0.0.1:1234\r\n\r\n",
+            "POST /auth/callback HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n",
+            "GET /auth/callback HTTP/1.1\r\n\r\n",
+        ] {
+            assert!(super::parse_callback_request(invalid.as_bytes(), 1234).is_none());
+        }
+    }
+
+    #[test]
+    fn callback_reader_accepts_fragmented_requests_from_a_nonblocking_accepted_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (mut accepted, _) = listener.accept().unwrap();
+        accepted.set_nonblocking(true).unwrap();
+        accepted
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let sender = std::thread::spawn(move || {
+            let mut client = client;
+            std::thread::sleep(Duration::from_millis(50));
+            client
+                .write_all(b"GET /auth/callback?synthetic=1 HTTP/1.1\r\n")
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+            write!(
+                client,
+                "Host: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        let request = super::read_callback_request(&mut accepted, port);
+        sender.join().unwrap();
+        assert!(
+            request.is_some(),
+            "fragmented nonblocking callback was rejected"
+        );
+        assert_eq!(request.unwrap().target, "/auth/callback?synthetic=1");
     }
 
     #[test]
