@@ -35,7 +35,12 @@ impl PrivateDir {
             .unwrap()
             .as_nanos();
         let id = NEXT_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
-        let path = fs::canonicalize("/tmp").unwrap().join(format!(
+        let temporary_root = if cfg!(target_os = "macos") {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let path = fs::canonicalize(temporary_root).unwrap().join(format!(
             "carapana-process-test-{}-{nonce}-{id}",
             std::process::id()
         ));

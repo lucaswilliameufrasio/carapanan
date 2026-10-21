@@ -4003,6 +4003,21 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - O gate completo com Bubblewrap obrigatório passou após PD-34: 41 testes unitários de core, dois de demo
   e um doctest compile-fail comprovando que o token não é clonável; também passaram os 84 de storage,
   sandbox/CLI, restante do workspace, formatter/lint/check/Clippy/build e 24 Vitest/64 E2E.
+- PD-35 adiciona `process_output` isolado no daemon: tails reservados por stdout/stderr com orçamento
+  agregado, alocação lazy, bytes brutos sem Debug/Clone/serialização e sinal explícito de esgotamento.
+  Não lê pipes, inicia processos, redige segredos, renderiza, persiste ou envia output. Testes exercitam
+  saturação compartilhada, ring wrap, preservação de stderr em flood de stdout, bytes binários, limites,
+  ausência de alocação em idle e comparação com modelo de referência em chunks intercalados.
+- O CI `39665733418`, em `4dc5e54`, passou todos os jobs, incluindo a nova aprovação de comando em
+  Ubuntu/macOS e Web/Linux. O run anterior `39664983864` foi cancelado pela atualização da branch, não
+  falhou por regressão (Web e Rust/Ubuntu já haviam passado).
+- O gate da fatia de output encontrou novamente `/tmp` sem espaço, agora em fixtures de TUI/CLI que
+  ignoravam `TMPDIR`. Um teste Linux demonstrou a divergência `/tmp` versus `/var/tmp` antes da correção.
+  Fixtures Rust com sockets e o smoke PTY Python agora respeitam `TMPDIR` no Linux, mantendo `/tmp`
+  canonicalizado no macOS e as verificações de tamanho existentes. Nenhuma validação de runtime mudou
+  nem foi removido arquivo de outra tarefa. O gate completo com `TMPDIR=/var/tmp` e Bubblewrap obrigatório
+  passou depois, com nove testes de output, 36 unitários de daemon, 14 unitários CLI, 41 de core,
+  84 de storage, demais suites Rust, doctests de privacidade/token, 24 Vitest e 64 E2E.
 
 ---
 

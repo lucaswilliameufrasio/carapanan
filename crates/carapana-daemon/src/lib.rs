@@ -6,6 +6,7 @@
 mod ipc;
 #[cfg(unix)]
 mod process;
+pub mod process_output;
 
 use std::{
     collections::HashMap,
@@ -776,7 +777,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::fs::canonicalize("/tmp").unwrap().join(format!(
+            let temporary_root = if cfg!(target_os = "macos") {
+                PathBuf::from("/tmp")
+            } else {
+                std::env::temp_dir()
+            };
+            let path = std::fs::canonicalize(temporary_root).unwrap().join(format!(
                 "carapana-daemon-service-{}-{nonce}-{id}",
                 std::process::id()
             ));
@@ -801,7 +807,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::fs::canonicalize("/tmp").unwrap().join(format!(
+            let temporary_root = if cfg!(target_os = "macos") {
+                PathBuf::from("/tmp")
+            } else {
+                std::env::temp_dir()
+            };
+            let path = std::fs::canonicalize(temporary_root).unwrap().join(format!(
                 "carapana-daemon-{}-{nonce}-{id}.sqlite3",
                 std::process::id()
             ));

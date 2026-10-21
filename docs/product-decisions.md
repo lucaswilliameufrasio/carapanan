@@ -871,3 +871,27 @@ desativados.
   acesso à rede, credenciais ou autorização para um cwd fora do workspace.
 - Preferido sobre um booleano `approved` separado de argv/path, que permitiria substituir o comando
   depois da revisão. O contrato não altera `AuthorizationGrant` existente nem habilita `ToolCallRequested`.
+
+## PD-35 — Orçamento agregado e tails limitados de output
+
+**Data:** 21 de outubro de 2026
+
+**Status:** primitive isolada, sem captura de subprocessos nem wiring de tools.
+
+- A primitive no daemon recebe chunks já limitados do futuro leitor, preserva bytes brutos e mantém
+  tails separados para stdout/stderr. O chamador escolhe explicitamente o orçamento de cada tail e o
+  limite agregado de bytes aceitos entre os dois streams; não há defaults nem realocação automática
+  de orçamento entre streams. Output de um stream não pode expulsar o tail reservado ao outro.
+- Tetos iniciais da primitive: 16 MiB de payload retido somando os dois tails e 256 MiB de captura
+  agregada, derivados dos valores conceituais do plano, não calibrados como defaults de produto.
+  Alocação de tails é lazy e limitada; falha de reserva de memória retorna erro antes de aceitar bytes.
+  Esses limites são de payload, não uma promessa de RSS incluindo allocator/processos/leitores externos.
+- Após esgotamento, chunks posteriores não são aceitos. O resultado distingue bytes aceitos/recusados,
+  perda de histórico no ring e orçamento esgotado. O futuro chamador precisa parar a leitura e encerrar
+  o processo supervisionado; deixar de drenar um pipe não é cancelamento nem backpressure seguro por si só.
+- Não decodificar/renderizar/logar output bruto, implementar Debug/Clone/serialização do buffer, persistir
+  automaticamente em artifacts ou enviar a provider. Output ainda precisa dos gates independentes de
+  conteúdo/segredos e escaping. Tails são memória volátil, não histórico durável.
+- Preferido sobre um buffer por stream com limite agregado implícito, ou `read_to_end` antes de truncar,
+  que não limitariam a memória do leitor. Esta primitive não prova execução, supervisão ou consumo bounded
+  de bytes antes da chamada; os leitores futuros devem aplicar limites antes de alocar seus chunks.

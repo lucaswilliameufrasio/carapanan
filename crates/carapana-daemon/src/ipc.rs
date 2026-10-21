@@ -580,7 +580,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = fs::canonicalize("/tmp")
+            let temporary_root = if cfg!(target_os = "macos") {
+                PathBuf::from("/tmp")
+            } else {
+                std::env::temp_dir()
+            };
+            let path = fs::canonicalize(temporary_root)
                 .unwrap()
                 .join(format!("carapana-ipc-{}-{nonce}-{id}", std::process::id()));
             fs::create_dir(&path).unwrap();

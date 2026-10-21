@@ -837,7 +837,12 @@ mod tests {
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             // `/tmp` is short on macOS, where Unix socket paths have a small `SUN_LEN` limit.
-            let path = fs::canonicalize("/tmp")
+            let temporary_root = if cfg!(target_os = "macos") {
+                PathBuf::from("/tmp")
+            } else {
+                std::env::temp_dir()
+            };
+            let path = fs::canonicalize(temporary_root)
                 .unwrap()
                 .join(format!("carapana-cli-{}-{nonce}-{id}", std::process::id()));
             fs::create_dir(&path).unwrap();
@@ -883,6 +888,16 @@ mod tests {
         ] {
             assert_eq!(review_status_label(status), expected);
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn should_honor_linux_tmpdir_for_private_socket_fixtures() {
+        let directory = PrivateDir::new();
+        assert_eq!(
+            directory.0.parent().unwrap(),
+            fs::canonicalize(std::env::temp_dir()).unwrap()
+        );
     }
 
     #[test]

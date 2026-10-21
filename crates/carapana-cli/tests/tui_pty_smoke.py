@@ -33,7 +33,7 @@ if len(sys.argv) == 4 and sys.argv[1] == "__pty_session__":
 
 binary = os.path.abspath(sys.argv[1])
 database_path = Path(sys.argv[2])
-temporary_root = os.path.realpath("/tmp")
+temporary_root = os.path.realpath("/tmp" if sys.platform == "darwin" else tempfile.gettempdir())
 with tempfile.TemporaryDirectory(prefix="c-", dir=temporary_root) as temporary:
     root = Path(temporary)
     home = root / "home"
