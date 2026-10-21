@@ -56,6 +56,15 @@ authorization, and sharing gates remain independent.
   allocations may leave occupied numeric IDs; bounded retries skip those files without overwriting them.
 - Only `sessions.sqlite3` may own the sibling artifact directory. Alternative catalog filenames are
   rejected before I/O so two independent catalogs cannot treat each other's durable blobs as orphans.
+- PD-37 charges staging leases to the same global quota. Pending records retain the whole requested
+  budget until confirmed cleanup; OS locks protect active trees. Schema v7 records directory identity
+  and prevents older cleaners from freeing a reservation while leaving staged bytes. Missing identity
+  for nonempty registered content or a replaced tree fails closed and preserves quota for review.
+  Schema-version checks block new opens by old binaries, not connections already running: stop older
+  clients before migration. Backup/restore of the catalog and managed directories needs consistent
+  ownership/reconciliation review before enabling automatic cleanup in a general launcher.
+- Staging accounting is a logical admission limit for cooperating application APIs, not a filesystem
+  hard quota against arbitrary writes by the account owner. General command execution is still unwired.
 
 ## Revisit when
 

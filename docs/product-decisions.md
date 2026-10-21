@@ -923,3 +923,26 @@ desativados.
 - Preferido sobre montar o repo vivo, pois evita expor arquivos não selecionados e mudanças posteriores
   da origem. Builds que precisem de outros arquivos devem solicitar nova seleção, sem ampliar mounts
   automaticamente ou cair para uma cópia completa do repo.
+
+## PD-37 — Quota global compartilhada por artifacts e staging
+
+**Data:** 21 de outubro de 2026
+
+**Status:** política aprovada pelo operador; integração incremental do armazenamento, sem launcher geral.
+
+- Staging deve reservar capacidade dentro da mesma quota de 10 GiB por usuário aprovada em PD-32,
+  antes de copiar bytes. Não introduzir quota adicional nem remover artifacts duráveis para abrir espaço.
+- Reservas de staging permanecem cobradas enquanto o bundle estiver ativo ou a remoção de seus bytes
+  estiver incerta. O encerramento normal tenta remover o staging e só então libera sua reserva; erros
+  preservam accounting/recovery em vez de declarar capacidade livre.
+- Reutilizar a graça de sete dias para reservas/árvores órfãs. Locks de lease protegem bundles ativos;
+  limpar somente o namespace gerenciado de staging em lotes limitados, sem seguir symlinks. Bytes órfãos
+  sem registro também precisam contar na admissão, e scans excedendo limites devem falhar fechados.
+- O catálogo usa schema v7 para impedir que cleaners antigos, que desconhecem árvores de staging,
+  voltem a abrir o catálogo e liberem reservas antes de remover seu conteúdo. A migração exige encerrar
+  clientes antigos: `user_version` não revoga conexões já abertas. O tipo de bundle com reserva será distinto do bundle
+  sintético não contabilizado; o launcher futuro deverá exigir o tipo contabilizado e os demais gates.
+- O launcher/supervisor deve manter a lease até o processo e seus consumidores de staging terminarem.
+  Não habilitar detach/`KeepRunning` sem transferência comprovada da lease ao host que mantém o processo;
+  apagar paths não prova liberação física de arquivos ainda abertos/montados. A quota é de admissão lógica,
+  não hard quota do filesystem ou isolamento contra escrita arbitrária do mesmo UID.

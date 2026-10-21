@@ -4,7 +4,8 @@
 //! A future launcher must enforce its own gates, pin identities, and mount this staging read-only.
 
 use carapana_storage::{
-    MAX_WORKSPACE_FILE_READ_BYTES, WorkspaceDirectoryEntryKind, WorkspaceMetadata,
+    ArtifactStore, MAX_WORKSPACE_FILE_READ_BYTES, StagingReservation, WorkspaceDirectoryEntryKind,
+    WorkspaceMetadata,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -28,6 +29,8 @@ pub enum SnapshotPreparationError {
     SourceRejected,
     StagingUnavailable,
     StagingChanged,
+    ReservationRejected,
+    CleanupPending,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +57,8 @@ impl SelectedSnapshotPolicy {
 
 /// Paths and source-derived payload metadata deliberately do not implement Debug or serialization.
 /// Cleanup on drop is best-effort: crashes or filesystem failures can leave a private staging tree.
-/// Production wiring still requires orphan recovery and a global admission budget across bundles.
+/// Use `ReservedSelectedSnapshotBundle` for orphan recovery and global quota accounting; this type alone is for
+/// isolated synthetic probes and bounded local preparation, not a general launcher input.
 ///
 /// ```compile_fail
 /// fn log(bundle: &carapana_sandbox::selected_snapshots::SelectedSnapshotBundle) {
@@ -72,6 +76,83 @@ struct ManifestEntry {
     path: PathBuf,
     size: usize,
     sha256: [u8; 32],
+}
+
+/// Selected snapshots with a live reservation in the user's shared artifact/staging quota.
+/// The future launcher must require this type, not an unaccounted synthetic bundle.
+///
+/// ```compile_fail
+/// fn log(bundle: &carapana_sandbox::selected_snapshots::ReservedSelectedSnapshotBundle<'_>) {
+///     let _unsafe_log = format!("{bundle:?}");
+/// }
+/// ```
+pub struct ReservedSelectedSnapshotBundle<'store> {
+    // Rust drops fields in declaration order: remove the bundle before releasing its quota lease.
+    bundle: SelectedSnapshotBundle,
+    reservation: StagingReservation<'store>,
+}
+
+impl<'store> ReservedSelectedSnapshotBundle<'store> {
+    pub fn prepare(
+        store: &'store mut ArtifactStore,
+        workspace: &WorkspaceMetadata,
+        paths: &[PathBuf],
+        policy: SelectedSnapshotPolicy,
+        now_ms: i64,
+    ) -> Result<Self, SnapshotPreparationError> {
+        #[cfg(unix)]
+        {
+            validate_selection(workspace, paths, policy)?;
+            workspace
+                .verify_current()
+                .map_err(|_| SnapshotPreparationError::SourceRejected)?;
+            let reservation = store
+                .reserve_staging(policy.max_total_bytes as u64, now_ms)
+                .map_err(|_| SnapshotPreparationError::ReservationRejected)?;
+            let bundle = prepare_in_directory(
+                workspace,
+                paths,
+                policy,
+                reservation.directory_metadata().clone(),
+            )?;
+            Ok(Self {
+                bundle,
+                reservation,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (store, workspace, paths, policy, now_ms);
+            Err(SnapshotPreparationError::UnsupportedPlatform)
+        }
+    }
+
+    pub fn staging_root(&self) -> &Path {
+        self.bundle.staging_root()
+    }
+    pub fn file_count(&self) -> usize {
+        self.bundle.file_count()
+    }
+    pub fn total_bytes(&self) -> usize {
+        self.bundle.total_bytes()
+    }
+    pub fn reserved_bytes(&self) -> u64 {
+        self.reservation.reserved_bytes()
+    }
+    pub fn verify(&self) -> Result<(), SnapshotPreparationError> {
+        self.bundle.verify()
+    }
+
+    pub fn release(self) -> Result<(), SnapshotPreparationError> {
+        let Self {
+            bundle,
+            reservation,
+        } = self;
+        drop(bundle);
+        reservation
+            .release()
+            .map_err(|_| SnapshotPreparationError::CleanupPending)
+    }
 }
 
 impl SelectedSnapshotBundle {
@@ -173,7 +254,9 @@ impl SelectedSnapshotBundle {
 impl Drop for SelectedSnapshotBundle {
     fn drop(&mut self) {
         // Only the fresh private tree created by this operation; never the source workspace.
-        let _ = std::fs::remove_dir_all(&self.root);
+        if self.identity.verify_current().is_ok() {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
     }
 }
 
@@ -213,12 +296,6 @@ fn prepare_unix(
     paths: &[PathBuf],
     policy: SelectedSnapshotPolicy,
 ) -> Result<SelectedSnapshotBundle, SnapshotPreparationError> {
-    use std::{
-        fs,
-        io::Write,
-        os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-    };
-
     validate_selection(workspace, paths, policy)?;
     workspace
         .verify_current()
@@ -227,10 +304,29 @@ fn prepare_unix(
     let identity = match WorkspaceMetadata::capture(&root) {
         Ok(identity) => identity,
         Err(_) => {
-            let _ = fs::remove_dir(&root);
+            let _ = std::fs::remove_dir(&root);
             return Err(SnapshotPreparationError::StagingUnavailable);
         }
     };
+    prepare_in_directory(workspace, paths, policy, identity)
+}
+
+#[cfg(unix)]
+fn prepare_in_directory(
+    workspace: &WorkspaceMetadata,
+    paths: &[PathBuf],
+    policy: SelectedSnapshotPolicy,
+    identity: WorkspaceMetadata,
+) -> Result<SelectedSnapshotBundle, SnapshotPreparationError> {
+    use std::{
+        fs,
+        io::Write,
+        os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    };
+    identity
+        .verify_current()
+        .map_err(|_| SnapshotPreparationError::StagingChanged)?;
+    let root = identity.path();
     let mut bundle = SelectedSnapshotBundle {
         root,
         identity,
@@ -532,6 +628,103 @@ mod tests {
             fs::metadata(workspace.root.join("large")).unwrap().len(),
             (MAX_WORKSPACE_FILE_READ_BYTES + 1) as u64
         );
+    }
+
+    #[test]
+    fn should_keep_selected_snapshots_charged_to_global_quota_until_release() {
+        use carapana_storage::{ArtifactKind, ArtifactPolicy, ArtifactStoreError};
+        use std::{io::Cursor, time::Duration};
+        let workspace = Workspace::new();
+        let database = workspace.root.join("data/sessions.sqlite3");
+        let quota = ArtifactPolicy::new(
+            1024,
+            1024,
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let mut store = ArtifactStore::open_with_policy(&database, quota).unwrap();
+        let bundle = ReservedSelectedSnapshotBundle::prepare(
+            &mut store,
+            &workspace.metadata,
+            &[PathBuf::from("src/main.rs")],
+            policy(),
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(bundle.file_count(), 1);
+        assert_eq!(bundle.total_bytes(), 17);
+        assert_eq!(bundle.reserved_bytes(), 1024);
+        assert!(bundle.verify().is_ok());
+        let root = bundle.staging_root().to_owned();
+        let mut other = ArtifactStore::open_with_policy(&database, quota).unwrap();
+        assert_eq!(other.usage().unwrap().reserved_bytes, 1024);
+        assert!(matches!(
+            other.write(ArtifactKind::Durable, 1, Cursor::new(b"x"), 1_000),
+            Err(ArtifactStoreError::QuotaExceeded { .. })
+        ));
+        bundle.release().unwrap();
+        assert!(!root.exists());
+        assert_eq!(other.usage().unwrap().reserved_bytes, 0);
+    }
+
+    #[test]
+    fn should_release_the_global_reservation_when_source_preparation_fails() {
+        use carapana_storage::ArtifactPolicy;
+        use std::time::Duration;
+        let workspace = Workspace::new();
+        let database = workspace.root.join("data/sessions.sqlite3");
+        let quota = ArtifactPolicy::new(
+            1024,
+            1024,
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let mut store = ArtifactStore::open_with_policy(&database, quota).unwrap();
+        assert!(matches!(
+            ReservedSelectedSnapshotBundle::prepare(
+                &mut store,
+                &workspace.metadata,
+                &[PathBuf::from("src/main.rs")],
+                SelectedSnapshotPolicy::new(1, 1).unwrap(),
+                1_000
+            ),
+            Err(SnapshotPreparationError::ByteBudgetExceeded)
+        ));
+        assert_eq!(store.usage().unwrap().reserved_bytes, 0);
+        assert_eq!(store.usage().unwrap().artifact_count, 0);
+        assert_eq!(
+            fs::read(workspace.root.join("src/main.rs")).unwrap(),
+            b"synthetic source\n"
+        );
+    }
+
+    #[test]
+    fn should_reject_global_quota_before_attempting_to_read_selected_content() {
+        use carapana_storage::{ArtifactKind, ArtifactPolicy};
+        use std::{io::Cursor, time::Duration};
+        let workspace = Workspace::new();
+        let database = workspace.root.join("data/sessions.sqlite3");
+        let quota =
+            ArtifactPolicy::new(8, 8, Duration::from_millis(100), Duration::from_millis(100))
+                .unwrap();
+        let mut store = ArtifactStore::open_with_policy(&database, quota).unwrap();
+        store
+            .write(ArtifactKind::Durable, 8, Cursor::new(b"12345678"), 1_000)
+            .unwrap();
+        assert!(matches!(
+            ReservedSelectedSnapshotBundle::prepare(
+                &mut store,
+                &workspace.metadata,
+                &[PathBuf::from("missing")],
+                SelectedSnapshotPolicy::new(1, 4).unwrap(),
+                1_000
+            ),
+            Err(SnapshotPreparationError::ReservationRejected)
+        ));
+        assert_eq!(store.usage().unwrap().used_bytes, 8);
+        assert_eq!(store.usage().unwrap().reserved_bytes, 0);
     }
 
     #[test]

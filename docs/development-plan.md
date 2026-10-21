@@ -4034,6 +4034,23 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   30 execuções locais consecutivas. Após finalizar snapshots, o gate completo com Bubblewrap obrigatório
   passou novamente: 13 unitários de sandbox e doctest de privacidade do bundle, 32 OpenAI, 41 core,
   36 daemon, 84 storage, demais suites Rust, formatter/lint/check/Clippy/build e 24 Vitest/64 E2E.
+- O CI `39669535201`, no HEAD `aca0ce4`, passou Web/Linux e Rust/Ubuntu/macOS, confirmando snapshots
+  selecionados e a correção do callback nas duas plataformas. PR #25 continua draft/open; sem merge/deploy.
+- O operador aprovou compartilhar a quota de 10 GiB entre artifacts e staging (PD-37). A implementação
+  adiciona leases pendentes com lock e árvore privada gerenciada, identity metadata no SQLite e schema v7
+  para bloquear cleaners antigos. Remoção incerta ou troca de identidade preserva reserva/dados;
+  órfãos sem controle também contam na admissão e respeitam graça de sete dias. Nenhuma evicção de duráveis.
+- `ReservedSelectedSnapshotBundle` mantém a reserva global antes de ler/copiar conteúdo, é distinto do
+  bundle sintético não contabilizado e remove a árvore antes de liberar a lease. O launcher futuro deverá
+  exigir esse tipo. A primitive não autentica seleção, classifica segredos ou executa comandos.
+- Os testes direcionados de storage/sandbox passaram (94/16 unitários, além de doctests), com SQLite e
+  filesystem reais: concorrência de quota, lease ativa/abandonada, falha de preparação, recusa antes da
+  leitura, identity swap, symlinks externos preservados, crash antes de publicar identidade, migração v6→v7
+  e graça independente para árvore recente versus controle antigo.
+- `TMPDIR=/var/tmp CARAPANA_REQUIRE_BUBBLEWRAP=1 mise exec -- make verify` passou integralmente após
+  PD-37: formatter/lint/check/Clippy/build, 24 Vitest, 64 E2E e todas as suites Rust, incluindo 94 testes
+  de storage e 16 de sandbox, com enforcement Bubblewrap positivo local. Novo CI ainda deverá confirmar
+  a migração v7 e os novos testes de lease no Ubuntu/macOS. Launcher geral e tools continuam bloqueados.
 
 ---
 

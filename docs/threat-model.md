@@ -86,6 +86,8 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    autenticada do evento UI/IPC, todos os campos de isolamento/recursos e revalidação no ponto de efeito.
 2. PD-36 implementa staging limitado dos arquivos explícitos e verificação de manifest/inventário;
    integrar autenticação da seleção, política de conteúdo/segredos e mount read-only seguro, sem HOME/config implícitos.
+   PD-37 acrescenta reserva global compartilhada com artifacts e recovery de staging, sem transformar
+   a quota lógica em hard quota do filesystem nem proteger contra escrita hostil fora das APIs do mesmo UID.
 3. PD-35 implementa tails e orçamento agregado isolados; integrar leitura bounded antes de alocar chunks,
    timeout/cancelamento e budgets ao supervisor/backend sem renderizar ou persistir output bruto.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.

@@ -11,16 +11,19 @@ use std::{
     error::Error,
     fmt, fs, io,
     io::{Read, Seek, SeekFrom, Write},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     time::Duration,
 };
+
+mod staging;
+pub use staging::StagingReservation;
 
 const ARTIFACT_DIRECTORY_NAME: &str = "artifacts";
 const MAX_ARTIFACT_COUNT: i64 = 16_384;
 const MAX_CLEANUP_BATCH_SIZE: usize = 128;
 const MAX_ARTIFACT_ID_ALLOCATION_ATTEMPTS: usize = 128;
 const MAX_ARTIFACT_DIRECTORY_SCAN_ENTRIES: usize =
-    MAX_ARTIFACT_COUNT as usize + MAX_CLEANUP_BATCH_SIZE;
+    2 * MAX_ARTIFACT_COUNT as usize + MAX_CLEANUP_BATCH_SIZE;
 const MAX_LIST_PAGE_SIZE: u16 = 256;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -146,9 +149,11 @@ pub struct ArtifactMetadata {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArtifactUsage {
     pub used_bytes: u64,
+    /// Includes live and abandoned staging reservations until confirmed cleanup.
     pub reserved_bytes: u64,
-    /// Managed payload bytes without catalog records, retained until grace-period cleanup.
+    /// Managed bytes not covered by a catalog entry or staging reservation, retained until cleanup.
     pub orphan_bytes: u64,
+    /// Catalog records, including pending writes and staging leases, not only ready artifacts.
     pub artifact_count: u64,
     pub quota_bytes: u64,
     pub max_artifact_bytes: u64,
@@ -160,6 +165,7 @@ pub struct ArtifactCleanupReport {
     pub pending_writes_removed: u64,
     pub deleting_records_reconciled: u64,
     pub orphan_files_removed: u64,
+    pub orphan_staging_directories_removed: u64,
     /// True when the bounded directory scan stopped before reaching the end.
     pub scan_truncated: bool,
     /// True when cleanup records or eligible files remain for a later batch/retry.
@@ -179,6 +185,7 @@ pub enum ArtifactStoreError {
     ArtifactCountExceeded,
     ArtifactIdAllocationExhausted,
     ReconciliationRequired,
+    StagingChanged,
     QuotaExceeded {
         quota_bytes: u64,
         used_bytes: u64,
@@ -228,6 +235,7 @@ impl fmt::Display for ArtifactStoreError {
             Self::ReconciliationRequired => {
                 formatter.write_str("artifact directory exceeds the bounded accounting scan; reconcile the store before writing")
             }
+            Self::StagingChanged => formatter.write_str("staging identity changed; quota remains reserved until safe reconciliation"),
             Self::QuotaExceeded {
                 quota_bytes,
                 used_bytes,
@@ -302,6 +310,7 @@ impl From<MigrationError> for ArtifactStoreError {
 pub struct ArtifactStore {
     database: Database,
     directory: fs::File,
+    directory_path: PathBuf,
     policy: ArtifactPolicy,
 }
 
@@ -348,6 +357,7 @@ impl ArtifactStore {
             Ok(Self {
                 database,
                 directory,
+                directory_path: artifact_path,
                 policy,
             })
         }
@@ -543,7 +553,11 @@ impl ArtifactStore {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-        let orphan_bytes = managed_orphan_bytes(&self.directory, &self.known_artifact_ids()?)?;
+        let orphan_bytes = managed_orphan_bytes(
+            &self.directory,
+            &self.known_artifact_ids()?,
+            &catalog_pending_ids(&self.database.connection)?,
+        )?;
         Ok(ArtifactUsage {
             used_bytes: nonnegative_u64(used_bytes)?,
             reserved_bytes: nonnegative_u64(reserved_bytes)?,
@@ -590,6 +604,7 @@ impl ArtifactStore {
         self.cleanup_expired_temporary(now_ms, &mut report)?;
         self.cleanup_stale_pending(now_ms, &mut report)?;
         self.cleanup_orphan_files(now_ms, &mut report)?;
+        self.cleanup_orphan_staging(now_ms, &mut report)?;
         report.more_work_pending |=
             report.scan_truncated || self.has_cleanup_work_remaining(now_ms)?;
         Ok(report)
@@ -656,7 +671,8 @@ impl ArtifactStore {
         // Hold the catalog write transaction while accounting unregistered blobs: another store
         // cannot create a new pending blob between this scan and reservation publication.
         let known_ids = catalog_artifact_ids(&transaction)?;
-        let orphan_bytes = managed_orphan_bytes(&self.directory, &known_ids)?;
+        let pending_ids = catalog_pending_ids(&transaction)?;
+        let orphan_bytes = managed_orphan_bytes(&self.directory, &known_ids, &pending_ids)?;
         let orphan_bytes_i64 =
             i64::try_from(orphan_bytes).map_err(|_| ArtifactStoreError::InvalidDatabaseState)?;
         let used_total = used_bytes
@@ -695,6 +711,13 @@ impl ArtifactStore {
             let artifact_id = nonnegative_u64(transaction.last_insert_rowid())?;
             if artifact_id == 0 {
                 return Err(ArtifactStoreError::InvalidDatabaseState);
+            }
+            if staging::entry_exists(&self.directory, artifact_id)? {
+                transaction.execute(
+                    "DELETE FROM artifact_records WHERE artifact_id = ?1 AND state = 'pending'",
+                    [artifact_id_to_i64(artifact_id)?],
+                )?;
+                continue;
             }
             let file_name = blob_name(artifact_id);
             let file = match create_blob_file(&self.directory, &file_name) {
@@ -735,7 +758,8 @@ impl ArtifactStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = transaction.execute(
             "UPDATE artifact_records SET state = 'ready', size_bytes = ?2, reserved_bytes = 0, sha256 = ?3 \
-             WHERE artifact_id = ?1 AND state = 'pending' AND reserved_bytes >= ?2",
+             WHERE artifact_id = ?1 AND state = 'pending' AND reserved_bytes >= ?2 \
+             AND NOT EXISTS(SELECT 1 FROM artifact_staging WHERE artifact_id = ?1)",
             rusqlite::params![
                 artifact_id_to_i64(artifact_id)?,
                 i64::try_from(size_bytes).map_err(|_| ArtifactStoreError::ArtifactTooLarge)?,
@@ -756,6 +780,12 @@ impl ArtifactStore {
         remove_file: bool,
     ) -> Result<(), ArtifactStoreError> {
         if remove_file {
+            staging::remove_registered_directory(
+                &self.database.connection,
+                &self.directory,
+                &self.directory_path,
+                artifact_id,
+            )?;
             self.remove_blob(artifact_id)?;
         }
         let transaction = self
@@ -907,6 +937,17 @@ impl ArtifactStore {
                 drop(file);
                 continue;
             }
+            if !staging::directory_is_old(
+                &self.directory,
+                artifact_id,
+                now_ms,
+                self.policy.orphan_grace_ms,
+            )? {
+                continue;
+            }
+            if staging::remove_directory(&self.directory, &self.directory_path, artifact_id)? {
+                report.orphan_staging_directories_removed += 1;
+            }
             self.remove_blob(artifact_id)?;
             drop(file);
             report.orphan_files_removed = report.orphan_files_removed.saturating_add(1);
@@ -990,6 +1031,7 @@ impl ArtifactStore {
         };
 
         let directory = &self.directory;
+        let directory_path = &self.directory_path;
         let transaction = self
             .database
             .connection
@@ -1003,10 +1045,11 @@ impl ArtifactStore {
         if !still_stale {
             return Ok(false);
         }
+        staging::remove_registered_directory(&transaction, directory, directory_path, artifact_id)?;
         if file.is_some() {
             unlink_blob_file(directory, &name).map_err(ArtifactStoreError::Io)?;
-            directory.sync_all().map_err(ArtifactStoreError::Io)?;
         }
+        directory.sync_all().map_err(ArtifactStoreError::Io)?;
         transaction.execute(
             "DELETE FROM artifact_records WHERE artifact_id = ?1 AND state = 'pending' AND created_at_ms <= ?2",
             rusqlite::params![artifact_id_to_i64(artifact_id)?, cutoff_ms],
@@ -1038,10 +1081,27 @@ fn catalog_artifact_ids(
     Ok(ids)
 }
 
+fn catalog_pending_ids(
+    connection: &rusqlite::Connection,
+) -> Result<std::collections::HashSet<u64>, ArtifactStoreError> {
+    let mut statement = connection
+        .prepare("SELECT artifact_id FROM artifact_records WHERE state = 'pending' LIMIT ?1")?;
+    let rows = statement.query_map([MAX_ARTIFACT_COUNT + 1], |row| row.get::<_, i64>(0))?;
+    let mut ids = std::collections::HashSet::new();
+    for row in rows {
+        ids.insert(nonnegative_u64(row?)?);
+        if ids.len() > MAX_ARTIFACT_COUNT as usize {
+            return Err(ArtifactStoreError::ReconciliationRequired);
+        }
+    }
+    Ok(ids)
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn managed_orphan_bytes(
     directory: &fs::File,
     known_ids: &std::collections::HashSet<u64>,
+    pending_ids: &std::collections::HashSet<u64>,
 ) -> Result<u64, ArtifactStoreError> {
     use rustix::{
         fd::AsFd,
@@ -1072,6 +1132,14 @@ fn managed_orphan_bytes(
         let Ok(name_str) = std::str::from_utf8(name.to_bytes()) else {
             continue;
         };
+        if let Some(id) = staging::parse_name(name_str) {
+            if !pending_ids.contains(&id) {
+                bytes = bytes
+                    .checked_add(staging::tree_bytes(directory, id)?)
+                    .ok_or(ArtifactStoreError::InvalidDatabaseState)?;
+            }
+            continue;
+        }
         let Some(id) = parse_blob_name(name_str) else {
             continue;
         };
@@ -1096,6 +1164,7 @@ fn managed_orphan_bytes(
 fn managed_orphan_bytes(
     _directory: &fs::File,
     _known_ids: &std::collections::HashSet<u64>,
+    _pending_ids: &std::collections::HashSet<u64>,
 ) -> Result<u64, ArtifactStoreError> {
     Err(ArtifactStoreError::UnsupportedPlatform)
 }

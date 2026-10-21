@@ -13,6 +13,7 @@ pub use artifact_store::{
     ArtifactCleanupReport, ArtifactKind, ArtifactMetadata, ArtifactPolicy, ArtifactStore,
     ArtifactStoreError, ArtifactUsage, DEFAULT_ARTIFACT_RETENTION,
     DEFAULT_ARTIFACT_STORE_QUOTA_BYTES, DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_ORPHAN_GRACE,
+    StagingReservation,
 };
 pub use session_store::{
     PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionEventRecord,
@@ -198,7 +199,8 @@ impl SessionRegistry {
     }
 }
 
-pub const SCHEMA_VERSION: i64 = 6;
+// Version 7 adds staging cleanup semantics; older cleaners must refuse this catalog.
+pub const SCHEMA_VERSION: i64 = 7;
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE sessions (
@@ -250,6 +252,13 @@ CREATE TABLE IF NOT EXISTS artifact_records (
 
 CREATE INDEX IF NOT EXISTS artifact_records_state_expiry
     ON artifact_records(state, expires_at_ms, artifact_id);
+
+CREATE TABLE IF NOT EXISTS artifact_staging (
+    artifact_id INTEGER PRIMARY KEY NOT NULL,
+    device BLOB NOT NULL CHECK (length(device) = 8),
+    inode BLOB NOT NULL CHECK (length(inode) = 8),
+    FOREIGN KEY (artifact_id) REFERENCES artifact_records(artifact_id) ON DELETE CASCADE
+) STRICT;
 "#;
 
 #[derive(Debug)]
@@ -493,7 +502,7 @@ impl Database {
                 transaction.execute_batch(ARTIFACT_SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
-            1..=5 => {
+            1..=6 => {
                 transaction.execute_batch(ARTIFACT_SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
