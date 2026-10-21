@@ -3,6 +3,8 @@
 //! A successful probe is evidence about this fixed fixture on the current host, not authorization
 //! to execute tools or proof of secret protection in an arbitrary workspace.
 
+pub mod selected_snapshots;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SandboxProbeError {
     UnsupportedPlatform,
@@ -56,6 +58,8 @@ pub fn probe_linux_bubblewrap() -> Result<SandboxProbeEvidence, SandboxProbeErro
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{SandboxProbeError, SandboxProbeEvidence};
+    use crate::selected_snapshots::{SelectedSnapshotBundle, SelectedSnapshotPolicy};
+    use carapana_storage::WorkspaceMetadata;
     use std::{
         fs,
         io::{Read, Write},
@@ -84,6 +88,7 @@ status = dict(line.split(':', 1) for line in open('/proc/self/status') if ':' in
 assert status['NoNewPrivs'].strip() == '1'
 assert int(status['CapEff'].strip(), 16) == 0
 assert open('/workspace/input', 'rb').read() == b'synthetic input\n'
+assert not os.path.exists('/workspace/.env.example')
 assert not os.path.exists(sys.argv[4])
 assert not os.path.exists('/etc/passwd')
 assert not os.path.exists('/home')
@@ -141,6 +146,10 @@ print('carapana-bubblewrap-probe-v1')
                 .map_err(|_| SandboxProbeError::FixtureUnavailable)?;
             for (name, contents) in [
                 ("workspace/input", b"synthetic input\n".as_slice()),
+                (
+                    "workspace/.env.example",
+                    b"synthetic protected fixture\n".as_slice(),
+                ),
                 ("outside-canary", b"synthetic outside\n".as_slice()),
             ] {
                 let mut file = fs::OpenOptions::new()
@@ -190,6 +199,12 @@ print('carapana-bubblewrap-probe-v1')
     pub(super) fn probe() -> Result<SandboxProbeEvidence, SandboxProbeError> {
         validate_backend(Path::new(BACKEND))?;
         let fixture = Fixture::new()?;
+        let source = WorkspaceMetadata::capture(fixture.0.join("workspace"))
+            .map_err(|_| SandboxProbeError::FixtureUnavailable)?;
+        let policy = SelectedSnapshotPolicy::new(1, 1024)
+            .map_err(|_| SandboxProbeError::FixtureUnavailable)?;
+        let selected = SelectedSnapshotBundle::prepare(&source, &[PathBuf::from("input")], policy)
+            .map_err(|_| SandboxProbeError::FixtureUnavailable)?;
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .map_err(|_| SandboxProbeError::FixtureUnavailable)?;
         let port = listener
@@ -225,7 +240,7 @@ print('carapana-bubblewrap-probe-v1')
         }
         command
             .arg("--ro-bind")
-            .arg(fixture.0.join("workspace"))
+            .arg(selected.staging_root())
             .arg("/workspace");
         command.args([
             "--proc",
@@ -258,6 +273,9 @@ print('carapana-bubblewrap-probe-v1')
         if !status.success() || stdout != SUCCESS || !stderr.is_empty() {
             return Err(SandboxProbeError::EnforcementNotVerified);
         }
+        selected
+            .verify()
+            .map_err(|_| SandboxProbeError::EnforcementNotVerified)?;
         if fixture.0.join("workspace/modified").exists()
             || fs::read(fixture.0.join("workspace/input")).ok().as_deref()
                 != Some(b"synthetic input\n")

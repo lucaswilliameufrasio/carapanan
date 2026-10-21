@@ -316,6 +316,10 @@ dependencies = [
 [[package]]
 name = "carapana-sandbox"
 version = "0.0.0"
+dependencies = [
+ "carapana-storage",
+ "sha2",
+]
 
 [[package]]
 name = "carapana-storage"

@@ -4018,6 +4018,22 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   nem foi removido arquivo de outra tarefa. O gate completo com `TMPDIR=/var/tmp` e Bubblewrap obrigatório
   passou depois, com nove testes de output, 36 unitários de daemon, 14 unitários CLI, 41 de core,
   84 de storage, demais suites Rust, doctests de privacidade/token, 24 Vitest e 64 E2E.
+- O operador escolheu staging de snapshots explícitos (PD-36). `carapana-sandbox` prepara somente paths
+  selecionados em árvore efêmera privada, com orçamento antes da leitura, manifest SHA-256 e verificação
+  bounded de conteúdo/inventário (inclusive recusa de arquivos extras/protegidos inseridos depois).
+  O probe Bubblewrap agora monta esse staging, não a origem, e testa ausência do fixture `.env.example`.
+  Não há launcher geral, aplicação de mudanças nem compartilhamento automático.
+- O run `39667041238`, em `1e057ba`, passou Web/Linux e Rust/Ubuntu, mas macOS repetiu o reset/timeout
+  do callback OAuth observado anteriormente. Teste TCP local forçando accepted socket nonblocking e
+  headers fragmentados reproduziu rejeição antes da correção. O reader agora normaliza blocking;
+  o parser limita bytes antes de `read_line` e encerra em EOF incompleto, evitando crescimento/spin
+  ilimitados. Quatro regressões locais cobrem fragmentação, EOF, limites e Host exato; a suíte OpenAI
+  passou 32 testes. Confirmação da intermitência macOS ainda depende do próximo CI; não foi feita
+  inferência ou autenticação real, nem alterada a validação de state/client_id.
+- A correção de callback foi enviada separadamente em `67099fe`; testes de callback passaram também
+  30 execuções locais consecutivas. Após finalizar snapshots, o gate completo com Bubblewrap obrigatório
+  passou novamente: 13 unitários de sandbox e doctest de privacidade do bundle, 32 OpenAI, 41 core,
+  36 daemon, 84 storage, demais suites Rust, formatter/lint/check/Clippy/build e 24 Vitest/64 E2E.
 
 ---
 

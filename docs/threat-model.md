@@ -84,7 +84,8 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
 
 1. PD-34 implementa o contrato puro de proposta imutável, aprovação exata e revogação. Integrar origem
    autenticada do evento UI/IPC, todos os campos de isolamento/recursos e revalidação no ponto de efeito.
-2. Política de conteúdo/segredos e montagem mínima a partir de snapshots autorizados, sem HOME/config implícitos.
+2. PD-36 implementa staging limitado dos arquivos explícitos e verificação de manifest/inventário;
+   integrar autenticação da seleção, política de conteúdo/segredos e mount read-only seguro, sem HOME/config implícitos.
 3. PD-35 implementa tails e orçamento agregado isolados; integrar leitura bounded antes de alocar chunks,
    timeout/cancelamento e budgets ao supervisor/backend sem renderizar ou persistir output bruto.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.

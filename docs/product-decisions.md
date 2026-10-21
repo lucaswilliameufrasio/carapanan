@@ -895,3 +895,31 @@ desativados.
 - Preferido sobre um buffer por stream com limite agregado implícito, ou `read_to_end` antes de truncar,
   que não limitariam a memória do leitor. Esta primitive não prova execução, supervisão ou consumo bounded
   de bytes antes da chamada; os leitores futuros devem aplicar limites antes de alocar seus chunks.
+
+## PD-36 — Staging privado de snapshots explicitamente selecionados
+
+**Data:** 21 de outubro de 2026
+
+**Status:** estratégia de snapshots selecionados aprovada pelo operador; primitive local isolada.
+
+- O primeiro fornecimento de arquivos ao sandbox parte de uma lista explícita de paths relativos,
+  sem enumeração automática do repo. Reutilizar a leitura confinada de `WorkspaceMetadata`: recusar
+  traversal, symlinks, arquivos protegidos e arquivos acima do limite existente de 256 KiB.
+- Preparar cópias efêmeras em diretório privado novo (0700, arquivos 0600), não um bind do workspace real.
+  Não copiar permissões executáveis, HOME, credenciais, arquivos não selecionados ou configuração implícita.
+  Falha de preparação tenta descartar apenas staging criado pela operação e nunca altera a origem.
+  Crash/falha de cleanup pode deixar staging privado; recovery de órfãos e orçamento global de staging
+  ainda precisam ser integrados antes de um launcher de produção.
+- O chamador informa limites explicitamente, sem defaults; tetos iniciais da primitive são 256 arquivos,
+  16 MiB de conteúdo e paths de 4 KiB/32 componentes. Esses são limites de segurança da implementação,
+  não budgets finais calibrados de build. A leitura aplica o restante do orçamento antes de alocar bytes.
+- Guardar apenas manifest efêmero com paths, tamanho e SHA-256, sem Debug/Clone/serialização. Verificação
+  posterior relê o staging pelo mesmo confinamento e falha se conteúdo/identidade mudar. Essa verificação
+  é observacional, não lock contra um atacante do mesmo UID nem prova de imutabilidade após a checagem.
+- Staging não autoriza executar/compartilhar conteúdo nem prova ausência de segredos. O futuro chamador
+  ainda deve autenticar seleção/aprovação, classificar conteúdo, montar read-only por identidade segura e
+  impedir alterações durante o uso. Aplicação de mudanças ao workspace real exige diff/revisão e aprovação
+  separadas; não há cópia de retorno, launcher de comandos ou wiring de provider nesta primitive.
+- Preferido sobre montar o repo vivo, pois evita expor arquivos não selecionados e mudanças posteriores
+  da origem. Builds que precisem de outros arquivos devem solicitar nova seleção, sem ampliar mounts
+  automaticamente ou cair para uma cópia completa do repo.
