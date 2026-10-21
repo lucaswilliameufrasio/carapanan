@@ -3928,6 +3928,40 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   Ubuntu. Após a atualização, `TMPDIR=/var/tmp mise exec -- make verify` passou localmente, incluindo 64
   E2E e a suíte Rust. A validação CI desses últimos baselines ainda está pendente; PR #25 segue draft/open.
 
+### Progresso do Delivery 4 — 21 de outubro de 2026
+
+- O run `39335241433`, no HEAD `8fe76f9`, passou Rust/Ubuntu e Rust/macOS. Web/Linux passou formatação,
+  lint, check, build e 24 testes Vitest; os únicos failures foram os goldens desktop `updates-available`
+  claro/escuro (158/131 pixels, diferenças localizadas em rasterização de texto). Capturas, DOM e diffs
+  do artifact do run foram revisados; conteúdo e layout permaneceram iguais. Atualizados somente os dois
+  PNGs `-ubuntu` a partir das capturas do runner; nenhum baseline `-linux` foi alterado.
+- `TMPDIR=/var/tmp mise exec -- make verify` passou depois da atualização: 24 testes Vitest, 64 Playwright,
+  formatação/lint/check/build, Clippy, suíte Rust completa e build Rust. A validação no runner Ubuntu dos
+  dois PNGs atualizados ainda depende de novo CI; não inferir aprovação remota a partir do teste local,
+  que usa baselines `-linux`.
+- A fatia de artifact store aprovada em PD-32 foi implementada isoladamente em `carapana-storage`: migration
+  SQLite v6, catálogo sem payload/path de origem, blobs privados 0600 sob diretório 0700, reserva de quota
+  transacional (10 GiB por usuário / 256 MiB por item), stream bounded com SHA-256, leitura verificada,
+  paginação, uso, exclusão explícita, expiração temporária e reconciliação limitada. Advisory file locks
+  protegem writers/leitores ativos da limpeza/remoção; erros de commit incertos são identificados e conteúdo
+  durável ausente/corrompido não tem metadata removida silenciosamente. Sem wiring em tools, provider, daemon
+  ou UI; sem compressão.
+- Testes usam SQLite e filesystem reais e cobrem quota concorrente, limites, falha de source/sink, integridade,
+  permissões, symlink, retenção, locks durante cleanup, recovery de estados pendentes/deleting, órfãos e
+  migration de v5. A crate de storage passou com 80 testes; `cargo clippy --workspace --all-targets --locked
+-- -D warnings`, `cargo build --workspace --locked`, formatter e gates Web (24 Vitest, 64 E2E) passaram.
+- `make verify` não completou apenas por `DiskFull` em `daemon_process::should_return_complete_workspace_review_near_the_ipc_frame_limit`
+  ao gravar SQLite. O `/tmp` do runner local é tmpfs de 31 GiB, 100% usado (76 KiB livres; inodes em 24%);
+  `/var/tmp` tem espaço, mas o fixture desse teste canonicaliza `/tmp` explicitamente. Reexecutar o workspace
+  sem esse teste passou todas as demais suites, com 17/18 testes `daemon_process` verificados no primeiro run.
+  Nenhum arquivo foi removido para liberar espaço; não há evidência de falha causada pelo artifact store.
+- CI remoto ainda não validou os dois snapshots Ubuntu atualizados nem esta implementação: o run 39335241433
+  antecede essas alterações e não foi feito push. O Delivery 4 continua incompleto: shell/process execution,
+  integração operacional Git/worktree e os gates de segurança/runtime não foram ligados nem autorizados.
+- Após o ambiente voltar a ter espaço em `/tmp`, `TMPDIR=/var/tmp mise exec -- make verify` passou
+  integralmente, sem skips adicionais: formatter/lint/check, 24 testes Vitest, 64 E2E, Clippy, todos os
+  testes Rust (incluindo os 18 `daemon_process` e 80 de storage) e build. Nenhum arquivo alheio foi removido.
+
 ---
 
 # 159. Delivery 5 — Context Engine
@@ -4284,6 +4318,8 @@ ADR-008 multi-device protocol
 ADR-009 resource budgets
 ADR-010 MCP lifecycle
 ```
+
+Decisão aprovada para SQLite + artifacts: [ADR-003](adr/ADR-003-sqlite-and-artifacts.md), detalhada em PD-32.
 
 ---
 

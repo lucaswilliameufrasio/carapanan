@@ -791,3 +791,36 @@ desativados.
   inválidos. Listar worktrees, detectar sessões Carapanã concorrentes e escolher worktree versus
   compartilhamento são etapas separadas; qualquer execução de Git/wiring continua bloqueada pelos gates
   de processo, autorização, segredos, sandbox e concorrência.
+
+## PD-32 — Artifact store local com quota e retenção explícitas
+
+**Data:** 21 de outubro de 2026
+
+**Status:** aprovada para implementação isolada; não habilita captura automática, tools ou runtime.
+
+- O SQLite guarda somente metadados e estado de lifecycle; bytes ficam em arquivos próprios no diretório
+  privado por usuário. IDs numéricos gerados pelo SQLite, sem informação de origem embutida, determinam
+  os nomes de arquivo; IDs são identificadores, não capability de autorização. Não persistir nome de
+  origem, path do workspace, prompt ou conteúdo nos metadados/logs.
+- Defaults ajustáveis pela policy do store: no máximo 10 GiB por usuário e 256 MiB por artifact. Esses são limites de
+  admissão iniciais baseados nos valores conceituais do plano, não uma calibração final de hardware.
+  Gravações reservam capacidade antes de consumir/gravar o payload; ao exceder limite ou quota, rejeitar
+  sem remover artifacts duráveis e sem manter bytes parcialmente aceitos.
+- Artifacts duráveis são retidos até exclusão explícita. Artifacts temporários expiram sete dias após a
+  criação. Arquivos gerenciados sem registro e gravações pendentes podem ser limpos após sete dias; a
+  limpeza é limitada por lotes e nunca toca arquivos fora do namespace privado gerenciado pelo store.
+  Locks advisory coordenam writers/leitores ativos com recuperação e exclusão. Metadados de artifact
+  durável ausente/corrompido não são removidos silenciosamente.
+- Falha na limpeza mantém estado observável e pode bloquear quota; não liberar reserva enquanto bytes
+  persistirem ou estado DB/filesystem for incerto. Após limite/quota, a operação falha explicitamente;
+  não há evicção de trabalho persistente.
+- A API é local e desconectada de `ToolCallRequested`, daemon, sessão/fila, provider e UI. Não há
+  captura/cache automática de código, prompts, tool output, segredos ou diffs. Conteúdo não deve ser
+  escrito sem os gates independentes de classificação, redaction e autorização; esta decisão não prova
+  que um payload seja livre de segredos.
+- Não adicionar compressão. A policy fica configurável para futura calibração com benchmarks e hardware
+  suportado; qualquer aumento dos tetos requer revisão explícita da policy.
+- Preferido sobre BLOBs SQLite para evitar crescimento do banco/WAL e sobre evicção LRU de todos os
+  artifacts, que poderia apagar evidências ou trabalho durável. Os arquivos externos introduzem
+  reconciliação crash-safe limitada; SQLite continua como catálogo, e estados pendentes/ausentes não são
+  tratados como sucesso.

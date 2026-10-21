@@ -4,10 +4,16 @@ use std::{error::Error, fmt, path::Path, time::Duration};
 
 use rusqlite::{Connection, TransactionBehavior};
 
+mod artifact_store;
 mod session_store;
 mod user_database;
 mod workspace;
 
+pub use artifact_store::{
+    ArtifactCleanupReport, ArtifactKind, ArtifactMetadata, ArtifactPolicy, ArtifactStore,
+    ArtifactStoreError, ArtifactUsage, DEFAULT_ARTIFACT_RETENTION,
+    DEFAULT_ARTIFACT_STORE_QUOTA_BYTES, DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_ORPHAN_GRACE,
+};
 pub use session_store::{
     PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionEventRecord,
     StoredSessionStatus,
@@ -192,7 +198,7 @@ impl SessionRegistry {
     }
 }
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE sessions (
@@ -219,6 +225,31 @@ CREATE TABLE session_snapshots (
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 ) STRICT;
+"#;
+
+const ARTIFACT_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS artifact_records (
+    artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('durable', 'temporary')),
+    state TEXT NOT NULL CHECK (state IN ('pending', 'ready', 'deleting')),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+    reserved_bytes INTEGER NOT NULL CHECK (reserved_bytes >= 0),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    expires_at_ms INTEGER,
+    sha256 BLOB,
+    CHECK (
+        (kind = 'durable' AND expires_at_ms IS NULL)
+        OR (kind = 'temporary' AND expires_at_ms IS NOT NULL AND expires_at_ms >= created_at_ms)
+    ),
+    CHECK (
+        (state = 'pending' AND size_bytes = 0 AND reserved_bytes > 0 AND sha256 IS NULL)
+        OR (state = 'ready' AND reserved_bytes = 0 AND sha256 IS NOT NULL AND length(sha256) = 32)
+        OR (state = 'deleting' AND reserved_bytes = 0 AND sha256 IS NOT NULL AND length(sha256) = 32)
+    )
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS artifact_records_state_expiry
+    ON artifact_records(state, expires_at_ms, artifact_id);
 "#;
 
 #[derive(Debug)]
@@ -459,19 +490,11 @@ impl Database {
         match version {
             0 => {
                 transaction.execute_batch(INITIAL_SCHEMA)?;
+                transaction.execute_batch(ARTIFACT_SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
-            1 => {
-                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            2 => {
-                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            3 => {
-                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            // Version 5 adds hibernation events; older binaries must reject them before replay.
-            4 => {
+            1..=5 => {
+                transaction.execute_batch(ARTIFACT_SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             SCHEMA_VERSION => {}

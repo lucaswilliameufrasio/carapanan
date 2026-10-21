@@ -179,7 +179,7 @@ fn reject_symlink_components(path: &Path) -> Result<(), UserDatabaseError> {
 }
 
 #[cfg(unix)]
-fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
+pub(crate) fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 
     reject_symlink_components(path)?;
@@ -211,13 +211,13 @@ fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
 }
 
 #[cfg(not(unix))]
-fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
+pub(crate) fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
     let _ = path;
     Err(UserDatabaseError::UnsupportedPlatform)
 }
 
 #[cfg(unix)]
-fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
+pub(crate) fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
     match fs::symlink_metadata(path) {
@@ -248,7 +248,7 @@ fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
 }
 
 #[cfg(not(unix))]
-fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
+pub(crate) fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
     let _ = path;
     Err(UserDatabaseError::UnsupportedPlatform)
 }
