@@ -51,6 +51,9 @@ authorization, and sharing gates remain independent.
   display, log, upload, or send to a provider.
 - Durable artifacts can exhaust their quota until the user explicitly deletes some; preserving work is
   preferred to silently reclaiming space.
+- Unregistered managed blob bytes also count against admission quota until reconciliation removes them.
+  Accounting scans fail closed when their bounded directory limit is exceeded. Interrupted uncommitted
+  allocations may leave occupied numeric IDs; bounded retries skip those files without overwriting them.
 
 ## Revisit when
 

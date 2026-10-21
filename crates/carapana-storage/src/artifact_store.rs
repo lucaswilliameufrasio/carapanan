@@ -18,6 +18,7 @@ use std::{
 const ARTIFACT_DIRECTORY_NAME: &str = "artifacts";
 const MAX_ARTIFACT_COUNT: i64 = 16_384;
 const MAX_CLEANUP_BATCH_SIZE: usize = 128;
+const MAX_ARTIFACT_ID_ALLOCATION_ATTEMPTS: usize = 128;
 const MAX_ARTIFACT_DIRECTORY_SCAN_ENTRIES: usize =
     MAX_ARTIFACT_COUNT as usize + MAX_CLEANUP_BATCH_SIZE;
 const MAX_LIST_PAGE_SIZE: u16 = 256;
@@ -146,6 +147,8 @@ pub struct ArtifactMetadata {
 pub struct ArtifactUsage {
     pub used_bytes: u64,
     pub reserved_bytes: u64,
+    /// Managed payload bytes without catalog records, retained until grace-period cleanup.
+    pub orphan_bytes: u64,
     pub artifact_count: u64,
     pub quota_bytes: u64,
     pub max_artifact_bytes: u64,
@@ -174,6 +177,8 @@ pub enum ArtifactStoreError {
     InvalidByteLimit,
     ArtifactTooLarge,
     ArtifactCountExceeded,
+    ArtifactIdAllocationExhausted,
+    ReconciliationRequired,
     QuotaExceeded {
         quota_bytes: u64,
         used_bytes: u64,
@@ -216,6 +221,12 @@ impl fmt::Display for ArtifactStoreError {
             }
             Self::ArtifactCountExceeded => {
                 formatter.write_str("artifact store has reached its item limit")
+            }
+            Self::ArtifactIdAllocationExhausted => {
+                formatter.write_str("artifact ID allocation encountered too many existing files; reconcile the store before retrying")
+            }
+            Self::ReconciliationRequired => {
+                formatter.write_str("artifact directory exceeds the bounded accounting scan; reconcile the store before writing")
             }
             Self::QuotaExceeded {
                 quota_bytes,
@@ -525,9 +536,11 @@ impl ArtifactStore {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
+        let orphan_bytes = managed_orphan_bytes(&self.directory, &self.known_artifact_ids()?)?;
         Ok(ArtifactUsage {
             used_bytes: nonnegative_u64(used_bytes)?,
             reserved_bytes: nonnegative_u64(reserved_bytes)?,
+            orphan_bytes,
             artifact_count: nonnegative_u64(artifact_count)?,
             quota_bytes: self.policy.max_total_bytes,
             max_artifact_bytes: self.policy.max_artifact_bytes,
@@ -633,12 +646,23 @@ impl ArtifactStore {
         if artifact_count >= MAX_ARTIFACT_COUNT {
             return Err(ArtifactStoreError::ArtifactCountExceeded);
         }
+        // Hold the catalog write transaction while accounting unregistered blobs: another store
+        // cannot create a new pending blob between this scan and reservation publication.
+        let known_ids = catalog_artifact_ids(&transaction)?;
+        let orphan_bytes = managed_orphan_bytes(&self.directory, &known_ids)?;
+        let orphan_bytes_i64 =
+            i64::try_from(orphan_bytes).map_err(|_| ArtifactStoreError::InvalidDatabaseState)?;
         let used_total = used_bytes
             .checked_add(reserved_bytes)
+            .and_then(|value| value.checked_add(orphan_bytes_i64))
             .and_then(|value| value.checked_add(max_bytes_i64))
             .ok_or(ArtifactStoreError::QuotaExceeded {
                 quota_bytes: self.policy.max_total_bytes,
-                used_bytes: nonnegative_u64(used_bytes.saturating_add(reserved_bytes))?,
+                used_bytes: nonnegative_u64(
+                    used_bytes
+                        .saturating_add(reserved_bytes)
+                        .saturating_add(orphan_bytes_i64),
+                )?,
                 requested_bytes: max_bytes,
             })?;
         let used_total =
@@ -646,32 +670,50 @@ impl ArtifactStore {
         if used_total > self.policy.max_total_bytes {
             return Err(ArtifactStoreError::QuotaExceeded {
                 quota_bytes: self.policy.max_total_bytes,
-                used_bytes: nonnegative_u64(used_bytes.saturating_add(reserved_bytes))?,
+                used_bytes: nonnegative_u64(
+                    used_bytes
+                        .saturating_add(reserved_bytes)
+                        .saturating_add(orphan_bytes_i64),
+                )?,
                 requested_bytes: max_bytes,
             });
         }
 
-        transaction.execute(
-            "INSERT INTO artifact_records (kind, state, size_bytes, reserved_bytes, created_at_ms, expires_at_ms, sha256) \
-             VALUES (?1, 'pending', 0, ?2, ?3, ?4, NULL)",
-            rusqlite::params![kind.as_db_value(), max_bytes_i64, now_ms, expires_at_ms],
-        )?;
-        let artifact_id = transaction.last_insert_rowid();
-        let artifact_id = nonnegative_u64(artifact_id)?;
-        if artifact_id == 0 {
-            return Err(ArtifactStoreError::InvalidDatabaseState);
+        for _ in 0..MAX_ARTIFACT_ID_ALLOCATION_ATTEMPTS {
+            transaction.execute(
+                "INSERT INTO artifact_records (kind, state, size_bytes, reserved_bytes, created_at_ms, expires_at_ms, sha256) \
+                 VALUES (?1, 'pending', 0, ?2, ?3, ?4, NULL)",
+                rusqlite::params![kind.as_db_value(), max_bytes_i64, now_ms, expires_at_ms],
+            )?;
+            let artifact_id = nonnegative_u64(transaction.last_insert_rowid())?;
+            if artifact_id == 0 {
+                return Err(ArtifactStoreError::InvalidDatabaseState);
+            }
+            let file_name = blob_name(artifact_id);
+            let file = match create_blob_file(&self.directory, &file_name) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    // A crash may have rolled back SQLite while leaving the exclusive-created blob.
+                    // Preserve that file for grace-period reconciliation, and advance the sequence.
+                    transaction.execute(
+                        "DELETE FROM artifact_records WHERE artifact_id = ?1 AND state = 'pending'",
+                        [artifact_id_to_i64(artifact_id)?],
+                    )?;
+                    continue;
+                }
+                Err(error) => return Err(ArtifactStoreError::Io(error)),
+            };
+            if let Err(error) = lock_exclusive(&file) {
+                drop(file);
+                unlink_blob_file(&self.directory, &file_name)?;
+                return Err(ArtifactStoreError::Io(error));
+            }
+            transaction
+                .commit()
+                .map_err(|_| ArtifactStoreError::CommitOutcomeUncertain(artifact_id))?;
+            return Ok((artifact_id, expires_at_ms, file));
         }
-        let file_name = blob_name(artifact_id);
-        let file = create_blob_file(&self.directory, &file_name)?;
-        if let Err(error) = lock_exclusive(&file) {
-            drop(file);
-            unlink_blob_file(&self.directory, &file_name)?;
-            return Err(ArtifactStoreError::Io(error));
-        }
-        transaction
-            .commit()
-            .map_err(|_| ArtifactStoreError::CommitOutcomeUncertain(artifact_id))?;
-        Ok((artifact_id, expires_at_ms, file))
+        Err(ArtifactStoreError::ArtifactIdAllocationExhausted)
     }
 
     fn finalize(
@@ -970,17 +1012,85 @@ impl ArtifactStore {
     }
 
     fn known_artifact_ids(&self) -> Result<std::collections::HashSet<u64>, ArtifactStoreError> {
-        let mut statement = self
-            .database
-            .connection
-            .prepare("SELECT artifact_id FROM artifact_records")?;
-        let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
-        let mut ids = std::collections::HashSet::new();
-        for row in rows {
-            ids.insert(nonnegative_u64(row?)?);
-        }
-        Ok(ids)
+        catalog_artifact_ids(&self.database.connection)
     }
+}
+
+fn catalog_artifact_ids(
+    connection: &rusqlite::Connection,
+) -> Result<std::collections::HashSet<u64>, ArtifactStoreError> {
+    let mut statement = connection.prepare("SELECT artifact_id FROM artifact_records LIMIT ?1")?;
+    let rows = statement.query_map([MAX_ARTIFACT_COUNT + 1], |row| row.get::<_, i64>(0))?;
+    let mut ids = std::collections::HashSet::new();
+    for row in rows {
+        ids.insert(nonnegative_u64(row?)?);
+        if ids.len() > MAX_ARTIFACT_COUNT as usize {
+            return Err(ArtifactStoreError::ReconciliationRequired);
+        }
+    }
+    Ok(ids)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn managed_orphan_bytes(
+    directory: &fs::File,
+    known_ids: &std::collections::HashSet<u64>,
+) -> Result<u64, ArtifactStoreError> {
+    use rustix::{
+        fd::AsFd,
+        fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat},
+    };
+
+    let descriptor = openat(
+        directory.as_fd(),
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(|error| ArtifactStoreError::Io(io::Error::from(error)))?;
+    let mut stream =
+        Dir::new(descriptor).map_err(|error| ArtifactStoreError::Io(io::Error::from(error)))?;
+    let mut entries = 0_usize;
+    let mut bytes = 0_u64;
+    while let Some(entry) = stream.read() {
+        let entry = entry.map_err(|error| ArtifactStoreError::Io(io::Error::from(error)))?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        entries += 1;
+        if entries > MAX_ARTIFACT_DIRECTORY_SCAN_ENTRIES {
+            return Err(ArtifactStoreError::ReconciliationRequired);
+        }
+        let Ok(name_str) = std::str::from_utf8(name.to_bytes()) else {
+            continue;
+        };
+        let Some(id) = parse_blob_name(name_str) else {
+            continue;
+        };
+        if known_ids.contains(&id) {
+            continue;
+        }
+        let stat = match statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(error) if error == rustix::io::Errno::NOENT => continue,
+            Err(error) => return Err(ArtifactStoreError::Io(io::Error::from(error))),
+        };
+        if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile {
+            bytes = bytes
+                .checked_add(nonnegative_u64(stat.st_size)?)
+                .ok_or(ArtifactStoreError::InvalidDatabaseState)?;
+        }
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn managed_orphan_bytes(
+    _directory: &fs::File,
+    _known_ids: &std::collections::HashSet<u64>,
+) -> Result<u64, ArtifactStoreError> {
+    Err(ArtifactStoreError::UnsupportedPlatform)
 }
 
 struct ArtifactRecord {
@@ -1786,6 +1896,98 @@ mod tests {
         assert!(!stale_path.exists());
         assert!(recent_path.exists());
         assert!(noncanonical_path.exists());
+    }
+
+    #[test]
+    fn should_charge_unexpired_orphan_payloads_against_admission_quota() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let root = TestDirectory::new();
+        let policy = policy(16, 16, Duration::from_secs(100), Duration::from_secs(100));
+        let mut store = ArtifactStore::open_with_policy(root.database_path(), policy).unwrap();
+        let mut orphan = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(root.artifact_path(90))
+            .unwrap();
+        orphan.write_all(b"orphaned").unwrap();
+        drop(orphan);
+
+        assert!(matches!(
+            store.write(ArtifactKind::Durable, 16, Cursor::new(b"new"), 1_000),
+            Err(ArtifactStoreError::QuotaExceeded { used_bytes: 8, .. })
+        ));
+        let usage = store.usage().unwrap();
+        assert_eq!(usage.orphan_bytes, 8);
+        assert_eq!(usage.reserved_bytes, 0);
+        let metadata = store
+            .write(ArtifactKind::Durable, 8, Cursor::new(b"new"), 1_000)
+            .unwrap();
+        assert_eq!(metadata.size_bytes, 3);
+        assert_eq!(fs::read(root.artifact_path(90)).unwrap(), b"orphaned");
+    }
+
+    #[test]
+    fn should_bound_id_collision_retries_without_touching_existing_blobs() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let root = TestDirectory::new();
+        let mut store = ArtifactStore::open(root.database_path()).unwrap();
+        for id in 1..=super::MAX_ARTIFACT_ID_ALLOCATION_ATTEMPTS as u64 {
+            let _file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(root.artifact_path(id))
+                .unwrap();
+        }
+        assert!(matches!(
+            store.write(ArtifactKind::Durable, 8, Cursor::new(b"new"), 1_000),
+            Err(ArtifactStoreError::ArtifactIdAllocationExhausted)
+        ));
+        assert_eq!(store.usage().unwrap().artifact_count, 0);
+        assert_eq!(store.usage().unwrap().reserved_bytes, 0);
+        assert_eq!(
+            fs::read_dir(root.0.join("artifacts")).unwrap().count(),
+            super::MAX_ARTIFACT_ID_ALLOCATION_ATTEMPTS
+        );
+    }
+
+    #[test]
+    fn should_skip_uncommitted_blob_ids_without_overwriting_or_deleting_them() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let root = TestDirectory::new();
+        let mut store = ArtifactStore::open(root.database_path()).unwrap();
+        let orphan_path = root.artifact_path(1);
+        let mut orphan = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&orphan_path)
+            .unwrap();
+        orphan.write_all(b"uncommitted interrupted write").unwrap();
+        drop(orphan);
+
+        let metadata = store
+            .write(
+                ArtifactKind::Durable,
+                16,
+                Cursor::new(b"new artifact"),
+                1_000,
+            )
+            .unwrap();
+        assert_eq!(metadata.id, 2);
+        assert_eq!(
+            fs::read(&orphan_path).unwrap(),
+            b"uncommitted interrupted write"
+        );
+        let mut copied = Vec::new();
+        store.copy_to(metadata.id, 1_001, &mut copied).unwrap();
+        assert_eq!(copied, b"new artifact");
+        assert_eq!(store.usage().unwrap().reserved_bytes, 0);
+        assert_eq!(store.usage().unwrap().artifact_count, 1);
     }
 
     #[test]

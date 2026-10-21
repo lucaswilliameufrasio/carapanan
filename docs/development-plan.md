@@ -3961,6 +3961,19 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - Após o ambiente voltar a ter espaço em `/tmp`, `TMPDIR=/var/tmp mise exec -- make verify` passou
   integralmente, sem skips adicionais: formatter/lint/check, 24 testes Vitest, 64 E2E, Clippy, todos os
   testes Rust (incluindo os 18 `daemon_process` e 80 de storage) e build. Nenhum arquivo alheio foi removido.
+- Commit `4e63404` enviado à branch existente. A revisão seguinte reproduziu uma lacuna de crash recovery:
+  um blob criado antes do commit SQLite pode ocupar o próximo ID após rollback. A alocação agora preserva
+  arquivos existentes e tenta o próximo ID com limite explícito de 128 tentativas. Bytes de blobs órfãos
+  gerenciados contam contra a quota mesmo durante a janela de retenção; a admissão falha fechada quando
+  a enumeração ultrapassa o limite de accounting. Testes de filesystem real cobrem colisão, limite de
+  tentativas e recusa de quota por órfãos recentes; sem ampliar permissões nem fazer wiring de runtime.
+- O run `39662001311`, em `4e63404`, passou Rust/Ubuntu e Rust/macOS. Web passou 62/64 E2E, incluindo
+  os goldens `updates-available` corrigidos; falhou apenas em `updates-installed` desktop claro/escuro
+  (148/129 pixels). Capturas esperadas/atuais e diffs foram revisados antes de atualizar somente esses dois
+  PNGs Ubuntu: conteúdo e layout iguais, diferenças localizadas de rasterização. Baselines Linux intactos.
+- Após a correção de recovery/contabilização de órfãos, `TMPDIR=/var/tmp mise exec -- make verify` passou
+  integralmente, com 83 testes de storage. Um novo CI ainda deverá confirmar a alteração de recovery e
+  os últimos dois PNGs Ubuntu.
 
 ---
 
