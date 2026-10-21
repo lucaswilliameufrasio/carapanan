@@ -1,7 +1,7 @@
 use crate::{
     Database, MigrationError, UserDatabaseError,
     user_database::{
-        ensure_private_database_file, ensure_private_directory, user_data_directory,
+        DATABASE_FILE, ensure_private_database_file, ensure_private_directory, user_data_directory,
         user_database_path,
     },
 };
@@ -315,6 +315,8 @@ impl ArtifactStore {
         Self::open_with_policy(user_database_path()?, policy)
     }
 
+    /// Open the single `sessions.sqlite3` catalog for a private user-data directory.
+    /// Other filenames are rejected so independent catalogs cannot share and clean each other's blobs.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, ArtifactStoreError> {
         Self::open_with_policy(path, ArtifactPolicy::default())
     }
@@ -324,6 +326,11 @@ impl ArtifactStore {
         policy: ArtifactPolicy,
     ) -> Result<Self, ArtifactStoreError> {
         let database_path = path.as_ref();
+        if database_path.file_name() != Some(std::ffi::OsStr::new(DATABASE_FILE)) {
+            return Err(ArtifactStoreError::UserDatabase(
+                UserDatabaseError::UnsafePath(database_path.to_owned()),
+            ));
+        }
         let parent = database_path.parent().ok_or_else(|| {
             ArtifactStoreError::UserDatabase(UserDatabaseError::UnsafePath(
                 database_path.to_owned(),
@@ -1896,6 +1903,26 @@ mod tests {
         assert!(!stale_path.exists());
         assert!(recent_path.exists());
         assert!(noncanonical_path.exists());
+    }
+
+    #[test]
+    fn should_reject_alternate_catalog_names_before_sharing_an_artifact_directory() {
+        let root = TestDirectory::new();
+        let mut primary = ArtifactStore::open(root.database_path()).unwrap();
+        let artifact = primary
+            .write(ArtifactKind::Durable, 16, Cursor::new(b"keep"), 1_000)
+            .unwrap();
+        let other_database = root.0.join("other.sqlite3");
+        assert!(matches!(
+            ArtifactStore::open(&other_database),
+            Err(ArtifactStoreError::UserDatabase(
+                crate::UserDatabaseError::UnsafePath(_)
+            ))
+        ));
+        assert!(!other_database.exists());
+        let mut bytes = Vec::new();
+        primary.copy_to(artifact.id, 1_001, &mut bytes).unwrap();
+        assert_eq!(bytes, b"keep");
     }
 
     #[test]

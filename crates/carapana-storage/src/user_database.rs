@@ -8,7 +8,7 @@ use std::{
 
 use crate::{Database, MigrationError};
 
-const DATABASE_FILE: &str = "sessions.sqlite3";
+pub(crate) const DATABASE_FILE: &str = "sessions.sqlite3";
 
 #[derive(Debug)]
 pub enum UserDatabaseError {

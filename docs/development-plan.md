@@ -3986,6 +3986,16 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   após esta fatia: cinco testes de sandbox (incluindo enforcement real, timeout e pipes limitados), dois
   testes CLI de processo, restante do workspace, formatter/lint/check/Clippy/build e 24 Vitest/64 E2E.
   A prova positiva foi realizada no host Linux local; o CI macOS deve testar somente a recusa unsupported.
+- Revisão de preservação reproduziu e corrigiu o compartilhamento acidental de `artifacts/` por dois
+  catálogos com nomes diferentes: a API aceita apenas `sessions.sqlite3` por diretório privado e recusa
+  outros nomes antes de criar arquivos. O teste de regressão falhou antes da correção e passou depois.
+- Adicionado [threat model](threat-model.md) com atores, ativos, fronteiras, evidência existente, lacunas e
+  ordem das próximas fatias antes de execução real. Documenta que sandbox sintético e grants modelados
+  não equivalem ao enforcement de um executor; `ToolCallRequested` continua inerte.
+- O CI `39664308695`, em `d9e5720`, passou Web/Linux e Rust/Ubuntu/macOS. Depois da correção de
+  isolamento de catálogos, o gate local completo passou novamente com enforcement Bubblewrap obrigatório,
+  84 testes de storage, cinco testes de sandbox, dois CLI do probe, 24 Vitest e 64 E2E. O teste macOS
+  comprova recusa unsupported, não disponibilidade de sandbox naquele OS.
 
 ---
 
@@ -4351,6 +4361,8 @@ Decisão aprovada para SQLite + artifacts: [ADR-003](adr/ADR-003-sqlite-and-arti
 # 177. Threat model
 
 Manter documento vivo cobrindo:
+
+Estado inicial e lacunas do Delivery 4: [threat model e gates de execução](threat-model.md).
 
 ```text
 malicious repository

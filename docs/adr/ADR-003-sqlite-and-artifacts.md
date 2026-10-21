@@ -54,6 +54,8 @@ authorization, and sharing gates remain independent.
 - Unregistered managed blob bytes also count against admission quota until reconciliation removes them.
   Accounting scans fail closed when their bounded directory limit is exceeded. Interrupted uncommitted
   allocations may leave occupied numeric IDs; bounded retries skip those files without overwriting them.
+- Only `sessions.sqlite3` may own the sibling artifact directory. Alternative catalog filenames are
+  rejected before I/O so two independent catalogs cannot treat each other's durable blobs as orphans.
 
 ## Revisit when
 
