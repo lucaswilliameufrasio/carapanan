@@ -946,3 +946,29 @@ desativados.
   Não habilitar detach/`KeepRunning` sem transferência comprovada da lease ao host que mantém o processo;
   apagar paths não prova liberação física de arquivos ainda abertos/montados. A quota é de admissão lógica,
   não hard quota do filesystem ou isolamento contra escrita arbitrária do mesmo UID.
+
+## PD-38 — Manifesto explícito de arquivos de runtime
+
+**Data:** 21 de outubro de 2026
+
+**Status:** estratégia aprovada pelo operador; validação isolada, sem launcher geral.
+
+- Cada entrada declara origem absoluta, destino absoluto exato, papel (executável ou suporte) e SHA-256
+  esperado. Não descobrir dependências com `ldd`, interpretar scripts, buscar em PATH, baixar arquivos
+  ou expandir diretórios. Dependência ausente exige revisar o manifesto, sem fallback para `/usr` inteiro.
+- O primeiro validador Linux abre cada componente por descritor com `NOFOLLOW`, exige diretórios e
+  arquivos root-owned sem escrita por grupo/outros, recusa arquivos especiais e setuid/setgid e verifica
+  conteúdo por stream limitado. Preserva descritores read-only, identidade e assinatura observada.
+- Destinos ficam apenas em `/runtime/`, `/usr/`, `/bin/`, `/lib/` ou `/lib64/`, sem traversal, duplicatas
+  ou conflitos arquivo/diretório. Isso não autoriza executar arquivos nem comprova ausência de segredos:
+  o manifesto precisa vir de configuração confiável/revisão do operador, nunca do repo/provider sozinho.
+- O chamador informa limites de contagem e bytes; tetos da primitive: 128 arquivos, 256 MiB por arquivo
+  e 256 MiB agregados. Não são defaults de produto. Hash esperado deve ser aprovado independentemente;
+  calcular o hash do arquivo atual automaticamente não constitui allowlist de confiança.
+- Revalidação recusa mudança de origem, metadata ou conteúdo. Descritor fixado não impede modificação
+  in-place por root nem cria uma cópia imutável. O launcher futuro deve montar arquivos mínimos por
+  identidade segura, vincular o manifesto à aprovação e manter todas as outras verificações; esta fatia
+  não oferece API de spawn/mount, cache de runtime, rede ou ativação de tools. macOS retorna unsupported.
+- Preferido sobre runtime empacotado para começar sem definir distribuição/update de imagem; rever
+  essa escolha se o conjunto explícito se tornar impraticável. O probe sintético existente continua
+  separado e não comprova isolamento de comandos gerais com este manifesto.

@@ -318,6 +318,7 @@ name = "carapana-sandbox"
 version = "0.0.0"
 dependencies = [
  "carapana-storage",
+ "rustix",
  "sha2",
 ]
 

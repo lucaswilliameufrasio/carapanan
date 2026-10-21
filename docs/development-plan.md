@@ -4051,6 +4051,20 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   PD-37: formatter/lint/check/Clippy/build, 24 Vitest, 64 E2E e todas as suites Rust, incluindo 94 testes
   de storage e 16 de sandbox, com enforcement Bubblewrap positivo local. Novo CI ainda deverá confirmar
   a migração v7 e os novos testes de lease no Ubuntu/macOS. Launcher geral e tools continuam bloqueados.
+- O run `39679546610`, em `04d9969`, passou o CI remoto, confirmando a fatia de quota compartilhada.
+- O operador escolheu manifesto explícito para runtime (PD-38). `runtime_manifest` valida arquivos
+  individuais, destinos exatos e SHA-256 esperado, sem PATH, `ldd`, download ou expansão de diretórios.
+  Linux exige ancestrais/arquivo root-owned, sem escrita por grupo/outros ou symlinks, fixa descritores
+  read-only e oferece revalidação de identidade/metadata/conteúdo. Políticas de contagem/bytes são explícitas.
+  macOS permanece unsupported para esse validador; isso não altera o staging portátil existente.
+- A suíte direcionada passou com 24 testes de sandbox e três doctests, incluindo runtime real sem execução,
+  orçamento agregado, digest errado, paths/destinos inválidos, mudanças de bytes/permissões e recusa de
+  arquivos especiais/symlinks. O hash derivado de `/usr/bin/true` existe somente no fixture de teste;
+  produção precisa de digest aprovado independentemente. Não há launcher ou wiring de tools nesta fatia.
+- `TMPDIR=/var/tmp CARAPANA_REQUIRE_BUBBLEWRAP=1 mise exec -- make verify` passou integralmente após
+  PD-38: formatter/lint/check/Clippy/build, todas as suites Rust (incluindo 24 testes de sandbox,
+  três doctests de privacidade e 94 testes de storage), 24 Vitest e 64 E2E. Enforcement Bubblewrap
+  positivo foi exigido no host Linux local; confirmação remota desta fatia ainda pendente.
 
 ---
 

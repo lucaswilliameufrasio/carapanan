@@ -88,6 +88,10 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    integrar autenticação da seleção, política de conteúdo/segredos e mount read-only seguro, sem HOME/config implícitos.
    PD-37 acrescenta reserva global compartilhada com artifacts e recovery de staging, sem transformar
    a quota lógica em hard quota do filesystem nem proteger contra escrita hostil fora das APIs do mesmo UID.
+   PD-38 valida um manifesto explícito de arquivos de runtime, fixando descritores após checar origem
+   root-owned, traversal sem symlinks, orçamento e SHA-256 esperado. Ainda falta vincular esse manifesto
+   à aprovação e montar por descritores; não há descoberta de dependências nem confiança automática
+   no conteúdo só porque o hash corresponde. Atualizações in-place por root continuam fora da garantia.
 3. PD-35 implementa tails e orçamento agregado isolados; integrar leitura bounded antes de alocar chunks,
    timeout/cancelamento e budgets ao supervisor/backend sem renderizar ou persistir output bruto.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
