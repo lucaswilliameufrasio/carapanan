@@ -824,3 +824,24 @@ desativados.
   artifacts, que poderia apagar evidências ou trabalho durável. Os arquivos externos introduzem
   reconciliação crash-safe limitada; SQLite continua como catálogo, e estados pendentes/ausentes não são
   tratados como sucesso.
+
+## PD-33 — Sandbox Linux inicial com Bubblewrap, fail-closed
+
+**Data:** 21 de outubro de 2026
+
+**Status:** estratégia aprovada pelo operador; implementação incremental, sem ativação de tools.
+
+- O primeiro backend Linux usa Bubblewrap e namespaces sem privilégios elevados e sem rede por padrão.
+  Bubblewrap é dependência de runtime do backend, não um substituto para aprovação, proteção de segredos,
+  supervisão/cancelamento ou validação de conteúdo. macOS permanece sem execução por este backend.
+- Começar com uma prova isolada e sintética: arquivos de fixture privados, workspace somente leitura,
+  tmpfs temporário limitado, ambiente limpo, namespaces de rede/PID/usuário e `no_new_privs` comprovados.
+  Não montar HOME, credenciais, repo real nem sockets do host. Falha/indisponibilidade/timeout nunca
+  equivalem a sandbox ativo; não usar flags `*-try`, fallback sem sandbox ou elevação para passar o teste.
+- A prova aceita somente script e parâmetros internos fixos, com saída limitada e timeout. Não é API
+  pública de comando arbitrário nem permite inferir que um workspace real esteja livre de segredos.
+  O wiring futuro exige autorização exata, seleção mínima de mounts, orçamento de processos/output,
+  cancelamento e testes adversariais separados antes de `ToolCallRequested` executar algo.
+- Preferido sobre Landlock sozinho para a primeira prova porque isolamento de filesystem não basta
+  para demonstrar isolamento de rede/processos. Seccomp e outras camadas permanecem revisão própria;
+  não declarar proteção completa contra todos os ataques a partir desta prova limitada.

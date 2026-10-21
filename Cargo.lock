@@ -251,6 +251,7 @@ dependencies = [
  "carapana-daemon",
  "carapana-openai",
  "carapana-protocol",
+ "carapana-sandbox",
  "carapana-storage",
  "clap",
  "crossterm",
@@ -311,6 +312,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "carapana-sandbox"
+version = "0.0.0"
 
 [[package]]
 name = "carapana-storage"

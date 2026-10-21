@@ -284,6 +284,31 @@ capturadas em PTY e inspecionadas visualmente, incluindo sessão vazia, aprovaç
 fila e resultado. Capturas reconstruídas de células de terminal não equivalem a
 screenshot nativo do Mac nem a aprovação humana de UX.
 
+### Diagnóstico sintético de sandbox Linux
+
+```sh
+cargo run -p carapana-cli -- sandbox-probe
+# Gate local que exige enforcement real, não somente falha fechada:
+CARAPANA_REQUIRE_BUBBLEWRAP=1 cargo test -p carapana-sandbox -p carapana-cli --locked
+```
+
+Requer `/usr/bin/bwrap` não setuid, root-owned e não gravável por grupo/outros,
+`/usr/bin/python3` e suporte efetivo a namespaces não privilegiados. Não instala nem
+reconfigura o host. O diagnóstico usa somente um workspace temporário sintético
+read-only, tmpfs de 1 MiB e listener loopback local para testar o isolamento de rede;
+não envia tráfego remoto, monta HOME/repo real, lê credenciais ou acessa o daemon.
+Verifica namespaces de usuário/PID/rede, `no_new_privs`, capacidades e proibição de
+escrita fora do scratch. Stdout/stderr têm limite de 4 KiB cada e deadline de cinco
+segundos. Conteúdo de falhas não é repassado ao terminal.
+
+Falha/indisponibilidade retorna erro, sem elevação nem fallback sem sandbox. macOS
+retorna unsupported. Testes comuns aceitam a indisponibilidade segura do backend;
+não significam enforcement confirmado nesse runner. O gate opt-in acima exige a
+prova positiva. Sucesso comprova somente esse fixture: **não habilita tools/comandos
+do usuário**, não substitui gates de segredos/aprovação/confinamento e não demonstra
+um executor de produção ou sandbox completo (seccomp, quotas gerais e cancelamento
+de comandos arbitrários ainda não estão implementados).
+
 ### Revisão do Delivery 0
 
 **Conjunto aprovado pelo responsável pelo produto em 6 de outubro de 2026.**

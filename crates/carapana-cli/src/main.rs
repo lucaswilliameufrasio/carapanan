@@ -36,6 +36,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Verify a fixed synthetic Linux sandbox fixture; this does not enable tools.
+    SandboxProbe,
     /// Run the local daemon until SIGINT or SIGTERM.
     Daemon,
     /// Create a paused session for an explicitly selected workspace.
@@ -158,6 +160,7 @@ fn run_client(
         Commands::Daemon => unreachable!("daemon command is handled before client dispatch"),
         Commands::Tui => return tui::run(path),
         Commands::ChatGpt(_) => unreachable!("ChatGPT commands are handled before IPC dispatch"),
+        Commands::SandboxProbe => unreachable!("sandbox probe is handled before IPC dispatch"),
         Commands::CreateSession { workspace } => {
             let workspace = if workspace.is_absolute() {
                 workspace
@@ -749,11 +752,22 @@ fn review_status_label(status: carapana_protocol::WorkspaceFileReviewStatus) -> 
 #[cfg(unix)]
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
+        Commands::SandboxProbe => run_sandbox_probe(&mut io::stdout().lock()),
         Commands::Daemon => run_daemon(),
         Commands::Tui => tui::run(&socket_path()?),
         Commands::ChatGpt(command) => run_chatgpt(command, &mut io::stdout().lock()),
         command => run_client(command, &socket_path()?, &mut io::stdout().lock()),
     }
+}
+
+#[cfg(unix)]
+fn run_sandbox_probe(output: &mut impl Write) -> Result<(), Box<dyn Error>> {
+    carapana_sandbox::probe_linux_bubblewrap()?;
+    writeln!(
+        output,
+        "Synthetic Linux sandbox fixture verified. User commands and tools remain disabled."
+    )?;
+    Ok(())
 }
 
 #[cfg(not(unix))]

@@ -1,0 +1,10 @@
+[package]
+name = "carapana-sandbox"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Fail-closed, synthetic Linux sandbox enforcement probes for Carapanã"
+
+[lints]
+workspace = true

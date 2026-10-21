@@ -3974,6 +3974,18 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - Após a correção de recovery/contabilização de órfãos, `TMPDIR=/var/tmp mise exec -- make verify` passou
   integralmente, com 83 testes de storage. Um novo CI ainda deverá confirmar a alteração de recovery e
   os últimos dois PNGs Ubuntu.
+- O run `39662883496`, no commit `3f76175`, passou todos os jobs: Web/Linux e Rust/Ubuntu/macOS.
+  A sequência completa de screenshots Ubuntu ficou verde. Sem merge/deploy.
+- Após escolha explícita do operador por Bubblewrap/Linux (PD-33), `carapana-sandbox` adiciona uma prova
+  sintética isolada e a CLI `sandbox-probe`, sem comando/path fornecido pelo usuário. A prova usa fixtures
+  privados, mounts read-only e scratch limitado; verifica namespaces, `no_new_privs`, capabilities,
+  filesystem e loopback isolados. Falha sem fallback, não reconfigura o host, limita output e tempo.
+  `CARAPANA_REQUIRE_BUBBLEWRAP=1` exige enforcement positivo nos testes; o modo comum aceita indisponibilidade
+  segura e não implica sandbox funcional naquele runner. Não é executor geral e não habilita tools.
+- O gate `TMPDIR=/var/tmp CARAPANA_REQUIRE_BUBBLEWRAP=1 mise exec -- make verify` passou integralmente
+  após esta fatia: cinco testes de sandbox (incluindo enforcement real, timeout e pipes limitados), dois
+  testes CLI de processo, restante do workspace, formatter/lint/check/Clippy/build e 24 Vitest/64 E2E.
+  A prova positiva foi realizada no host Linux local; o CI macOS deve testar somente a recusa unsupported.
 
 ---
 
