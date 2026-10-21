@@ -845,3 +845,29 @@ desativados.
 - Preferido sobre Landlock sozinho para a primeira prova porque isolamento de filesystem não basta
   para demonstrar isolamento de rede/processos. Seccomp e outras camadas permanecem revisão própria;
   não declarar proteção completa contra todos os ataques a partir desta prova limitada.
+
+## PD-34 — Proposta imutável e aprovação exata de comando
+
+**Data:** 21 de outubro de 2026
+
+**Status:** contrato local do gate de aprovação; sem execução, persistência ou wiring.
+
+- `carapana-core` modela uma proposta imutável com executável absoluto, argv limitado, cwd relativo ao
+  workspace e identidades de workspace/tarefa. Não resolve executáveis, abre paths, canonicaliza ou executa.
+  Strings/paths são dados não confiáveis; não implementar Debug/serialização de payload nem inferir
+  confiança ou classificação de segredos a partir da validação estrutural.
+- A solicitação de aprovação tem identidade opaca em memória, prazo monotônico e estado único.
+  Apenas evento direto do operador pode aprovar; evento de outra solicitação/workspace/tarefa falha
+  sem consumir o pedido atual. Aprovação produz um token não clonável ligado por empréstimo à proposta
+  exata; repetição/negação não produz outro token. Invalidar o pedido revoga inclusive token já emitido.
+  Descartar o controlador do pedido também revoga tokens; o futuro chamador deve mantê-lo vivo enquanto
+  a aprovação puder ser usada. Nenhum token pode autorizar algo depois do descarte silencioso da revisão.
+- Esse contrato inicial representa somente aprovação de uso único, não permissão persistente nem
+  elevação de autonomia. Tokens nunca são salvos/recriados após restart. A UI/IPC futura precisará mapear
+  sua identidade externa a esta solicitação sem tratar dados do modelo como decisão do operador.
+- O futuro executor deve consumir o token por valor e revalidar prazo, revogação, identidades e todos os
+  gates de sandbox, mounts, conteúdo, concorrência e recursos imediatamente antes do efeito. Ter token
+  não basta para spawn. Mudança de proposta exige nova solicitação; aprovação não cria configuração,
+  acesso à rede, credenciais ou autorização para um cwd fora do workspace.
+- Preferido sobre um booleano `approved` separado de argv/path, que permitiria substituir o comando
+  depois da revisão. O contrato não altera `AuthorizationGrant` existente nem habilita `ToolCallRequested`.

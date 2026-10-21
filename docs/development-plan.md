@@ -3996,6 +3996,13 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   isolamento de catálogos, o gate local completo passou novamente com enforcement Bubblewrap obrigatório,
   84 testes de storage, cinco testes de sandbox, dois CLI do probe, 24 Vitest e 64 E2E. O teste macOS
   comprova recusa unsupported, não disponibilidade de sandbox naquele OS.
+- PD-34 adiciona o contrato puro `command_approval` no core: proposta imutável e limitada, solicitação
+  com identidade opaca em memória, prazo monotônico, estado único e token não clonável ligado à proposta.
+  Eventos de solicitação/workspace/tarefa errados não consomem o pedido; intervenção ou descarte do
+  controlador revoga tokens já emitidos. Não há spawn, acesso a paths, serialização nem wiring de tools.
+- O gate completo com Bubblewrap obrigatório passou após PD-34: 41 testes unitários de core, dois de demo
+  e um doctest compile-fail comprovando que o token não é clonável; também passaram os 84 de storage,
+  sandbox/CLI, restante do workspace, formatter/lint/check/Clippy/build e 24 Vitest/64 E2E.
 
 ---
 
