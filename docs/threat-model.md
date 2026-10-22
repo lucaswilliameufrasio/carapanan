@@ -142,6 +142,10 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    e revogação encerram o cgroup; incerteza de cleanup tem precedência sobre erro de autorização.
    Tests reais incluem revogação após target exec'd e rejeição antes de admissão. Continua sem autenticar
    eventos UI, classificar conteúdo/segredos ou prover admissão global de memória/concurrency de preparação.
+   PD-51 adiciona somente o ledger persistente compartilhado de capacidade nominal, separado de disco.
+   Reservas abandonadas/crash continuam cobradas; idade não prova que consumidores liberaram páginas.
+   Liberação explícita da lease é fronteira de contabilização, não prova de cgroup/RSS. Vincular a lease
+   antes das alocações e condicionar sua liberação ao lifecycle comprovado continuam necessários.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

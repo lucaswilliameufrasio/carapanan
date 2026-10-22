@@ -1255,3 +1255,21 @@ desativados.
   Os eventos de operador e o relógio são fornecidos pelo controlador confiável, nunca pelo modelo.
   Isto não autentica eventos UI/IPC, classifica segredos, resolve concorrência/admissão global ou
   autoriza ativar ToolCallRequested. Primitives sem aprovação seguem somente para provas internas.
+
+## PD-51 — Ledger compartilhado para admissão de preparação
+
+**Data:** 22 de outubro de 2026
+
+**Status:** infraestrutura persistente; ligação antes das alocações e recovery de consumidores pendentes.
+
+- Separar a conta de preparação/RAM da quota de artifacts/staging em disco. Reservar bytes nominais
+  e slots atomicamente no catálogo único do usuário, com política explícita, sem defaults numéricos
+  finais antes dos benchmarks. Conexões ao mesmo catálogo não podem substituir a política por outra
+  maior/menor silenciosamente. Uma reserva não é medição ou limite de RSS total da máquina.
+- A reserva é um objeto opaco, não clonável/serializável, sem API de liberação por ID. Liberação
+  explícita consome a lease e só deve ocorrer depois de fechar buffers e confirmar fim de consumidores.
+  Drop/crash não provam isso: reservas abandonadas continuam cobradas/quarentenadas, sem TTL que possa
+  liberar budget enquanto um guardian/target ainda conserva páginas. Recovery precisa de prova própria.
+- Preferido a contador isolado por processo (reinício/múltiplas conexões poderiam sobre-admitir) ou
+  reutilizar quota de disco como se fosse RAM. Schema v8 adiciona tabelas próprias sem alterar artifacts,
+  staging, sessões/eventos ou seus IDs. Limites finais e admissão por pressão real ainda são próprios.

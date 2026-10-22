@@ -4232,6 +4232,17 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   24 Vitest e 64 E2E. Relógio após Ready foi avançado deterministicamente no fixture e o grupo
   permaneceu pronto/não admitido, sem sleeps usados como prova de expiração. Nenhum snapshot/timeout
   foi alterado; admissão global de preparação, conteúdo/segredos e origem autenticada de UI seguem próprios.
+- PD-51 acrescenta ledger separado de bytes nominais/slots de preparação no catálogo único do usuário,
+  em schema v8. Reserva/contagem são atômicas entre conexões; não há default final de RAM nem troca
+  silenciosa da política compartilhada. Drop/crash conservam a cobrança/quarentena, sem TTL de liberação.
+  Release explícito ainda exige prova independente do controlador de que buffers/consumidores terminaram;
+  o ledger isolado não mede RSS, não é fila durável de jobs e ainda não intercepta as alocações do launcher.
+- Nove testes novos usam SQLite/filesystem reais: concorrência com barrier, bytes/slots, política,
+  abandono/reabertura/idade, trigger de falha no release, exit de subprocesso sem destructors, migração
+  v7 preservando sessão/eventos/artifact e staging ativo, sequência de IDs e separação da quota de disco.
+- Os nove testes do ledger passaram três repetições e o gate integral passou (103 storage, demais
+  suites Rust/doctests, format/lint/check/Clippy/build, 24 Vitest e 64 E2E). A admissão antes das
+  alocações e a prova de liberação de consumidores ainda não são inferidas desse verde de infraestrutura.
 
 ---
 

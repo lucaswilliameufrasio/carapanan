@@ -5,6 +5,7 @@ use std::{error::Error, fmt, path::Path, time::Duration};
 use rusqlite::{Connection, TransactionBehavior};
 
 mod artifact_store;
+mod preparation_admission;
 mod session_store;
 mod user_database;
 mod workspace;
@@ -14,6 +15,10 @@ pub use artifact_store::{
     ArtifactStoreError, ArtifactUsage, DEFAULT_ARTIFACT_RETENTION,
     DEFAULT_ARTIFACT_STORE_QUOTA_BYTES, DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_ORPHAN_GRACE,
     StagingReservation,
+};
+pub use preparation_admission::{
+    PreparationAdmissionError, PreparationAdmissionPolicy, PreparationAdmissionStore,
+    PreparationAdmissionUsage, PreparationLease,
 };
 pub use session_store::{
     PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionEventRecord,
@@ -199,8 +204,8 @@ impl SessionRegistry {
     }
 }
 
-// Version 7 adds staging cleanup semantics; older cleaners must refuse this catalog.
-pub const SCHEMA_VERSION: i64 = 7;
+// Version 8 adds shared preparation admission; older executors must refuse this catalog.
+pub const SCHEMA_VERSION: i64 = 8;
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE sessions (
@@ -500,10 +505,12 @@ impl Database {
             0 => {
                 transaction.execute_batch(INITIAL_SCHEMA)?;
                 transaction.execute_batch(ARTIFACT_SCHEMA)?;
+                transaction.execute_batch(preparation_admission::SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
-            1..=6 => {
+            1..=7 => {
                 transaction.execute_batch(ARTIFACT_SCHEMA)?;
+                transaction.execute_batch(preparation_admission::SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             SCHEMA_VERSION => {}
