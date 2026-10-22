@@ -1217,3 +1217,22 @@ desativados.
 - Falhas no transporte, imagem, backend, OOM ou cancelamento usam cleanup do mesmo cgroup, sem repetir
   fora dele. Manter imagem e canais vivos até a captura terminar. Não confundir isso com aprovação:
   staging reservado, orçamento global de preparação e revisão exata/conteúdo continuam gates próprios.
+
+## PD-49 — Snapshots reservados e selados no workspace mínimo
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração interna Linux; não ativa tools ou compartilhamento de contexto.
+
+- Consumir somente `ReservedSelectedSnapshotBundle`, nunca staging não contabilizado, numa imagem
+  de snapshots selados. Revalidar inventário, leitura confinada e hash de cada arquivo antes de selar;
+  manter a lease original sob a mesma quota enquanto o launch possuir a imagem. Alterações posteriores
+  da fonte não alteram os bytes selecionados; nenhum path da fonte ou staging é enviado ao helper.
+- O helper recebe somente arquivos de dados sob `/workspace`, não executáveis, e os monta readonly
+  por descritor. Validar destinos canônicos, conflitos, quantidade/tamanho/hashes/seals antes de mounts.
+  Preservar os limites existentes: 256 arquivos, 16 MiB agregados e limite de leitura por arquivo.
+  Transportar em lotes de no máximo 128 direitos, sem aumentar o teto de arquivos de runtime de PD-38.
+- Preferido a mount de diretório de staging mutável (janela de inventário/bytes) ou reopen de paths.
+  Há shmem adicional e cópia do Bubblewrap ainda sujeitos à futura admissão global de preparação;
+  reserva de staging não é contabilização de toda memória do processo. Imagem não classifica segredos
+  nem autentica seleção/aprovação. Sem copy-back ou escrita automática na fonte/workspace real.

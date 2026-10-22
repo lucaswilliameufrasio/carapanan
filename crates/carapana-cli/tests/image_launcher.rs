@@ -111,6 +111,10 @@ fn run(program: &str, arguments: &[&str]) -> (i32, Vec<u8>, Vec<u8>) {
         policy(),
     )
     .unwrap();
+    execute_launch(&launch)
+}
+
+fn execute_launch(launch: &SandboxImageLaunch<'_>) -> (i32, Vec<u8>, Vec<u8>) {
     let (sender, receiver) = UnixDatagram::pair().unwrap();
     let mut helper = Helper(
         Command::new(env!("CARGO_BIN_EXE_carapana"))
@@ -448,4 +452,208 @@ fn observed_scoped_target(unique_argument: &str) -> bool {
         }
     }
     false
+}
+
+struct SnapshotFixture(PathBuf);
+impl SnapshotFixture {
+    fn new() -> Self {
+        use std::os::unix::fs::DirBuilderExt;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!(
+                "carapana-image-workspace-{}-{nonce}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        fs::write(root.join("input.txt"), b"selected synthetic bytes\n").unwrap();
+        fs::write(root.join("unselected.txt"), b"not selected\n").unwrap();
+        Self(root)
+    }
+    fn database(&self) -> PathBuf {
+        self.0.join("data/sessions.sqlite3")
+    }
+    fn metadata(&self) -> carapana_storage::WorkspaceMetadata {
+        carapana_storage::WorkspaceMetadata::capture(&self.0).unwrap()
+    }
+}
+impl Drop for SnapshotFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn should_mount_only_reserved_selected_bytes_and_retain_quota_until_launch_drop() {
+    if !available() {
+        return;
+    }
+    use carapana_sandbox::selected_snapshots::{
+        ReservedSelectedSnapshotBundle, SelectedSnapshotPolicy,
+    };
+    let fixture = SnapshotFixture::new();
+    let mut store = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let selected = ReservedSelectedSnapshotBundle::prepare(
+        &mut store,
+        &fixture.metadata(),
+        &[PathBuf::from("input.txt")],
+        SelectedSnapshotPolicy::new(1, 1024).unwrap(),
+        1000,
+    )
+    .unwrap();
+    let staging = selected.staging_root().to_owned();
+    let sealed = selected.seal_for_launch().unwrap();
+    assert_eq!(
+        sealed.source_identity(),
+        &fixture.metadata().directory_identity()
+    );
+    let launch = SandboxImageLaunch::new(
+        image("/usr/bin/cat"),
+        PathBuf::from("/runtime/bin/program"),
+        vec![
+            "/workspace/input.txt".into(),
+            "/workspace/unselected.txt".into(),
+        ],
+        1024 * 1024,
+        policy(),
+    )
+    .unwrap()
+    .with_workspace(sealed)
+    .unwrap();
+    fs::write(
+        fixture.0.join("input.txt"),
+        b"external edit after selection\n",
+    )
+    .unwrap();
+    let observer = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 1024);
+    let (code, output, error) = execute_launch(&launch);
+    assert_eq!(code, 1, "unselected file must not be present");
+    assert_eq!(output, b"selected synthetic bytes\n");
+    assert!(String::from_utf8_lossy(&error).contains("/workspace/unselected.txt"));
+    assert_eq!(
+        fs::read(fixture.0.join("input.txt")).unwrap(),
+        b"external edit after selection\n"
+    );
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 1024);
+    drop(launch);
+    assert!(!staging.exists());
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_transfer_the_maximum_selection_in_bounded_batches_under_the_guardian() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_sandbox::selected_snapshots::{
+        ReservedSelectedSnapshotBundle, SelectedSnapshotPolicy,
+    };
+    let fixture = SnapshotFixture::new();
+    let paths: Vec<_> = (0..256)
+        .map(|index| PathBuf::from(format!("file-{index:03}")))
+        .collect();
+    for path in &paths {
+        fs::write(fixture.0.join(path), b"x").unwrap();
+    }
+    let mut store = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let selected = ReservedSelectedSnapshotBundle::prepare(
+        &mut store,
+        &fixture.metadata(),
+        &paths,
+        SelectedSnapshotPolicy::new(256, 1024).unwrap(),
+        1000,
+    )
+    .unwrap()
+    .seal_for_launch()
+    .unwrap();
+    assert_eq!(selected.file_count(), 256);
+    let launch = SandboxImageLaunch::new(
+        image("/usr/bin/cat"),
+        PathBuf::from("/runtime/bin/program"),
+        vec!["/workspace/file-000".into(), "/workspace/file-255".into()],
+        1024 * 1024,
+        policy(),
+    )
+    .unwrap()
+    .with_workspace(selected)
+    .unwrap();
+    let mut group = parent
+        .prepare(
+            carapana_sandbox::delegated_cgroup::CgroupLimits::new(128 * 1024 * 1024, 32).unwrap(),
+        )
+        .unwrap();
+    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        .unwrap()
+        .run_captured_image_process(
+            "synthetic-selected-session",
+            &launch,
+            carapana_daemon::ProcessCaptureSettings::new(
+                4096,
+                1024,
+                16384,
+                Duration::from_secs(10),
+            )
+            .unwrap(),
+            &mut group,
+            || false,
+        )
+        .unwrap();
+    assert_eq!(
+        output.exit_code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(output.stderr_tail())
+    );
+    assert_eq!(output.stdout_tail(), b"xx");
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+    drop(launch);
+    assert_eq!(store.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_reject_changed_staging_before_sending_any_workspace_bytes() {
+    use carapana_sandbox::selected_snapshots::{
+        ReservedSelectedSnapshotBundle, SelectedSnapshotPolicy,
+    };
+    let fixture = SnapshotFixture::new();
+    let mut store = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let selected = ReservedSelectedSnapshotBundle::prepare(
+        &mut store,
+        &fixture.metadata(),
+        &[PathBuf::from("input.txt")],
+        SelectedSnapshotPolicy::new(1, 1024).unwrap(),
+        1000,
+    )
+    .unwrap();
+    let staging = selected.staging_root().to_owned();
+    let launch = SandboxImageLaunch::new(
+        image("/usr/bin/true"),
+        PathBuf::from("/runtime/bin/program"),
+        Vec::new(),
+        1024,
+        policy(),
+    )
+    .unwrap()
+    .with_workspace(selected.seal_for_launch().unwrap())
+    .unwrap();
+    fs::write(staging.join("input.txt"), b"tampered staging\n").unwrap();
+    let (sender, receiver) = UnixDatagram::pair().unwrap();
+    receiver.set_nonblocking(true).unwrap();
+    assert!(matches!(
+        launch.send(&sender, Instant::now() + Duration::from_secs(1)),
+        Err(carapana_sandbox::image_launcher::ImageLauncherError::RuntimeRejected)
+    ));
+    assert_eq!(
+        receiver.recv(&mut [0_u8; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(launch);
+    assert_eq!(store.usage().unwrap().reserved_bytes, 0);
 }

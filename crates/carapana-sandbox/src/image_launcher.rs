@@ -1,10 +1,11 @@
-//! Internal Linux helper: sealed runtime only, empty read-only workspace, no host directory mounts.
+//! Internal Linux helper: sealed runtime and selected workspace files, no host directory mounts.
 //! Not a model tool or an approval/resource-admission boundary. Run only as the dedicated CLI mode.
 
 use crate::runtime_manifest::{
     ExpectedRuntimeFile, RuntimeFileRole, RuntimeImage, RuntimeManifestPolicy,
-    receive_expected_image,
+    receive_expected_image, receive_selected_image, validate_selected_files,
 };
+use crate::selected_snapshots::ReservedWorkspaceImage;
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::{CString, OsString},
@@ -38,6 +39,8 @@ pub enum ImageLauncherError {
 struct Setup {
     version: u8,
     files: Vec<ExpectedRuntimeFile>,
+    #[serde(default)]
+    workspace_files: Vec<ExpectedRuntimeFile>,
     program: PathBuf,
     arguments: Vec<OsString>,
     scratch_bytes: u64,
@@ -69,19 +72,22 @@ impl Setup {
                 return Err(ImageLauncherError::InvalidRequest);
             }
         }
+        validate_selected_files(&self.workspace_files)
+            .map_err(|_| ImageLauncherError::InvalidRequest)?;
         RuntimeManifestPolicy::new(self.max_files, self.max_file_bytes, self.max_total_bytes)
             .map_err(|_| ImageLauncherError::InvalidRequest)
     }
 }
 
 /// Owns immutable runtime and exact command. Not Debug/Clone/serializable and not an approval.
-/// This slice deliberately has no workspace contents, environment input or arbitrary bwrap options.
-pub struct SandboxImageLaunch {
+/// Workspace input, when present, must retain its selected snapshots' shared-quota reservation.
+pub struct SandboxImageLaunch<'store> {
     image: RuntimeImage,
     setup: Setup,
+    workspace: Option<ReservedWorkspaceImage<'store>>,
 }
 
-impl SandboxImageLaunch {
+impl<'store> SandboxImageLaunch<'store> {
     pub fn new(
         image: RuntimeImage,
         program: PathBuf,
@@ -100,6 +106,7 @@ impl SandboxImageLaunch {
                     sha256: *file.sha256(),
                 })
                 .collect(),
+            workspace_files: Vec::new(),
             program,
             arguments,
             scratch_bytes,
@@ -116,17 +123,77 @@ impl SandboxImageLaunch {
         {
             return Err(ImageLauncherError::InvalidRequest);
         }
-        Ok(Self { image, setup })
+        let launch = Self {
+            image,
+            setup,
+            workspace: None,
+        };
+        launch.encoded_setup()?;
+        Ok(launch)
     }
 
-    /// Send on an already-private socketpair to the dedicated helper. Caller retains lifecycle,
-    /// authentication, cgroup admission and cancellation duties; this method never spawns a child.
-    pub fn send(&self, socket: &UnixDatagram, deadline: Instant) -> Result<(), ImageLauncherError> {
+    pub fn with_workspace(
+        mut self,
+        workspace: ReservedWorkspaceImage<'store>,
+    ) -> Result<Self, ImageLauncherError> {
+        if self.workspace.is_some() {
+            return Err(ImageLauncherError::InvalidRequest);
+        }
+        workspace
+            .verify()
+            .map_err(|_| ImageLauncherError::RuntimeRejected)?;
+        self.setup.workspace_files = workspace
+            .image
+            .files()
+            .map(|file| ExpectedRuntimeFile {
+                destination: file.destination().to_owned(),
+                role: file.role(),
+                size_bytes: file.size_bytes(),
+                sha256: *file.sha256(),
+            })
+            .collect();
+        self.setup.validate()?;
+        self.encoded_setup()?;
+        self.workspace = Some(workspace);
+        Ok(self)
+    }
+
+    pub fn program(&self) -> &std::path::Path {
+        &self.setup.program
+    }
+    pub fn arguments(&self) -> &[OsString] {
+        &self.setup.arguments
+    }
+    pub fn scratch_bytes(&self) -> u64 {
+        self.setup.scratch_bytes
+    }
+    pub fn runtime_files(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &crate::runtime_manifest::RuntimeImageFile> {
+        self.image.files()
+    }
+    pub fn workspace(&self) -> Option<&ReservedWorkspaceImage<'store>> {
+        self.workspace.as_ref()
+    }
+
+    fn encoded_setup(&self) -> Result<Vec<u8>, ImageLauncherError> {
         let bytes =
             serde_json::to_vec(&self.setup).map_err(|_| ImageLauncherError::InvalidRequest)?;
         if bytes.len() > MAX_SETUP_BYTES {
             return Err(ImageLauncherError::InvalidRequest);
         }
+        Ok(bytes)
+    }
+
+    /// Send on an already-private socketpair to the dedicated helper. Caller retains lifecycle,
+    /// authentication, cgroup admission and cancellation duties; this method never spawns a child.
+    pub fn send(&self, socket: &UnixDatagram, deadline: Instant) -> Result<(), ImageLauncherError> {
+        if let Some(workspace) = &self.workspace {
+            workspace
+                .verify()
+                .map_err(|_| ImageLauncherError::RuntimeRejected)?;
+        }
+        let bytes = self.encoded_setup()?;
         loop {
             check_deadline(deadline)?;
             match rustix::net::send(
@@ -143,7 +210,14 @@ impl SandboxImageLaunch {
         }
         self.image
             .send_descriptors(socket, deadline)
-            .map_err(|_| ImageLauncherError::TransportFailed)
+            .map_err(|_| ImageLauncherError::TransportFailed)?;
+        if let Some(workspace) = &self.workspace {
+            workspace
+                .image
+                .send_selected_descriptors(socket, deadline)
+                .map_err(|_| ImageLauncherError::TransportFailed)?;
+        }
+        Ok(())
     }
 }
 
@@ -189,6 +263,8 @@ pub fn run_image_helper() -> Result<(), ImageLauncherError> {
     let policy = setup.validate()?;
     let image = receive_expected_image(setup.files, &socket, policy, deadline)
         .map_err(|_| ImageLauncherError::RuntimeRejected)?;
+    let workspace = receive_selected_image(setup.workspace_files, &socket, deadline)
+        .map_err(|_| ImageLauncherError::RuntimeRejected)?;
     // Root-owned, non-writable ancestry, NOFOLLOW and no setuid/setgid. Execute the pinned backend,
     // not a later reopening of its path. No download, PATH lookup or weaker backend fallback.
     let backend = crate::runtime_manifest::open_bubblewrap_backend()
@@ -212,7 +288,9 @@ pub fn run_image_helper() -> Result<(), ImageLauncherError> {
     ] {
         argv.push(CString::new(value).unwrap());
     }
-    for file in image.files() {
+    argv.push(CString::new("--dir").unwrap());
+    argv.push(CString::new("/workspace").unwrap());
+    for file in image.files().chain(workspace.files()) {
         rustix::fs::seek(file.descriptor(), rustix::fs::SeekFrom::Start(0))
             .map_err(|_| ImageLauncherError::RuntimeRejected)?;
         for value in [
@@ -236,8 +314,6 @@ pub fn run_image_helper() -> Result<(), ImageLauncherError> {
         "/proc",
         "--dev",
         "/dev",
-        "--dir",
-        "/workspace",
         "--size",
         &setup.scratch_bytes.to_string(),
         "--tmpfs",
@@ -264,7 +340,7 @@ pub fn run_image_helper() -> Result<(), ImageLauncherError> {
     drop(socket);
     let null = File::open("/dev/null").map_err(|_| ImageLauncherError::ExecFailed)?;
     rustix::stdio::dup2_stdin(&null).map_err(|_| ImageLauncherError::ExecFailed)?;
-    for file in image.files() {
+    for file in image.files().chain(workspace.files()) {
         rustix::io::fcntl_setfd(file.descriptor(), rustix::io::FdFlags::empty())
             .map_err(|_| ImageLauncherError::ExecFailed)?;
     }
@@ -281,6 +357,7 @@ mod tests {
     fn setup() -> Setup {
         Setup {
             version: 1,
+            workspace_files: Vec::new(),
             files: vec![ExpectedRuntimeFile {
                 destination: PathBuf::from("/runtime/program"),
                 role: RuntimeFileRole::Executable,

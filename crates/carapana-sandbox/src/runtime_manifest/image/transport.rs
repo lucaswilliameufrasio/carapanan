@@ -37,11 +37,29 @@ pub(super) fn send(
     if image.files.is_empty() || image.files.len() > MAX_FILES {
         return Err(RuntimeManifestError::ImageTransportProtocol);
     }
-    let descriptors: Vec<_> = image
-        .files
-        .iter()
-        .map(RuntimeImageFile::descriptor)
-        .collect();
+    send_files(&image.files, socket, deadline)
+}
+
+pub(crate) fn send_selected(
+    image: &RuntimeImage,
+    socket: &UnixDatagram,
+    deadline: Instant,
+) -> Result<(), RuntimeManifestError> {
+    if image.files.len() > 256 {
+        return Err(RuntimeManifestError::TooManyFiles);
+    }
+    for files in image.files.chunks(MAX_FILES) {
+        send_files(files, socket, deadline)?;
+    }
+    Ok(())
+}
+
+fn send_files(
+    files: &[RuntimeImageFile],
+    socket: &UnixDatagram,
+    deadline: Instant,
+) -> Result<(), RuntimeManifestError> {
+    let descriptors: Vec<_> = files.iter().map(RuntimeImageFile::descriptor).collect();
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FILES))];
     let mut ancillary = SendAncillaryBuffer::new(&mut space);
     if !ancillary.push(SendAncillaryMessage::ScmRights(&descriptors)) {
@@ -117,6 +135,73 @@ pub(crate) fn receive_expected(
             return Err(RuntimeManifestError::ByteBudgetExceeded);
         }
     }
+    receive_checked(expected_files, socket, policy, deadline)
+}
+
+pub(crate) fn validate_selected_files(
+    files: &[ExpectedRuntimeFile],
+) -> Result<(), RuntimeManifestError> {
+    if files.len() > 256 {
+        return Err(RuntimeManifestError::TooManyFiles);
+    }
+    let mut total = 0_u64;
+    for (index, file) in files.iter().enumerate() {
+        super::validate_selected_destination(&file.destination)?;
+        if file.role != RuntimeFileRole::Support {
+            return Err(RuntimeManifestError::InvalidPolicy);
+        }
+        total = total
+            .checked_add(file.size_bytes)
+            .ok_or(RuntimeManifestError::ByteBudgetExceeded)?;
+        if file.size_bytes > carapana_storage::MAX_WORKSPACE_FILE_READ_BYTES as u64
+            || total > 16 * 1024 * 1024
+        {
+            return Err(RuntimeManifestError::ByteBudgetExceeded);
+        }
+        for previous in &files[..index] {
+            if file.destination.starts_with(&previous.destination)
+                || previous.destination.starts_with(&file.destination)
+            {
+                return Err(RuntimeManifestError::ConflictingTargets);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn receive_selected(
+    expected: Vec<ExpectedRuntimeFile>,
+    socket: &UnixDatagram,
+    deadline: Instant,
+) -> Result<RuntimeImage, RuntimeManifestError> {
+    validate_selected_files(&expected)?;
+    let policy = RuntimeManifestPolicy::new(
+        MAX_FILES,
+        carapana_storage::MAX_WORKSPACE_FILE_READ_BYTES as u64,
+        16 * 1024 * 1024,
+    )?;
+    let mut entries = expected.into_iter();
+    let mut image = RuntimeImage {
+        files: Vec::new(),
+        total_bytes: 0,
+    };
+    loop {
+        let batch: Vec<_> = entries.by_ref().take(MAX_FILES).collect();
+        if batch.is_empty() {
+            return Ok(image);
+        }
+        let received = receive_checked(batch, socket, policy, deadline)?;
+        image.total_bytes += received.total_bytes;
+        image.files.extend(received.files);
+    }
+}
+
+fn receive_checked(
+    expected_files: Vec<ExpectedRuntimeFile>,
+    socket: &UnixDatagram,
+    policy: RuntimeManifestPolicy,
+    deadline: Instant,
+) -> Result<RuntimeImage, RuntimeManifestError> {
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FILES))];
     let mut ancillary = RecvAncillaryBuffer::new(&mut space);
     let mut header = [0_u8; HEADER.len()];
@@ -227,6 +312,95 @@ mod tests {
     }
     fn deadline() -> Instant {
         Instant::now() + Duration::from_secs(5)
+    }
+
+    fn selected_metadata(path: &str) -> ExpectedRuntimeFile {
+        ExpectedRuntimeFile {
+            destination: PathBuf::from(path),
+            role: RuntimeFileRole::Support,
+            size_bytes: 1,
+            sha256: Sha256::digest(b"x").into(),
+        }
+    }
+
+    #[test]
+    fn should_refuse_workspace_escape_executable_roles_and_conflicting_destinations() {
+        for path in [
+            "/workspace",
+            "/workspace/../runtime/a",
+            "/workspace//a",
+            "/runtime/a",
+        ] {
+            assert!(validate_selected_files(&[selected_metadata(path)]).is_err());
+        }
+        let mut executable = selected_metadata("/workspace/a");
+        executable.role = RuntimeFileRole::Executable;
+        assert!(validate_selected_files(&[executable]).is_err());
+        for paths in [
+            ["/workspace/a", "/workspace/a"],
+            ["/workspace/a", "/workspace/a/b"],
+            ["/workspace/a/b", "/workspace/a"],
+        ] {
+            assert!(matches!(
+                validate_selected_files(&[
+                    selected_metadata(paths[0]),
+                    selected_metadata(paths[1])
+                ]),
+                Err(RuntimeManifestError::ConflictingTargets)
+            ));
+        }
+    }
+
+    #[test]
+    fn should_keep_workspace_file_count_and_byte_budgets_independent_of_runtime() {
+        let mut files: Vec<_> = (0..256)
+            .map(|index| selected_metadata(&format!("/workspace/file-{index}")))
+            .collect();
+        assert!(validate_selected_files(&files).is_ok());
+        files.push(selected_metadata("/workspace/overflow"));
+        assert!(matches!(
+            validate_selected_files(&files),
+            Err(RuntimeManifestError::TooManyFiles)
+        ));
+        files.pop();
+        files[0].size_bytes = carapana_storage::MAX_WORKSPACE_FILE_READ_BYTES as u64 + 1;
+        assert!(matches!(
+            validate_selected_files(&files),
+            Err(RuntimeManifestError::ByteBudgetExceeded)
+        ));
+        for file in &mut files {
+            file.size_bytes = carapana_storage::MAX_WORKSPACE_FILE_READ_BYTES as u64;
+        }
+        assert!(matches!(
+            validate_selected_files(&files),
+            Err(RuntimeManifestError::ByteBudgetExceeded)
+        ));
+    }
+
+    #[test]
+    fn should_not_return_a_partial_workspace_image_when_the_second_batch_is_missing() {
+        let mut image = RuntimeImage::empty_selected();
+        let mut expected = Vec::new();
+        for index in 0..129 {
+            image
+                .push_selected(
+                    PathBuf::from(format!("file-{index}")),
+                    b"x",
+                    Sha256::digest(b"x").into(),
+                )
+                .unwrap();
+            expected.push(selected_metadata(&format!("/workspace/file-{index}")));
+        }
+        let (sender, receiver) = UnixDatagram::pair().unwrap();
+        send_files(&image.files[..128], &sender, deadline()).unwrap();
+        assert!(matches!(
+            receive_selected(
+                expected,
+                &receiver,
+                Instant::now() + Duration::from_millis(50)
+            ),
+            Err(RuntimeManifestError::ImageTransportTimedOut)
+        ));
     }
 
     #[test]

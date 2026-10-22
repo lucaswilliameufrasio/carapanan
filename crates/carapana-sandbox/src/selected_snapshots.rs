@@ -5,7 +5,7 @@
 
 use carapana_storage::{
     ArtifactStore, MAX_WORKSPACE_FILE_READ_BYTES, StagingReservation, WorkspaceDirectoryEntryKind,
-    WorkspaceMetadata,
+    WorkspaceDirectoryIdentity, WorkspaceMetadata,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -70,6 +70,7 @@ pub struct SelectedSnapshotBundle {
     identity: WorkspaceMetadata,
     files: Vec<ManifestEntry>,
     total_bytes: usize,
+    source_identity: WorkspaceDirectoryIdentity,
 }
 
 struct ManifestEntry {
@@ -93,6 +94,34 @@ pub struct ReservedSelectedSnapshotBundle<'store> {
 }
 
 impl<'store> ReservedSelectedSnapshotBundle<'store> {
+    /// Seal the already-selected bytes while retaining their live staging quota reservation.
+    /// No source paths or mutable staging directory are mounted by this image.
+    #[cfg(target_os = "linux")]
+    pub fn seal_for_launch(
+        self,
+    ) -> Result<ReservedWorkspaceImage<'store>, SnapshotPreparationError> {
+        self.verify()?;
+        let mut image = crate::runtime_manifest::RuntimeImage::empty_selected();
+        for entry in &self.bundle.files {
+            let bytes = self
+                .bundle
+                .identity
+                .read_file_with_limit(&entry.path, entry.size)
+                .map_err(|_| SnapshotPreparationError::StagingChanged)?;
+            let digest: [u8; 32] = Sha256::digest(&bytes).into();
+            if bytes.len() != entry.size || digest != entry.sha256 {
+                return Err(SnapshotPreparationError::StagingChanged);
+            }
+            image
+                .push_selected(entry.path.clone(), &bytes, entry.sha256)
+                .map_err(|_| SnapshotPreparationError::StagingUnavailable)?;
+        }
+        Ok(ReservedWorkspaceImage {
+            image,
+            bundle: self,
+        })
+    }
+
     pub fn prepare(
         store: &'store mut ArtifactStore,
         workspace: &WorkspaceMetadata,
@@ -155,6 +184,46 @@ impl<'store> ReservedSelectedSnapshotBundle<'store> {
     }
 }
 
+/// Immutable selected bytes with a retained shared-quota staging lease. Not an approval or secret scan.
+///
+/// ```compile_fail
+/// fn log(image: &carapana_sandbox::selected_snapshots::ReservedWorkspaceImage<'_>) {
+///     let _ = format!("{image:?}");
+/// }
+/// ```
+#[cfg(target_os = "linux")]
+pub struct ReservedWorkspaceImage<'store> {
+    pub(crate) image: crate::runtime_manifest::RuntimeImage,
+    bundle: ReservedSelectedSnapshotBundle<'store>,
+}
+
+#[cfg(target_os = "linux")]
+impl ReservedWorkspaceImage<'_> {
+    pub fn source_identity(&self) -> &WorkspaceDirectoryIdentity {
+        &self.bundle.bundle.source_identity
+    }
+    pub fn file_count(&self) -> usize {
+        self.image.files().len()
+    }
+    pub fn total_bytes(&self) -> usize {
+        self.image.total_bytes() as usize
+    }
+    pub fn reserved_bytes(&self) -> u64 {
+        self.bundle.reserved_bytes()
+    }
+    /// Review metadata is untrusted display input. Content classification remains a separate gate.
+    pub fn selected_files(&self) -> impl ExactSizeIterator<Item = (&Path, usize, &[u8; 32])> {
+        self.bundle
+            .bundle
+            .files
+            .iter()
+            .map(|entry| (entry.path.as_path(), entry.size, &entry.sha256))
+    }
+    pub fn verify(&self) -> Result<(), SnapshotPreparationError> {
+        self.bundle.verify()
+    }
+}
+
 impl SelectedSnapshotBundle {
     /// Copy only selected files using bounded source reads. Does not authenticate selection or inspect secrets.
     pub fn prepare(
@@ -182,6 +251,9 @@ impl SelectedSnapshotBundle {
     }
     pub fn total_bytes(&self) -> usize {
         self.total_bytes
+    }
+    pub fn source_identity(&self) -> &WorkspaceDirectoryIdentity {
+        &self.source_identity
     }
     pub fn selected_paths(&self) -> impl ExactSizeIterator<Item = &Path> {
         self.files.iter().map(|entry| entry.path.as_path())
@@ -332,6 +404,7 @@ fn prepare_in_directory(
         identity,
         files: Vec::new(),
         total_bytes: 0,
+        source_identity: workspace.directory_identity(),
     };
     for path in paths {
         let remaining = policy.max_total_bytes - bundle.total_bytes;

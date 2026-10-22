@@ -9,6 +9,8 @@ mod image;
 #[cfg(target_os = "linux")]
 pub(crate) use image::{ExpectedRuntimeFile, receive_expected_image};
 pub use image::{RuntimeImage, RuntimeImageFile};
+#[cfg(target_os = "linux")]
+pub(crate) use image::{receive_selected_image, validate_selected_files};
 
 #[cfg(target_os = "linux")]
 pub(crate) fn open_bubblewrap_backend() -> Result<File, RuntimeManifestError> {

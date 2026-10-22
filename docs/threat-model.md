@@ -132,6 +132,11 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    SCM_RIGHTS sem seus descritores. Provas reais confirmam target exec antes de cancelamento e grupo
    esvaziado depois. Workspace permanece vazio; staging reservado, aprovação exata, conteúdo/segredos
    e admissão global da preparação continuam gates independentes antes de wiring de tools.
+   PD-49 adiciona somente snapshots reservados e selados a `/workspace`, sem bind de diretório mutable
+   ou paths de origem. Hashes/inventário são revalidados antes de selar/enviar; dados são readonly e
+   não executáveis. Cópias seladas não mudam após edição da fonte; lease de staging acompanha o launch.
+   Transporte em lotes não amplia os limites de runtime/seleção. Aprovação exata, classificação de
+   conteúdo/segredos e memória global adicional da preparação ainda não são inferidas dessa reserva.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

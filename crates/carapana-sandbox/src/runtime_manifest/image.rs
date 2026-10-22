@@ -9,6 +9,17 @@ use std::path::{Path, PathBuf};
 pub(super) mod transport;
 #[cfg(target_os = "linux")]
 pub(crate) use transport::receive_expected as receive_expected_image;
+#[cfg(target_os = "linux")]
+pub(crate) use transport::{receive_selected as receive_selected_image, validate_selected_files};
+
+#[cfg(target_os = "linux")]
+fn validate_selected_destination(path: &Path) -> Result<(), RuntimeManifestError> {
+    super::validate_path(path)?;
+    if !path.starts_with("/workspace") || path == Path::new("/workspace") {
+        return Err(RuntimeManifestError::InvalidPath);
+    }
+    Ok(())
+}
 
 /// Private wire metadata only, never source paths or runtime payload serialization.
 #[cfg(target_os = "linux")]
@@ -67,6 +78,50 @@ pub struct RuntimeImage {
 }
 
 impl RuntimeImage {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn empty_selected() -> Self {
+        Self {
+            files: Vec::new(),
+            total_bytes: 0,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn push_selected(
+        &mut self,
+        path: PathBuf,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<(), RuntimeManifestError> {
+        let destination = Path::new("/workspace").join(path);
+        validate_selected_destination(&destination)?;
+        if self.files.len() >= 256
+            || bytes.len() > carapana_storage::MAX_WORKSPACE_FILE_READ_BYTES
+            || self.total_bytes + bytes.len() as u64 > 16 * 1024 * 1024
+        {
+            return Err(RuntimeManifestError::ByteBudgetExceeded);
+        }
+        let file = linux::seal_selected_bytes(bytes, &sha256)?;
+        self.total_bytes += bytes.len() as u64;
+        self.files.push(RuntimeImageFile {
+            destination,
+            role: RuntimeFileRole::Support,
+            size_bytes: bytes.len() as u64,
+            sha256,
+            file,
+        });
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn send_selected_descriptors(
+        &self,
+        socket: &std::os::unix::net::UnixDatagram,
+        deadline: std::time::Instant,
+    ) -> Result<(), RuntimeManifestError> {
+        transport::send_selected(self, socket, deadline)
+    }
+
     /// Send this image's descriptors only, without paths or implicit inheritance, over a private pair.
     #[cfg(target_os = "linux")]
     pub fn send_descriptors(
@@ -155,6 +210,30 @@ mod linux {
         if offset != size || Signature::capture(source)? != *signature {
             return Err(RuntimeManifestError::SourceChanged);
         }
+        finish_sealing(file, expected, limit)
+    }
+
+    pub(super) fn seal_selected_bytes(
+        bytes: &[u8],
+        expected: &[u8; 32],
+    ) -> Result<File, RuntimeManifestError> {
+        let mut file = File::from(
+            memfd_create(
+                "carapana-selected-snapshot",
+                MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+            )
+            .map_err(|_| RuntimeManifestError::ImageUnavailable)?,
+        );
+        file.write_all(bytes)
+            .map_err(|_| RuntimeManifestError::ImageUnavailable)?;
+        finish_sealing(file, expected, bytes.len() as u64)
+    }
+
+    fn finish_sealing(
+        file: File,
+        expected: &[u8; 32],
+        limit: u64,
+    ) -> Result<File, RuntimeManifestError> {
         fcntl_add_seals(&file, seals()).map_err(|_| RuntimeManifestError::ImageSealRejected)?;
         if !fcntl_get_seals(&file)
             .map_err(|_| RuntimeManifestError::ImageSealRejected)?

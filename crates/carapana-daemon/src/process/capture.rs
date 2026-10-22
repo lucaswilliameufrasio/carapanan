@@ -184,7 +184,7 @@ impl ProcessSupervisor {
     pub fn run_captured_image_process(
         &mut self,
         session_id: &str,
-        image: &carapana_sandbox::image_launcher::SandboxImageLaunch,
+        image: &carapana_sandbox::image_launcher::SandboxImageLaunch<'_>,
         settings: ProcessCaptureSettings,
         group: &mut carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>,
         is_cancelled: impl FnMut() -> bool,
@@ -204,7 +204,7 @@ impl ProcessSupervisor {
         mut spec: ProcessSpec,
         settings: ProcessCaptureSettings,
         group: &mut carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>,
-        image: Option<&carapana_sandbox::image_launcher::SandboxImageLaunch>,
+        image: Option<&carapana_sandbox::image_launcher::SandboxImageLaunch<'_>>,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<OwnedProcessOutput, ProcessError> {
         settings.validate()?;

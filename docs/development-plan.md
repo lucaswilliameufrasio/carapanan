@@ -4202,6 +4202,21 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   três campanhas reais (nove backend + seis resource-scoped + sete image_launcher) e o gate integral
   passaram novamente: format/lint/check/Clippy/build, suites Rust/doctests, 24 Vitest e 64 E2E.
   Nenhuma unidade própria permaneceu carregada, sem mudanças de snapshots/timeouts.
+- CI `39792509025` em `63bbbe5` confirmado verde em Web/Linux e Rust/Ubuntu/macOS. PD-49 liga
+  `ReservedSelectedSnapshotBundle` ao launch como imagem de arquivos selados sob `/workspace`,
+  com lease de quota retida, identidade física da fonte e nenhum mount de diretório de staging.
+  Helper valida destinos/dados readonly e recebe seleções de até 256 arquivos em lotes <=128 fds,
+  preservando teto separado de runtime, 16 MiB agregados e limite por arquivo. Setup excessivo é
+  recusado antes de revisão/efeito, sem expansão automática do frame de 128 KiB.
+- Testes adicionados verificam seleção exclusiva e bytes antigos preservados após edição da fonte,
+  quota retida até descarte do launch, staging alterado recusado antes de envio, rejeição de escapes/
+  roles executáveis/conflitos/budgets e lote incompleto sem imagem parcial. A prova positiva de
+  seleção máxima usa o guardian/cgroup real, sem copy-back ou ativação de tools.
+- Três campanhas reais passaram nove backend cgroup + seis CLI resource-scoped + dez image_launcher,
+  com seleção máxima de 256 arquivos efetivamente executada. O gate integral final passou: format/
+  lint/check/Clippy/build, suites Rust/doctests (50 sandbox), 24 Vitest e 64 E2E. A primeira tentativa
+  parou em quatro empréstimos desnecessários nos fixtures; corrigidos sem suppressions. Nenhuma
+  unidade própria ficou carregada, sem alterar snapshots/timeouts.
 
 ---
 
