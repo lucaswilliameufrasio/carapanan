@@ -972,3 +972,54 @@ desativados.
 - Preferido sobre runtime empacotado para começar sem definir distribuição/update de imagem; rever
   essa escolha se o conjunto explícito se tornar impraticável. O probe sintético existente continua
   separado e não comprova isolamento de comandos gerais com este manifesto.
+
+## PD-39 — Limites de memória/PIDs por cgroup v2 previamente delegado
+
+**Data:** 21 de outubro de 2026
+
+**Status:** estratégia aprovada pelo operador; preparação isolada, sem launcher geral.
+
+- Exigir um pai cgroup v2 absoluto, explicitamente configurado e previamente delegado ao usuário sem
+  privilégios. Não procurar um pai automaticamente, usar sudo, habilitar controladores, mover processos
+  existentes ou alterar limites/configuração do pai. macOS permanece unsupported.
+- Validar cgroupfs v2, domínio normal e `memory`/`pids` já habilitados no `cgroup.subtree_control` do pai.
+  Criar somente um filho com nome gerado, por descritor, sem adotar cgroups preexistentes. Configurar
+  `memory.max`, `memory.swap.max=0`, `memory.oom.group=1`, `pids.max` e proibir subgrupos; reler controles
+  antes de retornar. Limites finitos são explícitos, sem defaults; memória usa múltiplos de 64 KiB para
+  evitar arredondamento acima do orçamento em hosts com páginas de até 64 KiB.
+- Esta primeira primitive prepara/verifica/remove apenas grupos vazios. Não expor migração por PID nem
+  tratar preparação como prova de que um processo está contido. O launcher precisa de handshake antes
+  de executar código não confiável: migração não captura descendentes já criados nem toda memória prévia.
+- Remover somente o filho criado pela operação, após revalidar identidade e ausência de processos;
+  não remover recursivamente, matar processos alheios nem declarar cleanup concluído em erro. Drop é
+  best-effort e crash pode deixar cgroup vazio: recovery e supervisão continuam gates próprios.
+- Testes comuns não alteram cgroups do host. Um teste opt-in exige pai de teste explicitamente delegado
+  e valida criação/readback/remoção de filho vazio. Sem essa configuração, não declarar enforcement de
+  memória/PIDs comprovado; saturação real e lifecycle de processos ainda precisam de prova positiva.
+  O operador informou que esse pai ainda não existe. Isso não é uma decisão de interromper o
+  desenvolvimento: ele corrigiu expressamente essa interpretação e pediu continuar o plano.
+  A prova real de recursos segue pendente, sem dispensar os gates técnicos antes de execução real.
+- Preferido sobre dependência inicial de systemd de usuário para manter a interface independente do
+  gerenciador de sessão. Rever se o provisionamento da delegação for impraticável. RLIMIT isolado não
+  substitui orçamento agregado de memória/descendentes, e este slice não limita CPU/I/O/HugeTLB por si só.
+
+## PD-40 — Leitura limitada e não bloqueante de stdout/stderr
+
+**Data:** 22 de outubro de 2026
+
+**Status:** implementação local dos leitores, independente de delegação cgroup; sem ativar tools.
+
+- Estender PD-35 com um leitor Unix que recebe a posse de `ChildStdout`/`ChildStderr` já criados por
+  um chamador confiável. Não iniciar processos, herdar ambiente ou abrir paths nessa API. Configurar os
+  pipes em nonblocking e ler chunks fixos de até 4 KiB, alternando streams sem fila ou threads auxiliares.
+- O orçamento agregado de captura limita também cada read antes de alocar/aceitar bytes; tails continuam
+  reservados por stream. Verificar cancelamento/deadline entre reads e retornar motivo explícito:
+  EOF dos dois pipes, orçamento esgotado, cancelamento ou timeout. EOF não significa processo finalizado.
+- O chamador/supervisor deve terminar e reaproveitar/recolher somente processos próprios ao receber
+  cancelamento/timeout/esgotamento/erro. Parar a captura não mata o produtor; a API não promete isso nem
+  fecha pipes prematuramente ao devolver tails. Não usar `KeepRunning` como fallback de erro de captura.
+- Output permanece bytes brutos privados, sem Debug/Clone/serialização/logs/artifacts ou envio automático
+  a provider. A integração com o supervisor e os gates de conteúdo/segredos continuam requisitos separados.
+- Preferido sobre uma thread por pipe com canal, que pode deixar leitores presos em descendentes que
+  mantêm descritores abertos. Polling nonblocking tem latência ociosa de até 10 ms; testar pipes reais,
+  flood, stream silencioso, EOF parcial, cancelamento e deadlines antes de integrar o host.

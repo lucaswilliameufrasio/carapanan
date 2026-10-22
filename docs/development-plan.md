@@ -4065,6 +4065,34 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   PD-38: formatter/lint/check/Clippy/build, todas as suites Rust (incluindo 24 testes de sandbox,
   três doctests de privacidade e 94 testes de storage), 24 Vitest e 64 E2E. Enforcement Bubblewrap
   positivo foi exigido no host Linux local; confirmação remota desta fatia ainda pendente.
+- O commit `388cfa0` foi enviado; run `39682596254` passou Web/Linux e Rust/Ubuntu/macOS, incluindo
+  manifesto explícito e recusa unsupported no macOS. Árvore estava limpa após essa publicação.
+- O operador escolheu cgroup v2 previamente delegado (PD-39). `delegated_cgroup` prepara apenas filhos
+  vazios de um pai explicitamente configurado, exige cgroupfs v2, domínio e controladores memory/pids,
+  aplica limites finitos com swap zero/OOM group e relê controles. Não habilita controladores no pai,
+  migra PIDs, inicia ou mata processos. Cleanup remove apenas o filho criado, sem recursão e com identidade.
+- Testes direcionados comuns passaram: 30 unitários de sandbox e quatro doctests. O teste positivo de
+  criação/readback/remoção exige `CARAPANA_TEST_CGROUP_PARENT`; essa configuração não foi fornecida,
+  portanto seu ramo real não foi executado. Não inferir enforcement de recursos desse verde: ainda falta
+  prova com delegação real e, separadamente, contenção/saturação de processos antes do launcher geral.
+- O gate comum completo com Bubblewrap obrigatório passou após PD-39 (formatter/lint/check/Clippy/build,
+  todas as suites Rust, 24 Vitest e 64 E2E). O gate positivo `CARAPANA_REQUIRE_CGROUP=1` sem pai explícito
+  foi executado e falhou como esperado, comprovando que a falta da configuração não vira sucesso.
+  A fatia de cgroup permanece local, sem commit/push, aguardando pai delegado de teste para validação real.
+- O operador informou que ainda não existe pai delegado de teste; não decidiu bloquear o desenvolvimento.
+  A atribuição anterior foi incorreta e ele pediu expressamente continuar a implementação do plano.
+  A prova real de cgroup é pendência de validação, não impedimento para avançar nas partes independentes.
+- Continuação em 22 de outubro: PD-40 adiciona leitura real nonblocking dos dois pipes de um processo já
+  supervisionado pelo chamador. A leitura alterna streams em chunks de 4 KiB, aplica o orçamento antes
+  de cada read e observa deadline/cancelamento sem threads/filas. EOF é distinto de saída do processo;
+  timeout/cancelamento/esgotamento retornam ao supervisor, não matam nem preservam processos sozinhos.
+  Testes reais sintéticos cobrem binários, flood maior que a capacidade dos pipes, stderr com stdout
+  silencioso, EOF parcial, processo vivo com stdio fechado e descendente que mantém pipes abertos.
+  O progresso também está no MCP ai-memory em `progress/delivery-4-continuation-2026-10-22.md`.
+- Após PD-40, o gate completo passou com Bubblewrap obrigatório: 44 unitários de daemon, 30 de sandbox,
+  restante das suites Rust/doctests, formatter/lint/check/Clippy/build, 24 Vitest e 64 E2E. Os oito testes
+  de pipes reais passaram também em três execuções consecutivas. O teste opt-in de cgroup continua sem
+  pai configurado; esse limite de validação não é apresentado como enforcement positivo nem pausa do plano.
 
 ---
 

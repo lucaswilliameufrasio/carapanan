@@ -3,6 +3,7 @@
 //! A successful probe is evidence about this fixed fixture on the current host, not authorization
 //! to execute tools or proof of secret protection in an arbitrary workspace.
 
+pub mod delegated_cgroup;
 pub mod runtime_manifest;
 pub mod selected_snapshots;
 

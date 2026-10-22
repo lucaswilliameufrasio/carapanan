@@ -309,6 +309,27 @@ do usuário**, não substitui gates de segredos/aprovação/confinamento e não 
 um executor de produção ou sandbox completo (seccomp, quotas gerais e cancelamento
 de comandos arbitrários ainda não estão implementados).
 
+### Gate opt-in de preparação de cgroup v2
+
+O backend em desenvolvimento exige um diretório **de teste**, previamente delegado
+ao usuário, em cgroupfs v2. O pai precisa ser um domínio normal e já ter `memory`
+e `pids` habilitados no `cgroup.subtree_control`. A aplicação não instala, delega,
+eleva privilégios, habilita controladores ou move processos automaticamente.
+
+Após o operador definir `CARAPANA_TEST_CGROUP_PARENT` para esse pai explícito:
+
+```sh
+CARAPANA_REQUIRE_CGROUP=1 cargo test -p carapana-sandbox \
+  should_prepare_a_real_empty_scope_only_when_a_test_parent_is_explicitly_supplied --locked
+```
+
+O teste cria somente um filho vazio de nome gerado, aplica/revalida limites e remove
+somente esse filho. Não o execute contra diretórios de outras tarefas. Sem a variável
+do pai, o gate obrigatório falha; testes comuns não mutam cgroups e não comprovam
+preparação real nem enforcement. Preparar um grupo vazio também não comprova limites
+sobre processos: o launcher continua bloqueado até handshake de admissão, testes de
+saturação e supervisão/cancelamento. macOS retorna unsupported.
+
 ### Revisão do Delivery 0
 
 **Conjunto aprovado pelo responsável pelo produto em 6 de outubro de 2026.**

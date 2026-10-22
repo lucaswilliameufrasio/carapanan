@@ -1,7 +1,11 @@
-//! Bounded, volatile output tails. No subprocesses, I/O, rendering, persistence, or secret classification.
+//! Bounded, volatile output tails; `pipes` adds readers for already-owned Unix subprocess pipes.
+//! No spawning, rendering, persistence, or secret classification.
 //!
 //! Callers must bound each read before allocating a chunk, stop at the shared capture limit, and use
 //! the process supervisor to cancel producers. A saturated buffer does not stop a process or drain pipes.
+
+#[cfg(unix)]
+pub mod pipes;
 
 use std::collections::VecDeque;
 
