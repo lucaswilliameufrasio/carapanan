@@ -32,6 +32,9 @@ pub enum RuntimeManifestError {
     SourceChanged,
     ImageUnavailable,
     ImageSealRejected,
+    ImageTransportUnavailable,
+    ImageTransportTimedOut,
+    ImageTransportProtocol,
 }
 
 /// Explicit ceilings; no product defaults or automatic budget expansion.
@@ -171,6 +174,18 @@ impl VerifiedRuntimeManifest {
         policy: RuntimeManifestPolicy,
     ) -> Result<RuntimeImage, RuntimeManifestError> {
         image::freeze(self, policy)
+    }
+
+    /// Receive sealed descriptors matching this exact manifest over a caller-owned private socketpair.
+    /// Neither the peer nor the manifest is an authenticated operator approval.
+    #[cfg(target_os = "linux")]
+    pub fn receive_image(
+        self,
+        socket: &std::os::unix::net::UnixDatagram,
+        policy: RuntimeManifestPolicy,
+        deadline: std::time::Instant,
+    ) -> Result<RuntimeImage, RuntimeManifestError> {
+        image::transport::receive(self, socket, policy, deadline)
     }
 
     pub fn verify(

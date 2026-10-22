@@ -5,6 +5,9 @@ use super::{
 };
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+pub(super) mod transport;
+
 /// Immutable bytes with exact target metadata. Intentionally no Debug/Clone/serialization.
 pub struct RuntimeImageFile {
     destination: PathBuf,
@@ -51,6 +54,16 @@ pub struct RuntimeImage {
 }
 
 impl RuntimeImage {
+    /// Send this image's descriptors only, without paths or implicit inheritance, over a private pair.
+    #[cfg(target_os = "linux")]
+    pub fn send_descriptors(
+        &self,
+        socket: &std::os::unix::net::UnixDatagram,
+        deadline: std::time::Instant,
+    ) -> Result<(), RuntimeManifestError> {
+        transport::send(self, socket, deadline)
+    }
+
     pub fn files(&self) -> impl ExactSizeIterator<Item = &RuntimeImageFile> {
         self.files.iter()
     }

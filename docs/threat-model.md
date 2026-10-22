@@ -118,6 +118,10 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    evitando montar o objeto original mutável. Hash da cópia é conferido após os seals; isso não é
    classificação de segredos, aprovação nem reserva global de memória. A preparação consome shmem
    fora do cgroup do target e ainda deve ter admissão global e transporte controlado ao guardian.
+   PD-46 transporta direitos em datagrama privado com CLOEXEC e revalidação independente de seals,
+   tamanho/hash, sem reabrir paths. Truncamento/quantidade incorreta falham com fechamento dos fds.
+   A API exige socketpair privado fornecido pelo chamador; não autentica aprovação nem cria listener.
+   Mapear/fechar exclusivamente os fds necessários ao Bubblewrap continua etapa separada do launcher.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

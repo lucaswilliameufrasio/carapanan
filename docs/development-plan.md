@@ -4169,6 +4169,12 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   identidade antes/depois e SHA-256 da cópia já selada. Descritores continuam CLOEXEC. Não há descoberta
   de dependências, mounts ou execução nova; transporte ao guardian e admissão global de memória para
   preparação continuam pendências próprias, não garantias desta imagem por si só.
+- `133e309` publicou PD-45; CI `39785625298` passou Web/Linux e Rust/Ubuntu/macOS.
+  PD-46 adiciona transporte SCM_RIGHTS limitado a socketpair privado: recebe CLOEXEC atômico,
+  verifica seals/tamanho/hash contra manifesto esperado e recusa truncamento/quantidade incorreta.
+  Testes reais cobrem transferência entre processos, integridade, prazos e fechamento dos direitos
+  recebidos em erro (EOF no peer confirma ausência de descritores vazados). Sem unsafe, listener,
+  paths de origem ou herança implícita de fds. Ainda não está ligado ao protocolo do guardian/mounts.
 
 ---
 

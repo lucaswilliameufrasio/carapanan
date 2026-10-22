@@ -1158,3 +1158,19 @@ desativados.
   Esse orçamento não é uma reserva global de memória: o launcher ainda precisa limitar admissão e
   contabilizar a preparação fora do cgroup do target. Não alegar que selar classifica segredos,
   autentica aprovação, comprova executabilidade ou resolve mounts/lifecycle por si só.
+
+## PD-46 — Transporte privado de imagens seladas por SCM_RIGHTS
+
+**Data:** 22 de outubro de 2026
+
+**Status:** transporte interno Linux; integração ao protocolo do guardian ainda pendente.
+
+- Usar um datagrama em socketpair Unix privado para transportar somente os descritores da imagem,
+  na ordem do manifesto esperado. Não transportar paths de origem, ambiente ou kill switches. Não
+  criar listener/socket público. Um peer privado não autentica aprovação nem classifica conteúdo.
+- Receber com CLOEXEC atômico, orçamento explícito, prazo finito, rejeição de truncamento/quantidade
+  incorreta e validação independente dos seals, tamanho e SHA-256 contra manifesto já verificado.
+  Descritores recebidos são fechados por ownership em todo erro, sem fallback por path.
+- Preferido a desativar CLOEXEC globalmente ou reabrir `/proc/<pid>/fd` de outro processo por path.
+  Flags nonblocking são por chamada; não mudar o modo compartilhado do socket. A integração futura
+  ainda deve mapear exclusivamente os fds aprovados ao Bubblewrap e fechar o canal antes do target.
