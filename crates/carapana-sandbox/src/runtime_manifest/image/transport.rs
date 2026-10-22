@@ -72,16 +72,50 @@ pub(in crate::runtime_manifest) fn receive(
     policy: RuntimeManifestPolicy,
     deadline: Instant,
 ) -> Result<RuntimeImage, RuntimeManifestError> {
-    if manifest.files.len() > policy.max_files() {
+    let expected = manifest
+        .files
+        .into_iter()
+        .map(|file| ExpectedRuntimeFile {
+            destination: file.spec.destination,
+            role: file.spec.role,
+            size_bytes: file.size_bytes,
+            sha256: file.spec.expected_sha256,
+        })
+        .collect();
+    receive_expected(expected, socket, policy, deadline)
+}
+
+pub(crate) fn receive_expected(
+    expected_files: Vec<ExpectedRuntimeFile>,
+    socket: &UnixDatagram,
+    policy: RuntimeManifestPolicy,
+    deadline: Instant,
+) -> Result<RuntimeImage, RuntimeManifestError> {
+    if expected_files.len() > policy.max_files() {
         return Err(RuntimeManifestError::TooManyFiles);
     }
-    if manifest.total_bytes > policy.max_total_bytes()
-        || manifest
-            .files
-            .iter()
-            .any(|file| file.size_bytes > policy.max_file_bytes())
+    if !expected_files
+        .iter()
+        .any(|file| file.role == RuntimeFileRole::Executable)
     {
-        return Err(RuntimeManifestError::ByteBudgetExceeded);
+        return Err(RuntimeManifestError::MissingExecutable);
+    }
+    let mut total = 0_u64;
+    for (index, file) in expected_files.iter().enumerate() {
+        crate::runtime_manifest::validate_destination(&file.destination)?;
+        for previous in &expected_files[..index] {
+            if file.destination.starts_with(&previous.destination)
+                || previous.destination.starts_with(&file.destination)
+            {
+                return Err(RuntimeManifestError::ConflictingTargets);
+            }
+        }
+        total = total
+            .checked_add(file.size_bytes)
+            .ok_or(RuntimeManifestError::ByteBudgetExceeded)?;
+        if total > policy.max_total_bytes() || file.size_bytes > policy.max_file_bytes() {
+            return Err(RuntimeManifestError::ByteBudgetExceeded);
+        }
     }
     let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FILES))];
     let mut ancillary = RecvAncillaryBuffer::new(&mut space);
@@ -122,13 +156,13 @@ pub(in crate::runtime_manifest) fn receive(
             _ => return Err(RuntimeManifestError::ImageTransportProtocol),
         }
     }
-    if descriptors.len() != manifest.files.len() {
+    if descriptors.len() != expected_files.len() {
         return Err(RuntimeManifestError::ImageTransportProtocol);
     }
     let required = SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL;
     let mut files = Vec::with_capacity(descriptors.len());
     let mut total_bytes = 0;
-    for (descriptor, expected) in descriptors.into_iter().zip(manifest.files) {
+    for (descriptor, expected) in descriptors.into_iter().zip(expected_files) {
         let file = File::from(descriptor);
         let metadata = file
             .metadata()
@@ -146,17 +180,17 @@ pub(in crate::runtime_manifest) fn receive(
         verify_bytes(
             &file,
             &Signature::capture(&file)?,
-            &expected.spec.expected_sha256,
+            &expected.sha256,
             policy
                 .max_file_bytes()
                 .min(policy.max_total_bytes() - total_bytes),
         )?;
         total_bytes += expected.size_bytes;
         files.push(RuntimeImageFile {
-            destination: expected.spec.destination,
-            role: expected.spec.role,
+            destination: expected.destination,
+            role: expected.role,
             size_bytes: expected.size_bytes,
-            sha256: expected.spec.expected_sha256,
+            sha256: expected.sha256,
             file,
         });
     }

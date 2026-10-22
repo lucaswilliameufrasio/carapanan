@@ -780,10 +780,22 @@ fn main() -> ExitCode {
     {
         let mut arguments = std::env::args_os();
         let _ = arguments.next();
-        if arguments
-            .next()
-            .is_some_and(|argument| argument == "__carapana_internal_process_host_v1")
+        let mode = arguments.next();
+        #[cfg(target_os = "linux")]
+        if mode.as_deref()
+            == Some(std::ffi::OsStr::new(
+                "__carapana_internal_image_launcher_v1",
+            ))
         {
+            if arguments.next().is_some() {
+                return ExitCode::FAILURE;
+            }
+            return match carapana_sandbox::image_launcher::run_image_helper() {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(_) => ExitCode::FAILURE,
+            };
+        }
+        if mode.is_some_and(|argument| argument == "__carapana_internal_process_host_v1") {
             if arguments.next().is_some() {
                 return ExitCode::FAILURE;
             }

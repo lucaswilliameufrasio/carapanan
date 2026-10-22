@@ -7,6 +7,19 @@ use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
 pub(super) mod transport;
+#[cfg(target_os = "linux")]
+pub(crate) use transport::receive_expected as receive_expected_image;
+
+/// Private wire metadata only, never source paths or runtime payload serialization.
+#[cfg(target_os = "linux")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExpectedRuntimeFile {
+    pub(crate) destination: PathBuf,
+    pub(crate) role: RuntimeFileRole,
+    pub(crate) size_bytes: u64,
+    pub(crate) sha256: [u8; 32],
+}
 
 /// Immutable bytes with exact target metadata. Intentionally no Debug/Clone/serialization.
 pub struct RuntimeImageFile {

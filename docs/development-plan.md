@@ -4175,6 +4175,17 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   Testes reais cobrem transferência entre processos, integridade, prazos e fechamento dos direitos
   recebidos em erro (EOF no peer confirma ausência de descritores vazados). Sem unsafe, listener,
   paths de origem ou herança implícita de fds. Ainda não está ligado ao protocolo do guardian/mounts.
+- `68a09d3` publicou PD-46; CI `39787157184` confirmado verde em Web/Linux e Rust/Ubuntu/macOS.
+  PD-47 compõe execução real no helper privado: recebe imagem selada, fixa Bubblewrap por descritor,
+  mapeia somente os arquivos individuais e fecha o canal antes do target. Root/workspace vazio readonly,
+  scratch explícito, namespaces separados, caps zero e NoNewPrivs foram exercitados com fixtures locais.
+- Cinco testes CLI reais passam: arquivos do host/cgroupfs/execs não declarados ausentes, ambiente
+  sintético não herdado, namespace de rede distinto, stdin /dev/null, fds de runtime fechados e setup
+  malformado recusado sem log de payload. Primeiro fixture falhou Permission denied porque o loader ELF
+  estava classificado como suporte 0444; agora é explicitamente Executable no manifesto de teste,
+  sem ampliar mounts. Testar sandbox isolado revelou feature `stdio` de rustix antes suprida por
+  unificação do workspace; declarada explicitamente para build independente do crate.
+  Guardian/cgroup, staging reservado, aprovação exata e admissão global continuam etapas próprias.
 
 ---
 

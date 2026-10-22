@@ -1174,3 +1174,26 @@ desativados.
 - Preferido a desativar CLOEXEC globalmente ou reabrir `/proc/<pid>/fd` de outro processo por path.
   Flags nonblocking são por chamada; não mudar o modo compartilhado do socket. A integração futura
   ainda deve mapear exclusivamente os fds aprovados ao Bubblewrap e fechar o canal antes do target.
+
+## PD-47 — Helper privado com runtime selado e raiz mínima Bubblewrap
+
+**Data:** 22 de outubro de 2026
+
+**Status:** execução interna com fixtures sintéticos; sem tools, snapshots ou autorização geral.
+
+- Um modo dedicado/single-threaded do CLI recebe setup limitado a 128 KiB e a imagem selada por
+  socketpair privado mapeado em stdin. Revalida limites, destinos, executable selecionado, hashes e
+  seals. Não recebe flags livres de Bubblewrap, ambiente, paths de origem ou diretórios do host.
+- Fixar o executável root-owned do Bubblewrap por descritor e usar fexecve seguro. Só no helper,
+  imediatamente antes desse exec, permitir herança dos fds validados da imagem, individualmente.
+  Não mudar flags globais nem a tabela de descritores de um daemon compartilhado. Stdin passa a
+  `/dev/null` e o canal privado fecha antes do exec; o target não deve receber os descritores de setup.
+- Bubblewrap copia cada fd em mount readonly com modo 0555 para executáveis e 0444 para suporte,
+  mantendo destinos exatos. Sem mounts amplos de `/usr`, libs, workspace ou home; namespaces isolados,
+  capabilities removidas, userns aninhado desabilitado, ambiente fixo e raiz/workspace vazio readonly.
+  Somente `/tmp` é scratch gravável, com tamanho explícito até 64 MiB. Exigir todos os controles,
+  sem retry relaxado, downloads, PATH/ldd ou dependências descobertas automaticamente.
+- Preferido a pré-exec unsafe ou reabertura de fds por path de outro PID. Há cópia adicional interna
+  do Bubblewrap e o custo exige futura admissão global/cgroup; este helper ainda não possui o lifecycle
+  do guardian nem consome aprovação. Testá-lo com programas fixos não autoriza comandos de modelo.
+  Próximas etapas: canal do guardian, staging reservado e aprovação exata antes de qualquer wiring.

@@ -259,6 +259,7 @@ dependencies = [
  "nix 0.29.0",
  "ratatui",
  "serde_json",
+ "sha2",
  "signal-hook",
  "tokio",
 ]
@@ -320,7 +321,10 @@ name = "carapana-sandbox"
 version = "0.0.0"
 dependencies = [
  "carapana-storage",
+ "nix 0.29.0",
  "rustix",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 

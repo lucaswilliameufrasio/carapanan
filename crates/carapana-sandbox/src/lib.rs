@@ -1,9 +1,12 @@
-//! Synthetic enforcement probes only: no user commands, workspace mounts, or runtime wiring.
+//! Internal sandbox preparation, synthetic enforcement probes and a dedicated sealed-image helper.
+//! No model tools, provider wiring or general workspace launcher are activated here.
 //!
 //! A successful probe is evidence about this fixed fixture on the current host, not authorization
 //! to execute tools or proof of secret protection in an arbitrary workspace.
 
 pub mod delegated_cgroup;
+#[cfg(target_os = "linux")]
+pub mod image_launcher;
 pub mod runtime_manifest;
 pub mod selected_snapshots;
 

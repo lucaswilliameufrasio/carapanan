@@ -6,12 +6,19 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 mod image;
+#[cfg(target_os = "linux")]
+pub(crate) use image::{ExpectedRuntimeFile, receive_expected_image};
 pub use image::{RuntimeImage, RuntimeImageFile};
+
+#[cfg(target_os = "linux")]
+pub(crate) fn open_bubblewrap_backend() -> Result<File, RuntimeManifestError> {
+    linux::open_source(Path::new("/usr/bin/bwrap"), RuntimeFileRole::Executable)
+}
 
 const MAX_FILES: usize = 128;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RuntimeFileRole {
     Executable,
     Support,
@@ -96,14 +103,7 @@ impl RuntimeFileSpec {
         expected_sha256: [u8; 32],
     ) -> Result<Self, RuntimeManifestError> {
         validate_path(&source)?;
-        validate_path(&destination)?;
-        let allowed = ["/runtime", "/usr", "/bin", "/lib", "/lib64"];
-        if !allowed
-            .iter()
-            .any(|root| destination.starts_with(root) && destination != Path::new(root))
-        {
-            return Err(RuntimeManifestError::InvalidPath);
-        }
+        validate_destination(&destination)?;
         Ok(Self {
             source,
             destination,
@@ -251,6 +251,17 @@ fn validate_path(path: &Path) -> Result<(), RuntimeManifestError> {
         if depth > 32 {
             return Err(RuntimeManifestError::InvalidPath);
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_destination(path: &Path) -> Result<(), RuntimeManifestError> {
+    validate_path(path)?;
+    if !["/runtime", "/usr", "/bin", "/lib", "/lib64"]
+        .iter()
+        .any(|root| path.starts_with(root) && path != Path::new(root))
+    {
+        return Err(RuntimeManifestError::InvalidPath);
     }
     Ok(())
 }

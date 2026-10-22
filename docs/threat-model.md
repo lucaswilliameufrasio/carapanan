@@ -122,6 +122,11 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    tamanho/hash, sem reabrir paths. Truncamento/quantidade incorreta falham com fechamento dos fds.
    A API exige socketpair privado fornecido pelo chamador; não autentica aprovação nem cria listener.
    Mapear/fechar exclusivamente os fds necessários ao Bubblewrap continua etapa separada do launcher.
+   PD-47 realiza esse mapeamento no helper privado single-threaded: somente runtime selado por arquivo,
+   sem paths de origem ou mounts de diretórios host; canal fecha e stdin vira /dev/null antes do exec.
+   Testes verificam cgroupfs/arquivos host ausentes, fds runtime fechados, caps zero, NoNewPrivs e netns
+   separado. Helper ainda não está integrado ao guardian, staging reservado ou aprovação; não habilita
+   tools nem deve executar entradas não confiáveis sob a alegação de resource scoping já integrado.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito
