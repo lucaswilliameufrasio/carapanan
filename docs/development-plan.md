@@ -4117,6 +4117,12 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   integral passou na repetição: 41 unitários de core, 41 de tools, doctests de tipagem/consumo/privacidade,
   demais suites Rust, formatter/lint/check/Clippy/build, 24 Vitest e 64 E2E. Não remover falhas anteriores
   da evidência nem tratá-las como regressão de UI comprovada sem reprodução estável.
+- O run `39731329890`, em `5943200`, passou Web/Linux e Rust/Ubuntu, mas os seis fixtures novos de
+  edição falharam no macOS com `UnsafePath("/var")`: o leitor de produção recusou corretamente o alias
+  do diretório temporário. Regressão com raiz temporária symlink reproduziu a falha no Linux antes da
+  correção; somente o fixture agora canonicaliza sua raiz antes de capturar o workspace. Nenhuma regra
+  de produção de symlink/confinamento foi relaxada. A pergunta sobre unidade transitória cgroup foi
+  interrompida pelo reinício e ainda não recebeu autorização; nenhuma unidade foi criada.
 
 ---
 

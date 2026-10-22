@@ -139,12 +139,19 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
+            Self::new_at(&std::env::temp_dir())
+        }
+
+        fn new_at(temporary_root: &Path) -> Self {
+            // macOS exposes its temporary directory through /var -> /private/var. Resolve the
+            // fixture root explicitly; never relax the production workspace's no-symlink checks.
+            let temporary_root = fs::canonicalize(temporary_root).unwrap();
             static NEXT: AtomicU64 = AtomicU64::new(0);
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let root = std::env::temp_dir().join(format!(
+            let root = temporary_root.join(format!(
                 "carapana-edit-{}-{nonce}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
@@ -173,6 +180,17 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn should_canonicalize_temporary_root_before_capturing_a_test_workspace() {
+        use std::os::unix::fs::symlink;
+        let base = Fixture::new();
+        let alias = base.root.join("temporary-alias");
+        symlink(&base.root, &alias).unwrap();
+        let fixture = Fixture::new_at(&alias);
+        assert_eq!(fixture.root, fs::canonicalize(&fixture.root).unwrap());
+        assert!(fixture.metadata.read_file_snapshot("source.txt").is_ok());
     }
 
     #[test]
