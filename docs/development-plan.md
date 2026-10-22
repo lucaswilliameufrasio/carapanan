@@ -4147,6 +4147,22 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   preservação de população inesperada sem ownership da lease. Nenhuma unidade própria ficou carregada.
   O gate comum completo também passou (33 sandbox e demais suites Rust/doctests, format/lint/check/
   Clippy/build, 24 Vitest e 64 E2E). CI `39777790977` do commit anterior `e97b7f5` passou todos os jobs.
+- CI `39779051800`, em `baf16b0`, passou Web/Linux e Rust/Ubuntu/macOS. PD-44 integra admissão ao
+  guardian privado antes de exec: Ready → migração verificada → Admit → membership real → início.
+  Kill switch fixado em fd reservado do guardian permite cleanup mesmo com EOF do controller e
+  descendente após setsid; o target recebe stderr em pipe, sem esse fd. Sem fallback fora do cgroup.
+- Três campanhas reais autorizadas passaram nove testes de cgroup mais seis CLI de guardian com
+  delegação: membership, setsid, perda de controller, Admit falso, reuse e OOM sem fallback. O teste comum
+  de pre-exec gate também passou (oito CLI de captura no total). Filesystem/rede e aprovação completa
+  ainda devem ser ligados ao launcher; esta API interna não habilita tools nem promete confinement total.
+- A primeira tentativa do gate completo de PD-44 parou no startup dos servidores E2E (60 s), com load
+  médio do host >100 e sem listeners residuais em 4173/4174 após cleanup. O gate integral passou na
+  repetição, sem alterar timeouts/config/snapshots. A revisão posterior adicionou uma regressão no
+  caminho de rejeição: stderr reservado não pode receber logging do CLI privado. O teste reproduziu
+  saída por panic (101) antes de remover essa impressão; depois, oito testes comuns de captura e três
+  campanhas reais (nove cgroup + seis guardian) passaram, incluindo saída de erro normal (1). Gate final
+  após essa correção passou integralmente: formatter/lint/check/Clippy/build, todas as suites Rust e
+  doctests, 24 Vitest e 64 E2E, com Bubblewrap obrigatório. Não houve alteração de timeouts/snapshots.
 
 ---
 

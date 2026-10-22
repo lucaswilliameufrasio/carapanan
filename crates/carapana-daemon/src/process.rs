@@ -105,6 +105,8 @@ pub enum ProcessError {
     HostProtocol,
     HostTimedOut,
     ShutdownTimedOut,
+    ResourceAdmissionFailed,
+    ResourceCleanupFailed,
     Io(io::Error),
     Serialization(serde_json::Error),
     Signal(Errno),
@@ -128,6 +130,12 @@ impl fmt::Display for ProcessError {
             Self::ShutdownTimedOut => {
                 formatter.write_str("owned processes did not stop before the deadline")
             }
+            Self::ResourceAdmissionFailed => {
+                formatter.write_str("owned guardian resource admission failed before execution")
+            }
+            Self::ResourceCleanupFailed => formatter.write_str(
+                "owned resource scope cleanup is uncertain; retain its resources for review",
+            ),
             Self::Io(error) => write!(formatter, "owned-process I/O failed: {error}"),
             Self::Serialization(error) => {
                 write!(formatter, "owned-process protocol failed: {error}")
@@ -153,6 +161,8 @@ impl Error for ProcessError {
             | Self::HostProtocol
             | Self::HostTimedOut
             | Self::ShutdownTimedOut
+            | Self::ResourceAdmissionFailed
+            | Self::ResourceCleanupFailed
             | Self::Signal(_) => None,
         }
     }
@@ -295,6 +305,11 @@ impl ProcessSupervisor {
             }
             HostStartResponse::Started { .. } => {
                 let _ = write_frame(&mut control, &HostControl::Stop);
+                drop(control);
+                wait_for_host_exit(&mut child, HOST_SHUTDOWN_TIMEOUT)?;
+                return Err(ProcessError::HostProtocol);
+            }
+            HostStartResponse::ReadyForAdmission { .. } => {
                 drop(control);
                 wait_for_host_exit(&mut child, HOST_SHUTDOWN_TIMEOUT)?;
                 return Err(ProcessError::HostProtocol);
@@ -511,11 +526,17 @@ struct HostStartRequest {
     shutdown_policy: ProcessShutdownPolicy,
     #[serde(default)]
     capture: Option<ProcessCaptureSettings>,
+    #[serde(default)]
+    wait_for_admission: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum HostStartResponse {
+    ReadyForAdmission {
+        process_id: u32,
+        process_group_id: u32,
+    },
     Started {
         process_id: u32,
         process_group_id: u32,
@@ -526,6 +547,7 @@ enum HostStartResponse {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum HostControl {
+    Admit,
     Stop,
     Preserve,
 }
@@ -577,6 +599,7 @@ fn validate_spec(
             working_directory,
             shutdown_policy: spec.shutdown_policy,
             capture: spec.capture,
+            wait_for_admission: false,
         },
         spec.shutdown_policy,
     ))
@@ -612,6 +635,9 @@ pub fn run_process_host() -> Result<(), ProcessError> {
     let mut stdin_lock = stdin.lock();
     let request = read_frame::<_, HostStartRequest>(&mut stdin_lock)?;
     drop(stdin_lock);
+    if request.wait_for_admission && request.capture.is_none() {
+        return Err(ProcessError::HostRejected);
+    }
     if request.capture.is_some() {
         return capture::run_host(request, terminate_on_signal);
     }
@@ -671,7 +697,9 @@ pub fn run_process_host() -> Result<(), ProcessError> {
             }
         }
         match control_receiver.recv_timeout(POLL_INTERVAL) {
-            Ok(Some(HostControl::Stop)) | Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Ok(Some(HostControl::Stop | HostControl::Admit))
+            | Ok(None)
+            | Err(mpsc::RecvTimeoutError::Disconnected) => {
                 terminate_own_process_group()?;
                 return Ok(());
             }

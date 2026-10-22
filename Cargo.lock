@@ -277,6 +277,7 @@ name = "carapana-daemon"
 version = "0.0.0"
 dependencies = [
  "carapana-protocol",
+ "carapana-sandbox",
  "carapana-storage",
  "nix 0.29.0",
  "rustix",

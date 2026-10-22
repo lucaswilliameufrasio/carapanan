@@ -1107,3 +1107,35 @@ desativados.
 - Prova opt-in real confirma um descendente após `setsid`, sua presença antes do término e esvaziamento
   do cgroup ao usar a API, além de recusa de segunda admissão. Usa somente scripts fixos na unidade
   transitória de teste já autorizada; não muda política de rede/sandbox nem habilita tools.
+
+## PD-44 — Guardian admitido antes de exec e kill switch por descritor
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração interna Linux, sem handlers de tool/IPC de usuário ou launcher geral.
+
+- `run_captured_resource_scoped_process` exige lease nova, limites explícitos e Terminate. O guardian
+  envia ReadyForAdmission antes de iniciar o executável; o supervisor move seu Child próprio ao grupo
+  e só então envia Admit. O guardian confirma membership real do kernel antes de exec: uma mensagem
+  Admit sem migração não basta. Falhas nunca caem para a execução capturada sem cgroup.
+- O pai instala um arquivo write-only `cgroup.kill` fixado da lease como stderr reservado do guardian,
+  usando somente a duplicação segura de stdio de Command (sem unsafe ou flags globais de herança FD).
+  Esse fd não é log. O target recebe stderr/stdout novos em pipes e não herda o kill switch.
+  O modo privado do CLI retorna falha por exit status sem imprimir em stderr; a regressão comprovou
+  que tentar logar no controle rejeitado causava panic, agora recusado pelo teste de saída normal.
+- O guardian verifica cgroupfs do fd, nome do controle e identidade de seu diretório contra a membership
+  reportada por `/proc/self/cgroup` na montagem padrão `/sys/fs/cgroup`. Montagem/membership indisponível
+  ou incompatível falha fechada, sem descoberta/fallback. O efeito de kill usa o descritor fixado,
+  nunca uma reabertura por path fornecido no comando.
+- Ao terminar/timeout/cancelar/perder o controller, o guardian usa seu kill switch para encerrar todo o
+  cgroup, incluindo a si mesmo e descendentes após setsid. O supervisor também tenta esvaziar a lease
+  e recolhe o host antes de retornar. Cleanup incerto retorna erro específico e exige reter recursos
+  para inspeção; não equivale a sucesso. OOM pode matar guardian antes do relatório: retornar erro,
+  não reiniciar/duplicar execução nem executar fora do grupo para obter output.
+- Provas reais na unidade transitória autorizada cobrem target dentro do cgroup, stderr sem kill switch,
+  término de descendente após setsid, EOF do controller sem cleanup explícito do pai, recusa de Admit
+  falso, recusa de reuse antes de novo target e OOM sem fallback. O gate pendente antes de Admit também
+  é testado nos testes comuns, sem cgroup mutável.
+- Isso não isola filesystem/rede nem impede acesso malicioso ao cgroupfs se o target ainda enxergar o
+  host. O futuro launcher deve esconder esses controles/FDs e vincular mounts/runtime/budgets à aprovação.
+  Fixtures são scripts sintéticos confiáveis; não ativar ToolCallRequested a partir dessa integração.

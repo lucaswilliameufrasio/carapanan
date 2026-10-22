@@ -163,6 +163,143 @@ impl HostCapturedReport {
 }
 
 impl ProcessSupervisor {
+    /// Linux-only resource admission: trusted guardian waits before starting the target, is moved
+    /// into this fresh lease and only then receives Admit. No fallback to unscoped execution.
+    /// Does not add filesystem/network confinement or authorization; no provider/tool wiring exists.
+    #[cfg(target_os = "linux")]
+    pub fn run_captured_resource_scoped_process(
+        &mut self,
+        session_id: &str,
+        mut spec: ProcessSpec,
+        settings: ProcessCaptureSettings,
+        group: &mut carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> Result<OwnedProcessOutput, ProcessError> {
+        settings.validate()?;
+        group
+            .verify_ready_for_admission()
+            .map_err(|_| ProcessError::ResourceAdmissionFailed)?;
+        if spec.shutdown_policy != ProcessShutdownPolicy::Terminate {
+            return Err(ProcessError::InvalidProcessSpec);
+        }
+        if session_id.trim().is_empty()
+            || session_id.len() > 256
+            || session_id.chars().any(char::is_control)
+        {
+            return Err(ProcessError::InvalidSessionId);
+        }
+        if self.shutdown_started {
+            return Err(ProcessError::HostUnavailable);
+        }
+        self.reap_finished()?;
+        if self.processes.len() >= MAX_PROCESS_COUNT {
+            return Err(ProcessError::ProcessLimitReached);
+        }
+        if is_cancelled() {
+            return Ok(OwnedProcessOutput {
+                end: CapturedProcessEnd::Cancelled,
+                exit_code: None,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                stdout_bytes: 0,
+                stderr_bytes: 0,
+            });
+        }
+        spec.capture = Some(settings);
+        let (mut request, _) = validate_spec(spec)?;
+        request.wait_for_admission = true;
+        let kill_switch = group
+            .guardian_kill_stdio()
+            .map_err(|_| ProcessError::ResourceAdmissionFailed)?;
+        let mut host = Command::new(&self.host_executable)
+            .arg(INTERNAL_HOST_ARGUMENT)
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(kill_switch)
+            .process_group(0)
+            .spawn()
+            .map_err(|_| ProcessError::HostUnavailable)?;
+        let mut control = host.stdin.take().ok_or(ProcessError::HostProtocol)?;
+        let mut response = host.stdout.take().ok_or(ProcessError::HostProtocol)?;
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+        let (output_sender, output_receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            for _ in 0..2 {
+                let frame = read_frame::<_, HostStartResponse>(&mut response);
+                let failed = frame.is_err();
+                if startup_sender.send(frame).is_err() || failed {
+                    return;
+                }
+            }
+            let output = read_frame::<_, HostCapturedReport>(&mut response)
+                .and_then(|report| report.validate(settings));
+            let _ = output_sender.send(output);
+        });
+        let result = (|| {
+            write_frame(&mut control, &request)?;
+            let ready = startup_receiver
+                .recv_timeout(HOST_START_TIMEOUT)
+                .map_err(|_| ProcessError::HostTimedOut)??;
+            if !matches!(ready, HostStartResponse::ReadyForAdmission { process_id, process_group_id }
+                if process_id == host.id() && process_group_id == host.id())
+            {
+                return Err(ProcessError::HostProtocol);
+            }
+            if is_cancelled() {
+                return Ok(OwnedProcessOutput {
+                    end: CapturedProcessEnd::Cancelled,
+                    exit_code: None,
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    stdout_bytes: 0,
+                    stderr_bytes: 0,
+                });
+            }
+            group
+                .admit_blocked_child(&mut host)
+                .map_err(|_| ProcessError::ResourceAdmissionFailed)?;
+            write_frame(&mut control, &HostControl::Admit)?;
+            let started = startup_receiver
+                .recv_timeout(HOST_START_TIMEOUT)
+                .map_err(|_| ProcessError::HostTimedOut)??;
+            if !matches!(started, HostStartResponse::Started { process_id, process_group_id }
+                if process_id > 0 && i32::try_from(process_id).is_ok() && process_group_id == host.id())
+            {
+                return Err(ProcessError::HostProtocol);
+            }
+            let deadline =
+                Instant::now() + Duration::from_millis(settings.timeout_ms) + HOST_SHUTDOWN_TIMEOUT;
+            let mut stop_requested = false;
+            loop {
+                if !stop_requested && is_cancelled() {
+                    write_frame(&mut control, &HostControl::Stop)?;
+                    stop_requested = true;
+                }
+                match output_receiver.recv_timeout(POLL_INTERVAL) {
+                    Ok(result) => return result,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(ProcessError::HostProtocol);
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() >= deadline => {
+                        return Err(ProcessError::HostTimedOut);
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        })();
+        drop(control);
+        // Keep the Child handle until the cgroup termination attempt finishes, then reap the host.
+        // Kernel cgroup membership, not PGID, covers descendants which changed sessions/groups.
+        let cleanup = group
+            .terminate_and_wait(HOST_SHUTDOWN_TIMEOUT)
+            .map_err(|_| ProcessError::ResourceCleanupFailed);
+        let reaped = wait_for_host_exit(&mut host, HOST_SHUTDOWN_TIMEOUT);
+        cleanup?;
+        reaped?;
+        result
+    }
+
     /// Synchronously run one explicitly specified owned process with finite capture and a deadline.
     /// Internal primitive only: no sandbox/authorization claims, no daemon IPC, no model tool wiring.
     /// `KeepRunning` is rejected. Returns only after the guardian exited and finished group cleanup.
@@ -231,6 +368,27 @@ pub(super) fn run_host(
     if request.shutdown_policy != ProcessShutdownPolicy::Terminate {
         return Err(ProcessError::HostRejected);
     }
+    if request.wait_for_admission {
+        write_frame(
+            &mut io::stdout().lock(),
+            &HostStartResponse::ReadyForAdmission {
+                process_id: std::process::id(),
+                process_group_id: std::process::id(),
+            },
+        )?;
+        // No target has been spawned. EOF, malformed input, Stop or Preserve cannot release the gate.
+        if !matches!(
+            read_frame::<_, HostControl>(&mut io::stdin().lock()),
+            Ok(HostControl::Admit)
+        ) {
+            return Err(ProcessError::HostRejected);
+        }
+        #[cfg(target_os = "linux")]
+        carapana_sandbox::delegated_cgroup::verify_guardian_resource_membership()
+            .map_err(|_| ProcessError::ResourceAdmissionFailed)?;
+        #[cfg(not(target_os = "linux"))]
+        return Err(ProcessError::ResourceAdmissionFailed);
+    }
     let mut child = match spawn_process(&request) {
         Ok(child) => child,
         Err(_) => {
@@ -246,7 +404,7 @@ pub(super) fn run_host(
         },
     );
     if started.is_err() {
-        terminate_own_process_group()?;
+        terminate_host_scope(request.wait_for_admission)?;
         return Err(ProcessError::HostProtocol);
     }
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -263,8 +421,19 @@ pub(super) fn run_host(
         .unwrap_or(HostCapturedReport::Failed);
     let sent = write_frame(&mut io::stdout().lock(), &report);
     // This guardian is the group leader; report transport never relinquishes group ownership.
-    terminate_own_process_group()?;
+    terminate_host_scope(request.wait_for_admission)?;
     sent
+}
+
+fn terminate_host_scope(resource_scoped: bool) -> Result<(), ProcessError> {
+    #[cfg(target_os = "linux")]
+    if resource_scoped {
+        carapana_sandbox::delegated_cgroup::terminate_guardian_resource_scope()
+            .map_err(|_| ProcessError::ResourceCleanupFailed)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = resource_scoped;
+    terminate_own_process_group()
 }
 
 fn collect(

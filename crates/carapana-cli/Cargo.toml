@@ -31,4 +31,5 @@ crossterm = "=0.29.0"
 signal-hook = "=0.3.18"
 
 [target.'cfg(unix)'.dev-dependencies]
+carapana-sandbox = { path = "../carapana-sandbox" }
 nix = { version = "=0.29.0", features = ["signal", "process"] }

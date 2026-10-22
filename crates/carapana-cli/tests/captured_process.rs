@@ -270,3 +270,50 @@ fn should_terminate_captured_group_after_its_private_controller_disconnects() {
     }
     assert_group_gone(id);
 }
+
+#[test]
+fn should_never_start_the_target_while_waiting_for_resource_admission() {
+    use std::{
+        io::{Read, Write},
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+    };
+    let fixture = Fixture::new();
+    let mut host = Command::new(env!("CARGO_BIN_EXE_carapana"))
+        .arg("__carapana_internal_process_host_v1")
+        .env_clear()
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut control = host.stdin.take().unwrap();
+    let mut response = host.stdout.take().unwrap();
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "executable":"/usr/bin/python3", "arguments":["-I","-c","open('not-admitted','w').write('forbidden')"],
+        "working_directory":fixture.0, "shutdown_policy":"terminate", "wait_for_admission":true,
+        "capture":{"stdout_tail_bytes":32,"stderr_tail_bytes":32,"max_capture_bytes":64,"timeout_ms":5000}
+    })).unwrap();
+    control
+        .write_all(&u32::try_from(payload.len()).unwrap().to_be_bytes())
+        .unwrap();
+    control.write_all(&payload).unwrap();
+    control.flush().unwrap();
+    let mut size = [0; 4];
+    response.read_exact(&mut size).unwrap();
+    let mut bytes = vec![0; u32::from_be_bytes(size) as usize];
+    response.read_exact(&mut bytes).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["status"],
+        "ready_for_admission"
+    );
+    assert!(!fixture.0.join("not-admitted").exists());
+    drop(control); // No Admit, so even controller EOF must not start the executable.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while host.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!fixture.0.join("not-admitted").exists());
+}

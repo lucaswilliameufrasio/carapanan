@@ -353,6 +353,14 @@ inclusive para descendentes que fizeram `setsid`. O supervisor continua respons�
 por recolher seu filho e manter staging enquanto houver consumidores. Drop só tenta
 matar grupos com admissão iniciada por essa lease; nunca adota um grupo alheio.
 
+O harness opt-in roda também os testes Linux de `captured_cgroup`: o guardian espera
+admissão antes do exec, confirma membership real e usa um kill switch por descritor
+para cleanup mesmo com perda do controller/descendente após `setsid`. Stderr do
+guardian é reservado ao controle; o target recebe um pipe separado. Admit sem
+migração, reuse e OOM não podem iniciar fallback fora do grupo. Isso não constitui
+isolamento de filesystem/rede: o launcher ainda deve esconder cgroupfs e vincular
+runtime/mounts/limites à aprovação, antes de executar conteúdo não confiável.
+
 ### Revisão do Delivery 0
 
 **Conjunto aprovado pelo responsável pelo produto em 6 de outubro de 2026.**

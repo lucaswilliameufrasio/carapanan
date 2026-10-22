@@ -110,6 +110,10 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    PD-43 adiciona admissão única de Child próprio e cgroup.kill por descritor com deadline. Testes reais
    comprovam término após setsid e recusam matar população inesperada sem admissão da lease. O contrato
    de filho bloqueado ainda precisa ser implementado pelo guardian antes de aceitar workloads gerais.
+   PD-44 implementa esse gate no guardian antes do exec e confirma membership real; kill switch por
+   descritor permite cleanup com perda do controller e setsid, com testes reais. O target não herda o
+   controle. Não confundir resource scoping com sandbox: sem mounts mínimos o target ainda poderia
+   acessar cgroupfs/host; ligar esses controles ao launcher completo continua necessário.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

@@ -24,6 +24,26 @@ pub enum CgroupError {
     TerminationTimedOut,
 }
 
+/// Private guardian integration: validate that its reserved stderr kill switch belongs to the
+/// kernel-reported cgroup of this very process, before releasing the pre-exec admission gate.
+#[cfg(target_os = "linux")]
+pub fn verify_guardian_resource_membership() -> Result<(), CgroupError> {
+    linux::verify_guardian_membership()
+}
+
+/// Kill only the current guardian's descriptor-bound scope, including the guardian itself.
+/// This is used on controller loss as well as normal cleanup. Stderr is NOT a log stream here.
+#[cfg(target_os = "linux")]
+pub fn terminate_guardian_resource_scope() -> Result<(), CgroupError> {
+    linux::verify_guardian_membership()?;
+    let count =
+        rustix::io::write(std::io::stderr(), b"1").map_err(|_| CgroupError::ControlRejected)?;
+    if count != 1 {
+        return Err(CgroupError::ControlRejected);
+    }
+    Ok(())
+}
+
 /// Finite, explicit payload limits; not a machine-wide reservation or a complete resource policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CgroupLimits {
@@ -118,6 +138,34 @@ impl PreparedCgroup<'_> {
         self.limits
     }
 
+    pub fn verify_ready_for_admission(&self) -> Result<(), CgroupError> {
+        #[cfg(target_os = "linux")]
+        {
+            if self.admitted {
+                return Err(CgroupError::AlreadyAdmitted);
+            }
+            self.verify_empty()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(CgroupError::UnsupportedPlatform)
+        }
+    }
+
+    /// Dedicated guardian-only kill switch. Install as its stderr using Command's safe stdio mapping;
+    /// target stderr must be replaced by a capture pipe. This is not a diagnostic/output stream.
+    pub fn guardian_kill_stdio(&self) -> Result<std::process::Stdio, CgroupError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.verify_ready_for_admission()?;
+            linux::guardian_kill_stdio(self)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(CgroupError::UnsupportedPlatform)
+        }
+    }
+
     /// Admit only a directly-owned child still blocked in trusted application code before exec/fork.
     /// The caller must establish that gate; this API does not make an already-running command safe,
     /// migrate existing descendants or retroactively account memory charged before migration.
@@ -207,6 +255,78 @@ mod linux {
     // Authoritative cgroup v2 filesystem magic, documented by the kernel admin guide.
     const CGROUP2_MAGIC: u64 = 0x6367_7270;
     const CONTROL_BYTES: u64 = 4096;
+
+    pub(super) fn guardian_kill_stdio(
+        group: &PreparedCgroup<'_>,
+    ) -> Result<std::process::Stdio, CgroupError> {
+        verify_identity(group)?;
+        let fd = openat(
+            &group.directory,
+            "cgroup.kill",
+            OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| CgroupError::ControlRejected)?;
+        Ok(std::process::Stdio::from(File::from(fd)))
+    }
+
+    pub(super) fn verify_guardian_membership() -> Result<(), CgroupError> {
+        use std::{fs, path::Component};
+        let stderr = std::io::stderr();
+        if fstatfs(&stderr)
+            .map_err(|_| CgroupError::ControlRejected)?
+            .f_type as u64
+            != CGROUP2_MAGIC
+        {
+            return Err(CgroupError::NotCgroupV2);
+        }
+        let kill_path =
+            fs::read_link("/proc/self/fd/2").map_err(|_| CgroupError::ControlRejected)?;
+        if kill_path.file_name() != Some(std::ffi::OsStr::new("cgroup.kill")) {
+            return Err(CgroupError::ControlRejected);
+        }
+        let kill_parent = kill_path.parent().ok_or(CgroupError::ControlRejected)?;
+        let mut membership = String::new();
+        File::open("/proc/self/cgroup")
+            .map_err(|_| CgroupError::ControlRejected)?
+            .take(CONTROL_BYTES + 1)
+            .read_to_string(&mut membership)
+            .map_err(|_| CgroupError::ControlRejected)?;
+        if membership.len() as u64 > CONTROL_BYTES {
+            return Err(CgroupError::ControlRejected);
+        }
+        let mut paths = membership
+            .lines()
+            .filter_map(|line| line.strip_prefix("0::"));
+        let path = paths.next().ok_or(CgroupError::ControlRejected)?;
+        if paths.next().is_some()
+            || !Path::new(path).is_absolute()
+            || Path::new(path)
+                .components()
+                .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+        {
+            return Err(CgroupError::ControlRejected);
+        }
+        // The trusted guardian remains outside workload namespaces. Require the standard visible
+        // cgroup2 mount and fail closed on unavailable/mismatched membership rather than guessing.
+        let own = fs::metadata(
+            Path::new("/sys/fs/cgroup").join(
+                Path::new(path)
+                    .strip_prefix("/")
+                    .map_err(|_| CgroupError::ControlRejected)?,
+            ),
+        )
+        .map_err(|_| CgroupError::ControlRejected)?;
+        let switch = fs::metadata(kill_parent).map_err(|_| CgroupError::ControlRejected)?;
+        if !own.is_dir()
+            || !switch.is_dir()
+            || own.dev() != switch.dev()
+            || own.ino() != switch.ino()
+        {
+            return Err(CgroupError::AdmissionFailed);
+        }
+        Ok(())
+    }
 
     fn directory(parent: &File, name: &std::ffi::OsStr) -> Result<File, CgroupError> {
         let fd = openat(

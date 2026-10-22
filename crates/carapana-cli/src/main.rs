@@ -789,10 +789,9 @@ fn main() -> ExitCode {
             }
             return match carapana_daemon::run_process_host() {
                 Ok(()) => ExitCode::SUCCESS,
-                Err(_) => {
-                    eprintln!("carapana: private process host failed");
-                    ExitCode::FAILURE
-                }
+                // In resource-scoped mode stderr is a pinned cgroup kill switch, never a log sink.
+                // Report failure through exit status only; protocol failures stay content-free.
+                Err(_) => ExitCode::FAILURE,
             };
         }
     }
