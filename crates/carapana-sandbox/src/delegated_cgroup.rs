@@ -1,5 +1,5 @@
-//! Preparation of empty resource scopes only. No process migration, spawn, killing, or host setup.
-//! Successful configuration is not evidence that a workload is contained or limits were saturated.
+//! Scoped cgroup preparation and admission for directly-owned, pre-exec gated children.
+//! No spawning or host setup. The caller must authenticate and hold the child in trusted gate code.
 
 use std::path::Path;
 
@@ -18,6 +18,10 @@ pub enum CgroupError {
     IdentityChanged,
     Populated,
     CleanupFailed,
+    AlreadyAdmitted,
+    ChildUnavailable,
+    AdmissionFailed,
+    TerminationTimedOut,
 }
 
 /// Finite, explicit payload limits; not a machine-wide reservation or a complete resource policy.
@@ -84,8 +88,9 @@ impl DelegatedCgroup {
     }
 }
 
-/// A configured EMPTY group, not an execution permission or a workload-containment claim.
-/// No arbitrary PID attachment is exposed. A future supervisor must establish containment before exec.
+/// A configured group with one-shot admission, not an execution permission.
+/// No arbitrary PID attachment is exposed. The supervisor must establish a trusted gate before exec,
+/// retain the lease while workloads run and reap its owned Child after terminating the cgroup.
 ///
 /// ```compile_fail
 /// fn log(group: &carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>) {
@@ -104,11 +109,47 @@ pub struct PreparedCgroup<'parent> {
     limits: CgroupLimits,
     #[cfg(target_os = "linux")]
     removed: bool,
+    #[cfg(target_os = "linux")]
+    admitted: bool,
 }
 
 impl PreparedCgroup<'_> {
     pub fn limits(&self) -> CgroupLimits {
         self.limits
+    }
+
+    /// Admit only a directly-owned child still blocked in trusted application code before exec/fork.
+    /// The caller must establish that gate; this API does not make an already-running command safe,
+    /// migrate existing descendants or retroactively account memory charged before migration.
+    /// Accepting Child, not a PID, retains ownership and prevents PID reuse before a write.
+    pub fn admit_blocked_child(
+        &mut self,
+        child: &mut std::process::Child,
+    ) -> Result<(), CgroupError> {
+        #[cfg(target_os = "linux")]
+        {
+            linux::admit(self, child)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = child;
+            Err(CgroupError::UnsupportedPlatform)
+        }
+    }
+
+    /// Terminate this lease's admitted group, including descendants that changed process groups.
+    /// No kill is allowed before an admission attempt; an unexpected occupied unadmitted group fails
+    /// closed. Reaping the owned Child remains the supervisor's responsibility after this method.
+    pub fn terminate_and_wait(&mut self, timeout: std::time::Duration) -> Result<(), CgroupError> {
+        #[cfg(target_os = "linux")]
+        {
+            linux::terminate(self, timeout)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = timeout;
+            Err(CgroupError::UnsupportedPlatform)
+        }
     }
 
     /// Revalidate the same empty cgroup and its exact configured controls.
@@ -141,7 +182,11 @@ impl Drop for PreparedCgroup<'_> {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
         {
-            // No killing or recursive removal on drop. Errors leave the child for explicit review.
+            // Only a group explicitly admitted by this lease is eligible for fail-closed termination.
+            // An empty, unadmitted preparation retains its original no-kill behavior.
+            if self.admitted && !self.removed {
+                let _ = linux::terminate(self, std::time::Duration::from_secs(3));
+            }
             let _ = linux::remove(self);
         }
     }
@@ -325,6 +370,7 @@ mod linux {
             name,
             limits,
             removed: false,
+            admitted: false,
         };
         for (control, value) in [
             ("memory.max", limits.memory_bytes.to_string()),
@@ -392,6 +438,64 @@ mod linux {
         .map_err(|_| CgroupError::CleanupFailed)?;
         group.removed = true;
         Ok(())
+    }
+
+    pub(super) fn admit(
+        group: &mut PreparedCgroup<'_>,
+        child: &mut std::process::Child,
+    ) -> Result<(), CgroupError> {
+        if group.admitted {
+            return Err(CgroupError::AlreadyAdmitted);
+        }
+        verify(group)?;
+        if child
+            .try_wait()
+            .map_err(|_| CgroupError::ChildUnavailable)?
+            .is_some()
+        {
+            return Err(CgroupError::ChildUnavailable);
+        }
+        // Record before the command: on uncertain write outcome Drop must retain cleanup authority
+        // for this exclusively-created cgroup. No target code may run until membership is confirmed.
+        group.admitted = true;
+        write_control(&group.directory, "cgroup.procs", &child.id().to_string())
+            .map_err(|_| CgroupError::AdmissionFailed)?;
+        let expected = child.id().to_string();
+        if !read_control(&group.directory, "cgroup.procs")?
+            .lines()
+            .any(|line| line == expected)
+        {
+            return Err(CgroupError::AdmissionFailed);
+        }
+        Ok(())
+    }
+
+    pub(super) fn terminate(
+        group: &mut PreparedCgroup<'_>,
+        timeout: std::time::Duration,
+    ) -> Result<(), CgroupError> {
+        if timeout.is_zero() || timeout > std::time::Duration::from_secs(5) {
+            return Err(CgroupError::InvalidLimits);
+        }
+        verify_identity(group)?;
+        if !group.admitted {
+            return if is_empty(&read_control(&group.directory, "cgroup.events")?)? {
+                Ok(())
+            } else {
+                Err(CgroupError::Populated)
+            };
+        }
+        write_control(&group.directory, "cgroup.kill", "1")?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if is_empty(&read_control(&group.directory, "cgroup.events")?)? {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(CgroupError::TerminationTimedOut);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(test)]
@@ -481,7 +585,7 @@ mod linux {
         }
 
         impl ProbeChild {
-            fn admit(group: &PreparedCgroup<'_>, script: &str) -> Self {
+            fn admit(group: &mut PreparedCgroup<'_>, script: &str) -> Self {
                 use std::process::{Command, Stdio};
                 let directory = group.directory.try_clone().unwrap();
                 let child = Command::new("/usr/bin/python3")
@@ -498,7 +602,7 @@ mod linux {
                 };
                 // The fixed trusted script asserts a gate byte before allocating/forking. A failed
                 // admission or controller EOF never lets the synthetic workload run outside its group.
-                write_control(&probe.group, "cgroup.procs", &probe.child.id().to_string()).unwrap();
+                group.admit_blocked_child(&mut probe.child).unwrap();
                 probe.child.stdin.take().unwrap().write_all(b"1").unwrap();
                 probe
             }
@@ -554,11 +658,11 @@ mod linux {
             };
             let mut parent = DelegatedCgroup::open(Path::new(&path)).unwrap();
             {
-                let group = parent
+                let mut group = parent
                     .prepare(CgroupLimits::new(64 * 1024 * 1024, 4).unwrap())
                     .unwrap();
                 let script = "import os,sys,time,errno,signal\nassert sys.stdin.buffer.read(1)==b'1'\nchildren=[]\nblocked=False\ntry:\n for _ in range(16):\n  try:\n   pid=os.fork()\n  except OSError as e:\n   assert e.errno==errno.EAGAIN\n   blocked=True\n   break\n  if pid==0:\n   time.sleep(5)\n   os._exit(0)\n  children.append(pid)\n assert blocked\nfinally:\n for pid in children:\n  os.kill(pid,signal.SIGTERM)\n for pid in children:\n  os.waitpid(pid,0)\nprint('pids-limited')";
-                let mut probe = ProbeChild::admit(&group, script);
+                let mut probe = ProbeChild::admit(&mut group, script);
                 assert!(probe.wait().success(), "synthetic PID-limit probe failed");
                 let mut output = String::new();
                 probe
@@ -581,13 +685,13 @@ mod linux {
                 group.release().unwrap();
             }
             {
-                let group = parent
+                let mut group = parent
                     .prepare(CgroupLimits::new(32 * 1024 * 1024, 4).unwrap())
                     .unwrap();
                 // calloc/mmap may reserve virtual zero pages without faulting them in. Materialize
                 // every page explicitly; allocation length alone is not a physical-memory workload.
                 let script = "import sys\nassert sys.stdin.buffer.read(1)==b'1'\nvalue=bytearray(128*1024*1024)\nfor offset in range(0,len(value),4096): value[offset]=1\nprint(len(value))";
-                let mut probe = ProbeChild::admit(&group, script);
+                let mut probe = ProbeChild::admit(&mut group, script);
                 assert!(
                     !probe.wait().success(),
                     "memory probe exceeded its cgroup budget without OOM"
@@ -602,6 +706,117 @@ mod linux {
                 group.verify_empty().unwrap();
                 group.release().unwrap();
             }
+        }
+
+        #[test]
+        fn should_terminate_admitted_descendants_after_they_change_process_groups() {
+            let Some(path) = std::env::var_os("CARAPANA_TEST_CGROUP_PARENT") else {
+                assert!(
+                    std::env::var_os("CARAPANA_REQUIRE_CGROUP").is_none(),
+                    "positive cgroup gate requires a test parent"
+                );
+                return;
+            };
+            let mut parent = DelegatedCgroup::open(Path::new(&path)).unwrap();
+            let mut group = parent
+                .prepare(CgroupLimits::new(64 * 1024 * 1024, 8).unwrap())
+                .unwrap();
+            let script = "import os,sys,time\nassert sys.stdin.buffer.read(1)==b'1'\npid=os.fork()\nif pid==0:\n os.setsid()\n assert os.getpgrp()==os.getpid()\n os.write(1,b'escaped\\n')\ntime.sleep(30)";
+            let mut probe = ProbeChild::admit(&mut group, script);
+            assert!(matches!(
+                group.admit_blocked_child(&mut probe.child),
+                Err(CgroupError::AlreadyAdmitted)
+            ));
+            let mut output = probe.child.stdout.take().unwrap();
+            rustix::fs::fcntl_setfl(
+                &output,
+                rustix::fs::fcntl_getfl(&output).unwrap() | OFlags::NONBLOCK,
+            )
+            .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut evidence = Vec::new();
+            while !evidence.windows(8).any(|part| part == b"escaped\n") {
+                let mut chunk = [0_u8; 128];
+                match output.read(&mut chunk) {
+                    Ok(count) if count > 0 => evidence.extend_from_slice(&chunk[..count]),
+                    Ok(_) => panic!("escape fixture closed before producing evidence"),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => panic!("escape fixture read failed: {error}"),
+                }
+                assert!(evidence.len() <= 128);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "escape fixture did not reach setsid"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            group
+                .terminate_and_wait(std::time::Duration::from_secs(3))
+                .unwrap();
+            assert!(!probe.wait().success());
+            drop(probe);
+            group.verify_empty().unwrap();
+            group.release().unwrap();
+        }
+
+        #[test]
+        fn should_not_kill_unadmitted_population_or_admit_an_exited_child() {
+            let Some(path) = std::env::var_os("CARAPANA_TEST_CGROUP_PARENT") else {
+                assert!(
+                    std::env::var_os("CARAPANA_REQUIRE_CGROUP").is_none(),
+                    "positive cgroup gate requires a test parent"
+                );
+                return;
+            };
+            use std::process::{Command, Stdio};
+            let mut parent = DelegatedCgroup::open(Path::new(&path)).unwrap();
+            let mut group = parent
+                .prepare(CgroupLimits::new(64 * 1024 * 1024, 8).unwrap())
+                .unwrap();
+            let mut exited = Command::new("/usr/bin/python3")
+                .args(["-I", "-c", "pass"])
+                .env_clear()
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            assert!(exited.wait().unwrap().success());
+            assert!(matches!(
+                group.admit_blocked_child(&mut exited),
+                Err(CgroupError::ChildUnavailable)
+            ));
+            let child = Command::new("/usr/bin/python3")
+                .args([
+                    "-I",
+                    "-c",
+                    "import sys; assert sys.stdin.buffer.read(1)==b'1'",
+                ])
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let mut probe = ProbeChild {
+                child,
+                group: group.directory.try_clone().unwrap(),
+            };
+            // Inject unexpected population without granting this lease admission ownership.
+            write_control(
+                &group.directory,
+                "cgroup.procs",
+                &probe.child.id().to_string(),
+            )
+            .unwrap();
+            assert!(matches!(
+                group.terminate_and_wait(std::time::Duration::from_secs(1)),
+                Err(CgroupError::Populated)
+            ));
+            assert!(probe.child.try_wait().unwrap().is_none());
+            drop(probe); // The explicit test guard, not the unadmitted lease, owns cleanup of injection.
+            group.verify_empty().unwrap();
+            group.release().unwrap();
         }
     }
 }

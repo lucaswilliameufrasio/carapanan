@@ -107,6 +107,9 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    de forks e OOM kill foram comprovados em fixtures finitos admitidos por gate byte. O launcher geral
    ainda precisa de handshake antes do exec e retenção/recolhimento de seus recursos, sem assumir que
    a memória do interpretador confiável anterior à migração foi contabilizada no grupo.
+   PD-43 adiciona admissão única de Child próprio e cgroup.kill por descritor com deadline. Testes reais
+   comprovam término após setsid e recusam matar população inesperada sem admissão da lease. O contrato
+   de filho bloqueado ainda precisa ser implementado pelo guardian antes de aceitar workloads gerais.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

@@ -346,6 +346,13 @@ tentativa de alocação sintética é 128 MiB, com cgroup de 32 MiB e swap desat
 Não há fork ilimitado nem execução de código do workspace. Essa prova não substitui
 o handshake/lifecycle de um launcher de produção nem comprova limite de CPU/I/O.
 
+A lease de cgroup agora permite uma admissão de `Child` próprio, sob precondição de
+gate confiável antes de exec/fork. Não aceita PID arbitrário nem reaproveita a lease.
+Término usa `cgroup.kill` por descritor e espera o grupo esvaziar com prazo limitado,
+inclusive para descendentes que fizeram `setsid`. O supervisor continua responsável
+por recolher seu filho e manter staging enquanto houver consumidores. Drop só tenta
+matar grupos com admissão iniciada por essa lease; nunca adota um grupo alheio.
+
 ### Revisão do Delivery 0
 
 **Conjunto aprovado pelo responsável pelo produto em 6 de outubro de 2026.**

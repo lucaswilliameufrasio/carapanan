@@ -4137,6 +4137,16 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   Rust/Ubuntu e Web/Linux. Após a prova real cgroup, o gate comum integral passou com 31 testes de
   sandbox, 42 tools, 41 core, 47 daemon e demais suites/doctests, format/lint/check/Clippy/build,
   24 Vitest e 64 E2E. A prova privilegiada não existe: todas as campanhas usaram usuário normal.
+- PD-43 adiciona admissão única via `Child` próprio e término por descritor de cgroup, sem API de PID
+  arbitrário. Revalida grupo/limites, confirma membership e conserva cleanup em resultado incerto.
+  O fixture real passou usando essa API para PIDs/memória e demonstrando término de descendente após
+  `setsid`; segunda admissão foi recusada. O chamador ainda deve estabelecer gate confiável antes do
+  exec e recolher o filho; a integração específica ao guardian não é presumida por esta API.
+- A API de PD-43 passou três campanhas reais consecutivas na unidade autorizada: nove testes de
+  cgroup, incluindo fork/OOM, descendente após setsid, recusa de segunda admissão/filho encerrado e
+  preservação de população inesperada sem ownership da lease. Nenhuma unidade própria ficou carregada.
+  O gate comum completo também passou (33 sandbox e demais suites Rust/doctests, format/lint/check/
+  Clippy/build, 24 Vitest e 64 E2E). CI `39777790977` do commit anterior `e97b7f5` passou todos os jobs.
 
 ---
 

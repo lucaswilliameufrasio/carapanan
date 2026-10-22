@@ -1085,3 +1085,25 @@ desativados.
   futuro UI/IPC e os gates de conteúdo/segredos e concorrência continuam independentes.
 - Propostas/tokens não têm Debug/Clone/serialização e não persistem após restart. A operação permanece
   interna/local, sem envio de contexto, ativação de tools ou alteração da política de arquivos protegidos.
+
+## PD-43 — Admissão única de filho próprio e término de cgroup
+
+**Data:** 22 de outubro de 2026
+
+**Status:** API de infraestrutura e prova sintética real; integração do handshake ao guardian ainda própria.
+
+- A lease preparada aceita um `Child` próprio, não um PID arbitrário, somente uma vez. Revalida grupo
+  vazio/limites/identidade e vida do filho, publica intenção de admissão antes da escrita e confirma
+  membership em `cgroup.procs`. Filho que terminou não pode ser migrado; resultado incerto conserva
+  autoridade de cleanup exclusivamente sobre o grupo recém-criado.
+- O chamador deve manter o filho bloqueado em código confiável até confirmar a admissão. Isso é um
+  precondição do adaptador, não inferida de `Child`: não migrar comandos já rodando nem prometer capturar
+  descendentes/memória anteriores. A próxima integração deve colocar o guardian no grupo antes de exec.
+- Término usa `cgroup.kill` no descritor do grupo próprio e espera ausência de processos com prazo finito.
+  Antes de qualquer admissão, grupo inesperadamente ocupado não pode ser morto. Drop tenta terminar
+  apenas uma lease com admissão iniciada, com prazo de três segundos, e remover somente o grupo vazio.
+  Falha preserva o grupo para revisão; o supervisor ainda precisa recolher seu `Child` e reter staging
+  até o lifecycle terminar. Não matar por nome, sinalizar PIDs externos ou remover recursivamente.
+- Prova opt-in real confirma um descendente após `setsid`, sua presença antes do término e esvaziamento
+  do cgroup ao usar a API, além de recusa de segunda admissão. Usa somente scripts fixos na unidade
+  transitória de teste já autorizada; não muda política de rede/sandbox nem habilita tools.
