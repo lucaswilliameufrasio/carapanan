@@ -170,9 +170,41 @@ impl ProcessSupervisor {
     pub fn run_captured_resource_scoped_process(
         &mut self,
         session_id: &str,
+        spec: ProcessSpec,
+        settings: ProcessCaptureSettings,
+        group: &mut carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<OwnedProcessOutput, ProcessError> {
+        self.run_resource_scoped_inner(session_id, spec, settings, group, None, is_cancelled)
+    }
+
+    /// Internal Linux composition: empty-workspace sealed-image helper inside the admitted guardian.
+    /// This is not operator approval, secret classification, reserved staging or global admission.
+    #[cfg(target_os = "linux")]
+    pub fn run_captured_image_process(
+        &mut self,
+        session_id: &str,
+        image: &carapana_sandbox::image_launcher::SandboxImageLaunch,
+        settings: ProcessCaptureSettings,
+        group: &mut carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<OwnedProcessOutput, ProcessError> {
+        let spec = ProcessSpec::new(
+            &self.host_executable,
+            vec!["__carapana_internal_image_launcher_v1".into()],
+            "/",
+        );
+        self.run_resource_scoped_inner(session_id, spec, settings, group, Some(image), is_cancelled)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_resource_scoped_inner(
+        &mut self,
+        session_id: &str,
         mut spec: ProcessSpec,
         settings: ProcessCaptureSettings,
         group: &mut carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>,
+        image: Option<&carapana_sandbox::image_launcher::SandboxImageLaunch>,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<OwnedProcessOutput, ProcessError> {
         settings.validate()?;
@@ -208,19 +240,25 @@ impl ProcessSupervisor {
         spec.capture = Some(settings);
         let (mut request, _) = validate_spec(spec)?;
         request.wait_for_admission = true;
+        request.image_launcher = image.is_some();
+        let input = if image.is_some() {
+            Some(std::os::unix::net::UnixDatagram::pair()?)
+        } else {
+            None
+        };
+        let (mut control, host_control) = std::os::unix::net::UnixStream::pair()?;
         let kill_switch = group
             .guardian_kill_stdio()
             .map_err(|_| ProcessError::ResourceAdmissionFailed)?;
         let mut host = Command::new(&self.host_executable)
             .arg(INTERNAL_HOST_ARGUMENT)
             .env_clear()
-            .stdin(Stdio::piped())
+            .stdin(Stdio::from(std::os::fd::OwnedFd::from(host_control)))
             .stdout(Stdio::piped())
             .stderr(kill_switch)
             .process_group(0)
             .spawn()
             .map_err(|_| ProcessError::HostUnavailable)?;
-        let mut control = host.stdin.take().ok_or(ProcessError::HostProtocol)?;
         let mut response = host.stdout.take().ok_or(ProcessError::HostProtocol)?;
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let (output_sender, output_receiver) = mpsc::sync_channel(1);
@@ -260,6 +298,9 @@ impl ProcessSupervisor {
                 .admit_blocked_child(&mut host)
                 .map_err(|_| ProcessError::ResourceAdmissionFailed)?;
             write_frame(&mut control, &HostControl::Admit)?;
+            if let Some((_, receiver)) = &input {
+                input_socket::send(&control, receiver, Instant::now() + HOST_START_TIMEOUT)?;
+            }
             let started = startup_receiver
                 .recv_timeout(HOST_START_TIMEOUT)
                 .map_err(|_| ProcessError::HostTimedOut)??;
@@ -267,6 +308,11 @@ impl ProcessSupervisor {
                 if process_id > 0 && i32::try_from(process_id).is_ok() && process_group_id == host.id())
             {
                 return Err(ProcessError::HostProtocol);
+            }
+            if let (Some(image), Some((sender, _))) = (image, &input) {
+                image
+                    .send(sender, Instant::now() + HOST_START_TIMEOUT)
+                    .map_err(|_| ProcessError::HostProtocol)?;
             }
             let deadline =
                 Instant::now() + Duration::from_millis(settings.timeout_ms) + HOST_SHUTDOWN_TIMEOUT;
@@ -362,6 +408,7 @@ impl ProcessSupervisor {
 pub(super) fn run_host(
     request: HostStartRequest,
     terminate_on_signal: Arc<AtomicBool>,
+    mut control: fs::File,
 ) -> Result<(), ProcessError> {
     let settings = request.capture.ok_or(ProcessError::HostRejected)?;
     let policy = settings.validate()?;
@@ -378,7 +425,7 @@ pub(super) fn run_host(
         )?;
         // No target has been spawned. EOF, malformed input, Stop or Preserve cannot release the gate.
         if !matches!(
-            read_frame::<_, HostControl>(&mut io::stdin().lock()),
+            read_frame::<_, HostControl>(&mut control),
             Ok(HostControl::Admit)
         ) {
             return Err(ProcessError::HostRejected);
@@ -389,7 +436,22 @@ pub(super) fn run_host(
         #[cfg(not(target_os = "linux"))]
         return Err(ProcessError::ResourceAdmissionFailed);
     }
-    let mut child = match spawn_process(&request) {
+    let input = if request.image_launcher {
+        #[cfg(target_os = "linux")]
+        {
+            Some(Stdio::from(input_socket::receive(
+                &control,
+                Instant::now() + HOST_START_TIMEOUT,
+            )?))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            return Err(ProcessError::HostRejected);
+        }
+    } else {
+        None
+    };
+    let mut child = match spawn_process_with_input(&request, input) {
         Ok(child) => child,
         Err(_) => {
             write_frame(&mut io::stdout().lock(), &HostStartResponse::Rejected)?;
@@ -409,7 +471,7 @@ pub(super) fn run_host(
     }
     let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let control = read_frame::<_, HostControl>(&mut io::stdin().lock()).ok();
+        let control = read_frame::<_, HostControl>(&mut control).ok();
         let _ = sender.send(control);
     });
     let mut should_cancel = || {

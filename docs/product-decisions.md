@@ -1197,3 +1197,23 @@ desativados.
   do Bubblewrap e o custo exige futura admissão global/cgroup; este helper ainda não possui o lifecycle
   do guardian nem consome aprovação. Testá-lo com programas fixos não autoriza comandos de modelo.
   Próximas etapas: canal do guardian, staging reservado e aprovação exata antes de qualquer wiring.
+
+## PD-48 — Imagem mínima dentro do guardian admitido
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração interna Linux, sem tools nem workspace real.
+
+- Reusar admissão/captura/cleanup de PD-44 para executar o helper de PD-47. O supervisor escolhe seu
+  próprio CLI e modo privado, sem aceitar executável externo nessa API. Só depois de confirmar a
+  admissão envia um único socket privado por SCM_RIGHTS; a imagem segue nesse socket separado.
+- Controle do guardian passa por socketpair stream privado, com os mesmos frames limitados. Ler por
+  File não bufferizado: stdin bufferizado pode consumir o byte associado ao SCM_RIGHTS sem receber os
+  direitos. O socket do helper chega com CLOEXEC e é mapeado somente como stdin do helper, nunca como
+  stdin do target final ou como fd de controle herdado por ele.
+  Duplicações locais usam `fcntl_dupfd_cloexec` atômico, não `dup` simples: a regressão reproduziu
+  herança do fd privado antes da correção. Não confiar no fechamento de fds posterior do Bubblewrap
+  para proteger os caminhos de captura comuns que não passam pelo helper.
+- Falhas no transporte, imagem, backend, OOM ou cancelamento usam cleanup do mesmo cgroup, sem repetir
+  fora dele. Manter imagem e canais vivos até a captura terminar. Não confundir isso com aprovação:
+  staging reservado, orçamento global de preparação e revisão exata/conteúdo continuam gates próprios.

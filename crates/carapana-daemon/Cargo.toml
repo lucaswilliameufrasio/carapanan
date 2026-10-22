@@ -19,4 +19,4 @@ serde_json = "=1.0.151"
 carapana-sandbox = { path = "../carapana-sandbox" }
 nix = { version = "=0.29.0", features = ["process", "signal"] }
 signal-hook = "=0.3.18"
-rustix = { version = "=1.1.5", features = ["fs"] }
+rustix = { version = "=1.1.5", features = ["fs", "net"] }

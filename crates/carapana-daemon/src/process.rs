@@ -29,6 +29,8 @@ use nix::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 mod capture;
+#[cfg(target_os = "linux")]
+mod input_socket;
 pub use capture::{CapturedProcessEnd, OwnedProcessOutput, ProcessCaptureSettings};
 
 const INTERNAL_HOST_ARGUMENT: &str = "__carapana_internal_process_host_v1";
@@ -528,6 +530,8 @@ struct HostStartRequest {
     capture: Option<ProcessCaptureSettings>,
     #[serde(default)]
     wait_for_admission: bool,
+    #[serde(default)]
+    image_launcher: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -600,6 +604,7 @@ fn validate_spec(
             shutdown_policy: spec.shutdown_policy,
             capture: spec.capture,
             wait_for_admission: false,
+            image_launcher: false,
         },
         spec.shutdown_policy,
     ))
@@ -631,15 +636,17 @@ pub fn run_process_host() -> Result<(), ProcessError> {
     )
     .map_err(ProcessError::Io)?;
 
-    let stdin = io::stdin();
-    let mut stdin_lock = stdin.lock();
-    let request = read_frame::<_, HostStartRequest>(&mut stdin_lock)?;
-    drop(stdin_lock);
-    if request.wait_for_admission && request.capture.is_none() {
+    // Do not buffer reads: an image-mode SCM_RIGHTS byte must be consumed only by recvmsg.
+    let mut control =
+        fs::File::from(rustix::io::fcntl_dupfd_cloexec(io::stdin(), 3).map_err(io::Error::from)?);
+    let request = read_frame::<_, HostStartRequest>(&mut control)?;
+    if (request.wait_for_admission && request.capture.is_none())
+        || (request.image_launcher && !request.wait_for_admission)
+    {
         return Err(ProcessError::HostRejected);
     }
     if request.capture.is_some() {
-        return capture::run_host(request, terminate_on_signal);
+        return capture::run_host(request, terminate_on_signal, control);
     }
     let mut child = match spawn_process(&request) {
         Ok(child) => child,
@@ -667,9 +674,7 @@ pub fn run_process_host() -> Result<(), ProcessError> {
 
     let (control_sender, control_receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let stdin = io::stdin();
-        let mut stdin = stdin.lock();
-        let control = read_frame::<_, HostControl>(&mut stdin);
+        let control = read_frame::<_, HostControl>(&mut control);
         // EOF or malformed control is fail-closed and terminates the owned group.
         let action = control.ok();
         let _ = control_sender.send(action);
@@ -714,6 +719,13 @@ pub fn run_process_host() -> Result<(), ProcessError> {
 }
 
 fn spawn_process(request: &HostStartRequest) -> Result<Child, ProcessError> {
+    spawn_process_with_input(request, None)
+}
+
+fn spawn_process_with_input(
+    request: &HostStartRequest,
+    input: Option<Stdio>,
+) -> Result<Child, ProcessError> {
     if request.executable.len() > MAX_PATH_BYTES
         || request.working_directory.len() > MAX_PATH_BYTES
         || request.arguments.len() > MAX_ARGUMENT_COUNT
@@ -737,6 +749,9 @@ fn spawn_process(request: &HostStartRequest) -> Result<Child, ProcessError> {
         .stderr(Stdio::null());
     if request.capture.is_some() {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
+    if let Some(input) = input {
+        command.stdin(input);
     }
     command.spawn().map_err(ProcessError::Io)
 }

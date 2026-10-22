@@ -4186,6 +4186,22 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   sem ampliar mounts. Testar sandbox isolado revelou feature `stdio` de rustix antes suprida por
   unificação do workspace; declarada explicitamente para build independente do crate.
   Guardian/cgroup, staging reservado, aprovação exata e admissão global continuam etapas próprias.
+- `037062e` publicou PD-47; CI `39790206622` passou. PD-48 liga o helper ao guardian admitido,
+  reutilizando captura/cleanup e enviando o socket privado do helper por SCM_RIGHTS somente após
+  confirmar membership. Controle é lido sem buffering para não descartar direitos em read-ahead.
+- Três campanhas reais na unidade transitória autorizada passaram nove testes backend cgroup,
+  seis CLI resource-scoped e sete image_launcher (incluindo dois de composição com delegação).
+  Cancelamento exige observar o argv sintético único do target já exec'd nos grupos próprios da
+  unidade; não aceita cancelar só o helper no startup como prova de encerramento do target. Todos os
+  grupos foram esvaziados/removidos e nenhuma unidade própria ficou carregada. Três testes unitários
+  de canal cobrem tipo do fd, CLOEXEC, deadline e ausência de direitos. Staging/aprovação/global memory
+  continuam pendentes; não houve ativação de tools, provider, merge ou deploy.
+- Revisão de PD-48 encontrou que `dup` do controle não bufferizado não mantém CLOEXEC. Regressão nova
+  reproduziu herança de fd privado no target antes da correção; agora a duplicação usa
+  `fcntl_dupfd_cloexec` atômico no guardian e helper. Após a correção, nove testes comuns de captura,
+  três campanhas reais (nove backend + seis resource-scoped + sete image_launcher) e o gate integral
+  passaram novamente: format/lint/check/Clippy/build, suites Rust/doctests, 24 Vitest e 64 E2E.
+  Nenhuma unidade própria permaneceu carregada, sem mudanças de snapshots/timeouts.
 
 ---
 

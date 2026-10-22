@@ -164,7 +164,8 @@ fn idle(deadline: Instant) {
 pub fn run_image_helper() -> Result<(), ImageLauncherError> {
     let deadline = Instant::now() + Duration::from_secs(5);
     let socket = UnixDatagram::from(
-        rustix::io::dup(std::io::stdin()).map_err(|_| ImageLauncherError::TransportFailed)?,
+        rustix::io::fcntl_dupfd_cloexec(std::io::stdin(), 3)
+            .map_err(|_| ImageLauncherError::TransportFailed)?,
     );
     let mut bytes = vec![0_u8; MAX_SETUP_BYTES + 1];
     let count = loop {

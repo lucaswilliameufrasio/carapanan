@@ -272,6 +272,27 @@ fn should_terminate_captured_group_after_its_private_controller_disconnects() {
 }
 
 #[test]
+fn should_not_inherit_private_guardian_control_descriptors() {
+    let fixture = Fixture::new();
+    let mut supervisor = supervisor();
+    let script = "import os\nleaked=[]\nfor fd in range(3,64):\n try: os.fstat(fd)\n except OSError: continue\n leaked.append(fd)\nassert not leaked, 'private guardian descriptor inherited'";
+    let output = supervisor
+        .run_captured_owned_process(
+            "synthetic-session",
+            fixture.spec(script),
+            settings(4096, Duration::from_secs(5)),
+            || false,
+        )
+        .unwrap();
+    assert_eq!(output.end(), CapturedProcessEnd::Exited);
+    assert_eq!(
+        output.exit_code(),
+        Some(0),
+        "target inherited private guardian descriptors"
+    );
+}
+
+#[test]
 fn should_never_start_the_target_while_waiting_for_resource_admission() {
     use std::{
         io::{Read, Write},

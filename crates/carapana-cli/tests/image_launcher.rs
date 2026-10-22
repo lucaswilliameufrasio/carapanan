@@ -292,3 +292,160 @@ fn should_reject_malformed_setup_without_starting_a_target_or_logging_payloads()
         .unwrap();
     assert!(output.is_empty());
 }
+
+fn delegated_parent() -> Option<carapana_sandbox::delegated_cgroup::DelegatedCgroup> {
+    let Some(path) = std::env::var_os("CARAPANA_TEST_CGROUP_PARENT") else {
+        assert!(
+            std::env::var_os("CARAPANA_REQUIRE_CGROUP").is_none(),
+            "image guardian tests require an explicit delegated test parent"
+        );
+        return None;
+    };
+    Some(carapana_sandbox::delegated_cgroup::DelegatedCgroup::open(Path::new(&path)).unwrap())
+}
+
+#[test]
+fn should_run_the_minimal_image_under_the_admitted_guardian_and_release_the_scope() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    let mut group = parent
+        .prepare(
+            carapana_sandbox::delegated_cgroup::CgroupLimits::new(128 * 1024 * 1024, 32).unwrap(),
+        )
+        .unwrap();
+    let launch = SandboxImageLaunch::new(
+        image("/usr/bin/test"),
+        PathBuf::from("/runtime/bin/program"),
+        vec!["!".into(), "-e".into(), "/sys/fs/cgroup".into()],
+        1024 * 1024,
+        policy(),
+    )
+    .unwrap();
+    let mut supervisor =
+        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana")).unwrap();
+    let output = supervisor
+        .run_captured_image_process(
+            "synthetic-image-session",
+            &launch,
+            carapana_daemon::ProcessCaptureSettings::new(
+                4096,
+                1024,
+                16384,
+                Duration::from_secs(10),
+            )
+            .unwrap(),
+            &mut group,
+            || false,
+        )
+        .unwrap();
+    assert_eq!(output.end(), carapana_daemon::CapturedProcessEnd::Exited);
+    assert_eq!(
+        output.exit_code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(output.stderr_tail())
+    );
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+    assert!(supervisor.owned_processes().unwrap().is_empty());
+}
+
+#[test]
+fn should_cancel_the_sandbox_image_and_collect_bubblewrap_and_its_target() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    let mut group = parent
+        .prepare(
+            carapana_sandbox::delegated_cgroup::CgroupLimits::new(128 * 1024 * 1024, 32).unwrap(),
+        )
+        .unwrap();
+    let unique_sleep = format!(
+        "30.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let launch = SandboxImageLaunch::new(
+        image("/usr/bin/sleep"),
+        PathBuf::from("/runtime/bin/program"),
+        vec![unique_sleep.clone().into()],
+        1024 * 1024,
+        policy(),
+    )
+    .unwrap();
+    let mut supervisor =
+        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana")).unwrap();
+    let start = Instant::now();
+    let mut observed_target = false;
+    let output = supervisor
+        .run_captured_image_process(
+            "synthetic-image-session",
+            &launch,
+            carapana_daemon::ProcessCaptureSettings::new(
+                4096,
+                1024,
+                16384,
+                Duration::from_secs(10),
+            )
+            .unwrap(),
+            &mut group,
+            || {
+                observed_target |= observed_scoped_target(&unique_sleep);
+                observed_target || start.elapsed() > Duration::from_secs(8)
+            },
+        )
+        .unwrap();
+    assert_eq!(output.end(), carapana_daemon::CapturedProcessEnd::Cancelled);
+    assert!(
+        observed_target,
+        "cancellation must follow real target exec, not just helper startup"
+    );
+    assert!(start.elapsed() < Duration::from_secs(10));
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+}
+
+fn observed_scoped_target(unique_argument: &str) -> bool {
+    // Observe only this explicitly delegated test parent's own job groups. Never discover, signal,
+    // or inspect unrelated host processes. A unique synthetic argv proves the final target exec'd.
+    let root = std::env::var_os("CARAPANA_TEST_CGROUP_PARENT").unwrap();
+    for entry in fs::read_dir(root).unwrap().take(64) {
+        let entry = entry.unwrap();
+        if !entry
+            .file_name()
+            .as_encoded_bytes()
+            .starts_with(b"carapana-job-")
+        {
+            continue;
+        }
+        let Ok(file) = fs::File::open(entry.path().join("cgroup.procs")) else {
+            continue;
+        };
+        let mut pids = String::new();
+        if file.take(4096).read_to_string(&mut pids).is_err() {
+            continue;
+        }
+        for pid in pids.lines() {
+            let Ok(pid) = pid.parse::<u32>() else {
+                continue;
+            };
+            let Ok(file) = fs::File::open(format!("/proc/{pid}/cmdline")) else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            if file.take(4096).read_to_end(&mut bytes).is_err() {
+                continue;
+            }
+            let mut argv = bytes.split(|byte| *byte == 0);
+            if argv.next() == Some(b"/runtime/bin/program".as_slice())
+                && argv.next() == Some(unique_argument.as_bytes())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}

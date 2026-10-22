@@ -127,6 +127,11 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    Testes verificam cgroupfs/arquivos host ausentes, fds runtime fechados, caps zero, NoNewPrivs e netns
    separado. Helper ainda não está integrado ao guardian, staging reservado ou aprovação; não habilita
    tools nem deve executar entradas não confiáveis sob a alegação de resource scoping já integrado.
+   PD-48 integra esse helper ao guardian antes admitido e ao cleanup do cgroup, por socketpair privado
+   e direitos recebidos com CLOEXEC. Controle usa leitura não bufferizada para não consumir o byte
+   SCM_RIGHTS sem seus descritores. Provas reais confirmam target exec antes de cancelamento e grupo
+   esvaziado depois. Workspace permanece vazio; staging reservado, aprovação exata, conteúdo/segredos
+   e admissão global da preparação continuam gates independentes antes de wiring de tools.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito
