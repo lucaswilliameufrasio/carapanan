@@ -4,6 +4,7 @@
 //! runner. Returned file contents remain untrusted and may contain secrets despite filename filters.
 
 mod diff;
+pub mod edit;
 mod git;
 mod git_worktree;
 mod parser;

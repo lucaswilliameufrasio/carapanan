@@ -339,6 +339,7 @@ dependencies = [
 name = "carapana-tools"
 version = "0.0.0"
 dependencies = [
+ "carapana-core",
  "carapana-storage",
  "ignore",
  "similar",

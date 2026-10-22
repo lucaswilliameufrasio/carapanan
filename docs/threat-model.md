@@ -106,6 +106,9 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    vazia não comprova contenção de workloads. Falta handshake antes do exec, saturação e lifecycle real.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
+   PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito
+   consome o token sem novos paths/bytes, revalida escopo/revogação e preserva conflitos observados. Ainda
+   exige origem autenticada de eventos, tratamento de conteúdo/segredos e UX de revisão; não há tool nova.
 
 Revisar a matriz antes de cada wiring, ampliação de privilégios, backend novo, acesso remoto ou mudança de
 retenção/backup. Nenhuma etapa acima autoriza merge/deploy ou envio de contexto real a um provider.

@@ -1,4 +1,5 @@
-//! Exact, ephemeral command-approval contracts. No paths are opened and no commands are executed.
+//! Exact, ephemeral proposal approval contracts, with compatibility aliases for commands.
+//! No paths are opened and no effects are executed here.
 //!
 //! An approval token is only one gate. A future effect boundary must take it by value, validate it
 //! immediately before the effect, and independently enforce sandbox/content/resource/concurrency policy.
@@ -117,6 +118,25 @@ impl CommandProposal {
     }
 }
 
+/// Trusted application proposal types implement this with immutable workspace/task and payload fields.
+/// The trait models scope only: it cannot prove immutability of arbitrary external implementations.
+pub trait ApprovalSubject {
+    fn workspace(&self) -> &WorkspaceId;
+    fn task(&self) -> &TaskId;
+}
+
+impl ApprovalSubject for CommandProposal {
+    fn workspace(&self) -> &WorkspaceId {
+        &self.workspace
+    }
+    fn task(&self) -> &TaskId {
+        &self.task
+    }
+}
+
+pub type CommandApproval<'proposal> = ProposalApproval<'proposal, CommandProposal>;
+pub type ApprovedCommand<'proposal> = ApprovedProposal<'proposal, CommandProposal>;
+
 /// In-memory identity. It cannot be forged from a numeric/string ID or survive a restart.
 #[derive(Clone)]
 pub struct CommandApprovalId(Arc<()>);
@@ -141,18 +161,18 @@ pub enum CommandApprovalError {
 }
 
 /// A single request for one immutable proposal. Callers must authenticate operator event origin.
-pub struct CommandApproval<'proposal> {
-    proposal: &'proposal CommandProposal,
+pub struct ProposalApproval<'proposal, P: ApprovalSubject> {
+    proposal: &'proposal P,
     id: CommandApprovalId,
     state: CommandApprovalState,
     expires_at: u64,
     revoked: Arc<AtomicBool>,
 }
 
-impl<'proposal> CommandApproval<'proposal> {
+impl<'proposal, P: ApprovalSubject> ProposalApproval<'proposal, P> {
     /// `now` and `expires_at` must use the same caller-defined monotonic clock.
     pub fn new(
-        proposal: &'proposal CommandProposal,
+        proposal: &'proposal P,
         expires_at: u64,
         now: u64,
     ) -> Result<Self, CommandApprovalError> {
@@ -174,7 +194,7 @@ impl<'proposal> CommandApproval<'proposal> {
     pub fn state(&self) -> CommandApprovalState {
         self.state
     }
-    pub fn proposal(&self) -> &CommandProposal {
+    pub fn proposal(&self) -> &P {
         self.proposal
     }
 
@@ -185,10 +205,10 @@ impl<'proposal> CommandApproval<'proposal> {
         workspace: &WorkspaceId,
         task: &TaskId,
         now: u64,
-    ) -> Result<ApprovedCommand<'proposal>, CommandApprovalError> {
+    ) -> Result<ApprovedProposal<'proposal, P>, CommandApprovalError> {
         self.validate_decision(id, workspace, task, now)?;
         self.state = CommandApprovalState::Approved;
-        Ok(ApprovedCommand {
+        Ok(ApprovedProposal {
             proposal: self.proposal,
             expires_at: self.expires_at,
             revoked: Arc::clone(&self.revoked),
@@ -239,7 +259,7 @@ impl<'proposal> CommandApproval<'proposal> {
     }
 }
 
-impl Drop for CommandApproval<'_> {
+impl<P: ApprovalSubject> Drop for ProposalApproval<'_, P> {
     fn drop(&mut self) {
         self.revoked.store(true, Ordering::Release);
     }
@@ -255,14 +275,14 @@ impl Drop for CommandApproval<'_> {
 /// }
 /// ```
 #[must_use]
-pub struct ApprovedCommand<'proposal> {
-    proposal: &'proposal CommandProposal,
+pub struct ApprovedProposal<'proposal, P: ApprovalSubject> {
+    proposal: &'proposal P,
     expires_at: u64,
     revoked: Arc<AtomicBool>,
 }
 
-impl ApprovedCommand<'_> {
-    pub fn proposal(&self) -> &CommandProposal {
+impl<P: ApprovalSubject> ApprovedProposal<'_, P> {
+    pub fn proposal(&self) -> &P {
         self.proposal
     }
 
@@ -280,7 +300,7 @@ impl ApprovedCommand<'_> {
 }
 
 fn validate_scope(
-    proposal: &CommandProposal,
+    proposal: &impl ApprovalSubject,
     expires_at: u64,
     workspace: &WorkspaceId,
     task: &TaskId,

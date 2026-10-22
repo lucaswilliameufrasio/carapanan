@@ -4104,6 +4104,19 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - O gate completo passou após PD-41, incluindo 47 unitários/3 doctests de daemon, sete novos testes CLI
   de captura e todas as suites anteriores, formatter/lint/check/Clippy/build, 24 Vitest e 64 E2E.
   Os sete testes de captura supervisionada passaram também em três execuções consecutivas.
+- O run `39729973163`, em `881f2d1`, passou Web/Linux e Rust/Ubuntu/macOS.
+- PD-42 liga snapshot, candidato e diff em `WorkspaceEditProposal` e aplica somente token tipado da
+  mesma proposta. O controlador exato de PD-34 é compartilhado sem alterar os aliases/API de comandos.
+  Aplicação consome o token mesmo em erro; revalida escopo/prazo/revogação e os conflitos físicos do
+  snapshot. Não aceita caminho ou bytes diferentes depois da aprovação. Não há wiring de tools/provider.
+  Testes reais cobrem candidato exato, solicitação errada, edição externa preservada, escopo/expiração/
+  revogação/descarte de controller, workspace físico diferente e candidatos inválidos/oversized; doctests
+  recusam token de comando, reuso por movimento e Debug de proposta. Gates de UI/segredos seguem próprios.
+- O gate completo de PD-42 passou após uma falha transitória em quatro E2E web sob load médio >100
+  no host. Os quatro cenários passaram isoladamente sem mudança de código/config/snapshots e o gate
+  integral passou na repetição: 41 unitários de core, 41 de tools, doctests de tipagem/consumo/privacidade,
+  demais suites Rust, formatter/lint/check/Clippy/build, 24 Vitest e 64 E2E. Não remover falhas anteriores
+  da evidência nem tratá-las como regressão de UI comprovada sem reprodução estável.
 
 ---
 

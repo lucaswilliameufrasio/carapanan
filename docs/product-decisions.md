@@ -1044,3 +1044,25 @@ desativados.
   que façam setsid: o futuro executor ainda precisa integrar namespace/cgroup e os demais gates.
 - Limite de captura termina o processo sem enviar/persistir o restante; não há evicção de artifacts nem
   fallback automático para execução sem limites. Aprovação de comandos de modelo continua separada.
+
+## PD-42 — Edição vinculada a snapshot, diff e aprovação exata
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração local entre primitives já existentes; sem handlers de tools/provider.
+
+- Uma proposta imutável possui snapshot original, texto de substituição limitado, workspace/tarefa e
+  prévia de diff. Não aceitar path ou novos bytes na aplicação depois de aprovar. A prévia sanitizada é
+  visualização, não um patch: aplicar os bytes originais vinculados à proposta, sem reinterpretar o diff.
+- Reutilizar o controlador de aprovação exata de PD-34, generalizando-o para propostas tipadas e
+  preservando aliases de comandos. Identidade opaca por solicitação, expiração, negação, revogação e
+  descarte do controlador mantêm a mesma semântica; token não clonável é consumido por valor no efeito.
+- Aplicação revalida workspace/tarefa/prazo/revogação e usa a substituição atômica de PD-28, que já
+  recusa identidade/bytes/metadata alterados e paths inseguros. Erro ou commit incerto exige nova revisão,
+  sem reaproveitar automaticamente o token. Não é transação multi-arquivo nem CAS contra editor externo.
+- Tipos genéricos de aprovação são decisões, não autoridade de efeito; implementadores de propostas
+  precisam manter os campos revisados imutáveis. O aplicador aceita somente a proposta concreta de edição,
+  sem conversão de token de comando/outro tipo. A origem do evento de operador deve ser autenticada pelo
+  futuro UI/IPC e os gates de conteúdo/segredos e concorrência continuam independentes.
+- Propostas/tokens não têm Debug/Clone/serialização e não persistem após restart. A operação permanece
+  interna/local, sem envio de contexto, ativação de tools ou alteração da política de arquivos protegidos.
