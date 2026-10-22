@@ -1023,3 +1023,24 @@ desativados.
 - Preferido sobre uma thread por pipe com canal, que pode deixar leitores presos em descendentes que
   mantêm descritores abertos. Polling nonblocking tem latência ociosa de até 10 ms; testar pipes reais,
   flood, stream silencioso, EOF parcial, cancelamento e deadlines antes de integrar o host.
+
+## PD-41 — Captura de output no supervisor privado de processos
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração interna, exercitada somente por fixtures locais; não é tool/IPC de usuário.
+
+- Integrar PD-40 ao host privado de processos existente: execução capturada exige limites explícitos,
+  deadline e política Terminate. Recusar KeepRunning para não deixar produtor desacoplado de captura.
+  A nova API interna não muda os handlers do daemon/provider nem contorna sandbox/autorização.
+- Reportar tails privados e motivo de término pelo pipe privado já existente, em frame limitado.
+  O transporte interno recebe no máximo 8 KiB agregados de tails, para caber no frame de 64 KiB mesmo
+  na codificação JSON worst-case de bytes. Não serializar buffers públicos nem persistir/logar o payload.
+- EOF dos pipes exige verificar o processo, não concluir sucesso. Timeout, cancelamento, limite de output
+  e erro encerram o grupo próprio pelo host; o chamador espera o host terminar antes de retornar.
+  Resultado de captura e exit status são distintos; nunca retornar tails como prova de sucesso do comando.
+- Cancelamento/interrupção do cliente usa o pipe de controle e o guardian já existente. O host continua
+  responsável pelo grupo até SIGKILL, evitando reutilização do PGID. Isso não impede fuga de descendentes
+  que façam setsid: o futuro executor ainda precisa integrar namespace/cgroup e os demais gates.
+- Limite de captura termina o processo sem enviar/persistir o restante; não há evicção de artifacts nem
+  fallback automático para execução sem limites. Aprovação de comandos de modelo continua separada.

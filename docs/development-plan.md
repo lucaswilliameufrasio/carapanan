@@ -4093,6 +4093,17 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   restante das suites Rust/doctests, formatter/lint/check/Clippy/build, 24 Vitest e 64 E2E. Os oito testes
   de pipes reais passaram também em três execuções consecutivas. O teste opt-in de cgroup continua sem
   pai configurado; esse limite de validação não é apresentado como enforcement positivo nem pausa do plano.
+- Commit `67cb385` enviado; run `39728880317` passou todos os jobs (Web/Linux e Rust/Ubuntu/macOS).
+- PD-41 integra captura ao guardian privado existente: `run_captured_owned_process` exige limites e
+  timeout explícitos, recusa KeepRunning, transporta até 8 KiB de tails em frame limitado e espera o
+  host terminar a limpeza do grupo próprio. EOF não equivale a sucesso; razão de término e exit code
+  são separados. Não há handler novo de tool/IPC nem autorização de execução de comandos de modelo.
+- Sete testes de processo real cobrem captura binária/exit code/flood, limite agregado com término do
+  grupo, timeout após EOF, cancelamento, perda do controller, preservação de processo alheio e recusa
+  de spawn em pré-cancelamento/KeepRunning. A prova usa somente fixtures sintéticos, sem provider remoto.
+- O gate completo passou após PD-41, incluindo 47 unitários/3 doctests de daemon, sete novos testes CLI
+  de captura e todas as suites anteriores, formatter/lint/check/Clippy/build, 24 Vitest e 64 E2E.
+  Os sete testes de captura supervisionada passaram também em três execuções consecutivas.
 
 ---
 

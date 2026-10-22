@@ -37,8 +37,8 @@ use carapana_storage::{
 pub use ipc::{IpcAttachment, IpcError, IpcServer, request as ipc_request};
 #[cfg(unix)]
 pub use process::{
-    OwnedProcessInfo, ProcessError, ProcessShutdownPolicy, ProcessSpec, ProcessSupervisor,
-    run_process_host,
+    CapturedProcessEnd, OwnedProcessInfo, OwnedProcessOutput, ProcessCaptureSettings, ProcessError,
+    ProcessShutdownPolicy, ProcessSpec, ProcessSupervisor, run_process_host,
 };
 
 static GENERATED_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);

@@ -97,6 +97,10 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    PD-40 implementa leitores Unix nonblocking com chunks limitados/deadline/cancelamento em pipes reais.
    Ainda cabe ao supervisor consumir o motivo de parada, terminar o grupo próprio e recolher processos;
    o leitor não transforma EOF em prova de término nem faz classificação de segredos.
+   PD-41 integra essa sequência ao guardian privado existente para captura interna: término do grupo,
+   espera do host, timeout/cancelamento/EOF e transporte de tails bounded têm testes reais sintéticos.
+   Não há integração com provider/tools; fuga de sessão/grupo e orçamento agregado do workload ainda
+   exigem namespaces/cgroup no launcher, sem extrapolar a garantia atual do guardian Unix.
    PD-39 prepara controles de memória/PIDs em cgroup v2 explicitamente delegado. Nenhuma delegação
    de teste foi fornecida ainda: criação/readback reais não estão comprovados neste host; preparação
    vazia não comprova contenção de workloads. Falta handshake antes do exec, saturação e lifecycle real.

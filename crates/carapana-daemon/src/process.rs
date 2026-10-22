@@ -28,6 +28,9 @@ use nix::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+mod capture;
+pub use capture::{CapturedProcessEnd, OwnedProcessOutput, ProcessCaptureSettings};
+
 const INTERNAL_HOST_ARGUMENT: &str = "__carapana_internal_process_host_v1";
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 const MAX_PROCESS_COUNT: usize = 32;
@@ -55,6 +58,7 @@ pub struct ProcessSpec {
     arguments: Vec<String>,
     working_directory: PathBuf,
     shutdown_policy: ProcessShutdownPolicy,
+    capture: Option<ProcessCaptureSettings>,
 }
 
 impl ProcessSpec {
@@ -68,6 +72,7 @@ impl ProcessSpec {
             arguments,
             working_directory: working_directory.into(),
             shutdown_policy: ProcessShutdownPolicy::Terminate,
+            capture: None,
         }
     }
 
@@ -169,6 +174,7 @@ struct ManagedProcess {
     info: OwnedProcessInfo,
     host: Child,
     control: ChildStdin,
+    output: Option<mpsc::Receiver<Result<OwnedProcessOutput, ProcessError>>>,
 }
 
 /// Owns only process hosts that it spawned; it never searches by executable name or PID.
@@ -242,9 +248,21 @@ impl ProcessSupervisor {
         }
 
         let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        let (output_sender, output_receiver) = mpsc::sync_channel(1);
+        let capture_settings = request.capture;
         thread::spawn(move || {
             let response = read_frame::<_, HostStartResponse>(&mut response_pipe);
-            let _ = response_sender.send(response);
+            let started = matches!(&response, Ok(HostStartResponse::Started { .. }));
+            if response_sender.send(response).is_err() {
+                return;
+            }
+            if let Some(settings) = capture_settings
+                && started
+            {
+                let output = read_frame::<_, capture::HostCapturedReport>(&mut response_pipe)
+                    .and_then(|report| report.validate(settings));
+                let _ = output_sender.send(output);
+            }
         });
         let response = match response_receiver.recv_timeout(HOST_START_TIMEOUT) {
             Ok(Ok(response)) => response,
@@ -303,6 +321,7 @@ impl ProcessSupervisor {
                 info: info.clone(),
                 host: child,
                 control,
+                output: capture_settings.map(|_| output_receiver),
             },
         );
         Ok(info)
@@ -490,6 +509,8 @@ struct HostStartRequest {
     arguments: Vec<String>,
     working_directory: String,
     shutdown_policy: ProcessShutdownPolicy,
+    #[serde(default)]
+    capture: Option<ProcessCaptureSettings>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -543,12 +564,19 @@ fn validate_spec(
     {
         return Err(ProcessError::InvalidProcessSpec);
     }
+    if let Some(settings) = spec.capture {
+        settings.validate()?;
+        if spec.shutdown_policy != ProcessShutdownPolicy::Terminate {
+            return Err(ProcessError::InvalidProcessSpec);
+        }
+    }
     Ok((
         HostStartRequest {
             executable,
             arguments: spec.arguments,
             working_directory,
             shutdown_policy: spec.shutdown_policy,
+            capture: spec.capture,
         },
         spec.shutdown_policy,
     ))
@@ -584,6 +612,9 @@ pub fn run_process_host() -> Result<(), ProcessError> {
     let mut stdin_lock = stdin.lock();
     let request = read_frame::<_, HostStartRequest>(&mut stdin_lock)?;
     drop(stdin_lock);
+    if request.capture.is_some() {
+        return capture::run_host(request, terminate_on_signal);
+    }
     let mut child = match spawn_process(&request) {
         Ok(child) => child,
         Err(_) => {
@@ -676,6 +707,9 @@ fn spawn_process(request: &HostStartRequest) -> Result<Child, ProcessError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if request.capture.is_some() {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    }
     command.spawn().map_err(ProcessError::Io)
 }
 
