@@ -19,9 +19,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const MAX_SETUP_BYTES: usize = 128 * 1024;
+pub const MAX_SETUP_BYTES: usize = 128 * 1024;
 const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
-const MAX_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageLauncherError {

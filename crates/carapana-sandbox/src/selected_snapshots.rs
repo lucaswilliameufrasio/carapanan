@@ -40,6 +40,12 @@ pub struct SelectedSnapshotPolicy {
 }
 
 impl SelectedSnapshotPolicy {
+    pub fn max_files(&self) -> usize {
+        self.max_files
+    }
+    pub fn max_total_bytes(&self) -> usize {
+        self.max_total_bytes
+    }
     pub fn new(max_files: usize, max_total_bytes: usize) -> Result<Self, SnapshotPreparationError> {
         if max_files == 0
             || max_files > MAX_SELECTED_FILES

@@ -137,6 +137,17 @@ impl ApprovalSubject for SandboxExecutionProposal<'_> {
     }
 }
 
+// Only concrete immutable subjects maintained inside this module tree may choose the reviewed
+// payload. Never accept a generic external ApprovalSubject plus an unrelated launch argument.
+pub(super) trait ReviewedSandboxSubject<'store>: ApprovalSubject {
+    fn execution(&self) -> &SandboxExecutionProposal<'store>;
+}
+impl<'store> ReviewedSandboxSubject<'store> for SandboxExecutionProposal<'store> {
+    fn execution(&self) -> &SandboxExecutionProposal<'store> {
+        self
+    }
+}
+
 /// Scope supplied by the trusted controller, not proof of authenticated UI/model event origin.
 pub struct SandboxExecutionScope<'scope> {
     pub session_id: &'scope str,
@@ -175,10 +186,21 @@ impl ProcessSupervisor {
         approval: ApprovedProposal<'_, SandboxExecutionProposal<'_>>,
         scope: SandboxExecutionScope<'_>,
         group: &mut PreparedCgroup<'_>,
+        clock: impl FnMut() -> u64,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> Result<OwnedProcessOutput, SandboxExecutionError> {
+        self.run_reviewed_image_process(&approval, scope, group, clock, is_cancelled)
+    }
+
+    pub(super) fn run_reviewed_image_process<'store, P: ReviewedSandboxSubject<'store>>(
+        &mut self,
+        approval: &ApprovedProposal<'_, P>,
+        scope: SandboxExecutionScope<'_>,
+        group: &mut PreparedCgroup<'_>,
         mut clock: impl FnMut() -> u64,
         is_cancelled: impl FnMut() -> bool,
     ) -> Result<OwnedProcessOutput, SandboxExecutionError> {
-        let proposal = approval.proposal();
+        let proposal = approval.proposal().execution();
         let actual_limits = group.limits();
         let mut validation_error = None;
         let result = {

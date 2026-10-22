@@ -28,9 +28,15 @@ use nix::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+#[cfg(target_os = "linux")]
+mod admitted_preparation;
 mod capture;
 #[cfg(target_os = "linux")]
 mod execution_approval;
+#[cfg(target_os = "linux")]
+pub use admitted_preparation::{
+    AdmittedSandboxError, AdmittedSandboxProposal, SandboxPreparationSpec,
+};
 #[cfg(target_os = "linux")]
 pub use execution_approval::{
     SandboxExecutionError, SandboxExecutionLimits, SandboxExecutionProposal, SandboxExecutionScope,

@@ -274,6 +274,15 @@ fn should_terminate_captured_group_after_its_private_controller_disconnects() {
 #[test]
 fn should_not_inherit_private_guardian_control_descriptors() {
     let fixture = Fixture::new();
+    let database = fs::canonicalize(&fixture.0)
+        .unwrap()
+        .join("sessions.sqlite3");
+    let artifacts = carapana_storage::ArtifactStore::open(&database).unwrap();
+    let admissions = carapana_storage::PreparationAdmissionStore::open(
+        &database,
+        carapana_storage::PreparationAdmissionPolicy::new(1024, 1).unwrap(),
+    )
+    .unwrap();
     let mut supervisor = supervisor();
     let script = "import os\nleaked=[]\nfor fd in range(3,64):\n try: os.fstat(fd)\n except OSError: continue\n leaked.append(fd)\nassert not leaked, 'private guardian descriptor inherited'";
     let output = supervisor
@@ -290,6 +299,8 @@ fn should_not_inherit_private_guardian_control_descriptors() {
         Some(0),
         "target inherited private guardian descriptors"
     );
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(admissions.usage().unwrap().reserved_bytes, 0);
 }
 
 #[test]

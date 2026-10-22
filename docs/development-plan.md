@@ -4243,6 +4243,20 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - Os nove testes do ledger passaram três repetições e o gate integral passou (103 storage, demais
   suites Rust/doctests, format/lint/check/Clippy/build, 24 Vitest e 64 E2E). A admissão antes das
   alocações e a prova de liberação de consumidores ainda não são inferidas desse verde de infraestrutura.
+- PD-52 liga a reserva ao preparo: `AdmittedSandboxProposal` admite capacidade antes de verificar,
+  copiar e selar runtime/snapshots. A proposta retém payloads e lease durante review/execução; somente
+  seu token concreto entra em `run_admitted_image_process`, sem expor a proposta base ou descritores.
+  Falha de construção ou descarte pronto fecha payloads antes de liberar capacidade; execução/panic
+  ou erro de processo desconhecido mantém a cobrança em quarentena. Erro de aprovação só permite
+  retorno a pronto quando o fluxo supervisionado confirmou cleanup, sem mascarar falha de cleanup.
+- Quatro testes de admissão verificam rejeição antes de fontes inválidas, falhas de construção/Drop
+  pronto, retenção durante review/execução até fechar payloads e quarentena após erro do host sintético.
+  Três campanhas reais consecutivas de backend/captura/image launcher passaram, com 19 testes de
+  image launcher. Regressão de descritores mantém ArtifactStore e PreparationAdmissionStore abertos
+  no controlador e verifica que o alvo não herda seus descritores nem os controles privados.
+- A conta é nominal, não medição de RSS/pressão ou limite total da máquina. Recovery de órfãos,
+  defaults calibrados, fairness, UI autenticada, conteúdo/segredos e Git/worktree seguem pendentes;
+  `ToolCallRequested` permanece inerte. CI de PD-50 e PD-51 confirmado verde nos três jobs.
 
 ---
 

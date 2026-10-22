@@ -37,6 +37,13 @@ fn policy() -> RuntimeManifestPolicy {
     RuntimeManifestPolicy::new(4, 32 * 1024 * 1024, 64 * 1024 * 1024).unwrap()
 }
 fn image(program: &str) -> RuntimeImage {
+    VerifiedRuntimeManifest::verify(runtime_specs(program), policy())
+        .unwrap()
+        .freeze(policy())
+        .unwrap()
+}
+
+fn runtime_specs(program: &str) -> Vec<RuntimeFileSpec> {
     // Fixed x86_64 test profile only: never discover runtime deps or derive production trust from
     // current hashes. Source aliases are canonicalized only for these explicitly named fixtures.
     let libc = ["/usr/lib/libc.so.6", "/usr/lib/x86_64-linux-gnu/libc.so.6"]
@@ -84,10 +91,7 @@ fn image(program: &str) -> RuntimeImage {
         )
         .unwrap(),
     );
-    VerifiedRuntimeManifest::verify(specs, policy())
-        .unwrap()
-        .freeze(policy())
-        .unwrap()
+    specs
 }
 
 struct Helper(Child);
@@ -1073,4 +1077,290 @@ fn should_require_a_reserved_workspace_from_the_reviewed_physical_source() {
         Err(SandboxExecutionError::PhysicalWorkspaceMismatch)
     ));
     assert_eq!(store.usage().unwrap().reserved_bytes, 0);
+}
+
+fn preparation_command() -> carapana_core::command_approval::CommandProposal {
+    carapana_core::command_approval::CommandProposal::new(
+        carapana_core::trust::WorkspaceId::new("admitted-workspace").unwrap(),
+        carapana_core::trust::TaskId::new("admitted-task").unwrap(),
+        PathBuf::from("/runtime/bin/program"),
+        vec!["/workspace/input.txt".into()],
+        PathBuf::new(),
+    )
+    .unwrap()
+}
+fn preparation_spec<'input>(
+    command: &'input carapana_core::command_approval::CommandProposal,
+    paths: &'input [PathBuf],
+) -> carapana_daemon::SandboxPreparationSpec<'input> {
+    carapana_daemon::SandboxPreparationSpec {
+        command,
+        runtime_files: runtime_specs("/usr/bin/cat"),
+        runtime_policy: policy(),
+        selected_paths: paths,
+        selected_policy: carapana_sandbox::selected_snapshots::SelectedSnapshotPolicy::new(1, 1024)
+            .unwrap(),
+        scratch_bytes: 1024 * 1024,
+        limits: carapana_daemon::SandboxExecutionLimits::new(
+            carapana_daemon::ProcessCaptureSettings::new(
+                4096,
+                1024,
+                16384,
+                Duration::from_secs(10),
+            )
+            .unwrap(),
+            carapana_sandbox::delegated_cgroup::CgroupLimits::new(128 * 1024 * 1024, 32).unwrap(),
+        )
+        .unwrap(),
+    }
+}
+
+#[test]
+fn should_reject_shared_preparation_capacity_before_touching_invalid_runtime_or_selection() {
+    let fixture = SnapshotFixture::new();
+    let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let mut admission = carapana_storage::PreparationAdmissionStore::open(
+        fixture.database(),
+        carapana_storage::PreparationAdmissionPolicy::new(1, 1).unwrap(),
+    )
+    .unwrap();
+    let command = preparation_command();
+    let paths = [PathBuf::from("missing-selected-file")];
+    let mut spec = preparation_spec(&command, &paths);
+    spec.runtime_files = vec![
+        RuntimeFileSpec::new(
+            PathBuf::from("/usr/bin/carapana-no-such-runtime-fixture"),
+            PathBuf::from("/runtime/bin/program"),
+            RuntimeFileRole::Executable,
+            [0; 32],
+        )
+        .unwrap(),
+    ];
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare(
+            spec,
+            &fixture.metadata(),
+            &mut artifacts,
+            &mut admission,
+            1000
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Admission(
+            carapana_storage::PreparationAdmissionError::CapacityExceeded
+        ))
+    ));
+    assert_eq!(admission.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_release_capacity_after_failed_construction_or_ready_payload_drop() {
+    let fixture = SnapshotFixture::new();
+    let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let mut admission = carapana_storage::PreparationAdmissionStore::open(
+        fixture.database(),
+        carapana_storage::PreparationAdmissionPolicy::new(1024 * 1024 * 1024, 4).unwrap(),
+    )
+    .unwrap();
+    let command = preparation_command();
+    let missing = [PathBuf::from("missing-selected-file")];
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare(
+            preparation_spec(&command, &missing),
+            &fixture.metadata(),
+            &mut artifacts,
+            &mut admission,
+            1000
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Snapshots(_))
+    ));
+    assert_eq!(admission.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+    let paths = [PathBuf::from("input.txt")];
+    let mut bad_runtime = preparation_spec(&command, &paths);
+    bad_runtime.runtime_files = vec![
+        RuntimeFileSpec::new(
+            fs::canonicalize("/usr/bin/true").unwrap(),
+            PathBuf::from("/runtime/bin/program"),
+            RuntimeFileRole::Executable,
+            [0; 32],
+        )
+        .unwrap(),
+    ];
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare(
+            bad_runtime,
+            &fixture.metadata(),
+            &mut artifacts,
+            &mut admission,
+            1000
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Runtime(_))
+    ));
+    assert_eq!(admission.usage().unwrap().reserved_bytes, 0);
+    let prepared = carapana_daemon::AdmittedSandboxProposal::prepare(
+        preparation_spec(&command, &paths),
+        &fixture.metadata(),
+        &mut artifacts,
+        &mut admission,
+        1000,
+    )
+    .unwrap();
+    assert!(prepared.reserved_preparation_bytes() > 128 * 1024 * 1024);
+    assert_eq!(prepared.runtime_files().len(), 4);
+    assert_eq!(prepared.selected_files().count(), 1);
+    drop(prepared); // Ready independently proves no exported consumer is still running.
+    assert_eq!(admission.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(admission.usage().unwrap().quarantined_leases, 0);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_keep_admission_through_review_execution_and_payload_release() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_core::command_approval::ApprovalSubject;
+    let fixture = SnapshotFixture::new();
+    let source = fixture.metadata();
+    let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let command = preparation_command();
+    let paths = [PathBuf::from("input.txt")];
+    let spec = preparation_spec(&command, &paths);
+    let required = spec.required_bytes().unwrap();
+    let admission_policy = carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap();
+    let mut admission =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), admission_policy)
+            .unwrap();
+    let prepared = carapana_daemon::AdmittedSandboxProposal::prepare(
+        spec,
+        &source,
+        &mut artifacts,
+        &mut admission,
+        1000,
+    )
+    .unwrap();
+    let mut other_admission =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), admission_policy)
+            .unwrap();
+    let mut other_artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    assert_eq!(other_admission.usage().unwrap().reserved_bytes, required);
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare(
+            preparation_spec(&command, &paths),
+            &source,
+            &mut other_artifacts,
+            &mut other_admission,
+            1001
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Admission(
+            carapana_storage::PreparationAdmissionError::CapacityExceeded
+        ))
+    ));
+    assert_eq!(prepared.program(), Path::new("/runtime/bin/program"));
+    let mut request = prepared.request_approval(100, 10).unwrap();
+    let token = request
+        .approve_by_operator(&request.id(), prepared.workspace(), prepared.task(), 11)
+        .unwrap();
+    let mut group = parent.prepare(prepared.limits().resources()).unwrap();
+    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        .unwrap()
+        .run_admitted_image_process(
+            token,
+            carapana_daemon::SandboxExecutionScope {
+                session_id: "synthetic-admitted",
+                workspace_id: prepared.workspace(),
+                task: prepared.task(),
+                source: &source,
+            },
+            &mut group,
+            || 12,
+            || false,
+        )
+        .unwrap();
+    assert_eq!(
+        output.exit_code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(output.stderr_tail())
+    );
+    assert_eq!(output.stdout_tail(), b"selected synthetic bytes\n");
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+    assert_eq!(
+        other_admission.usage().unwrap().reserved_bytes,
+        required,
+        "parent still owns image payloads after target cleanup"
+    );
+    drop(request);
+    prepared.release().unwrap();
+    assert_eq!(other_admission.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_quarantine_admission_instead_of_releasing_after_a_process_error() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_core::command_approval::ApprovalSubject;
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = SnapshotFixture::new();
+    let source = fixture.metadata();
+    let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let command = preparation_command();
+    let paths = [PathBuf::from("input.txt")];
+    let spec = preparation_spec(&command, &paths);
+    let required = spec.required_bytes().unwrap();
+    let mut admission = carapana_storage::PreparationAdmissionStore::open(
+        fixture.database(),
+        carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap(),
+    )
+    .unwrap();
+    let prepared = carapana_daemon::AdmittedSandboxProposal::prepare(
+        spec,
+        &source,
+        &mut artifacts,
+        &mut admission,
+        1000,
+    )
+    .unwrap();
+    // Fault injection only in a new fixture-owned executable; never replace or chmod the real CLI.
+    let bad_host = fixture.0.join("invalid-host-fixture");
+    fs::write(&bad_host, b"synthetic non-executable format\n").unwrap();
+    fs::set_permissions(&bad_host, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut supervisor = carapana_daemon::ProcessSupervisor::new(&bad_host).unwrap();
+    let mut request = prepared.request_approval(100, 10).unwrap();
+    let token = request
+        .approve_by_operator(&request.id(), prepared.workspace(), prepared.task(), 11)
+        .unwrap();
+    let mut group = parent.prepare(prepared.limits().resources()).unwrap();
+    assert!(matches!(
+        supervisor.run_admitted_image_process(
+            token,
+            carapana_daemon::SandboxExecutionScope {
+                session_id: "synthetic-process-error",
+                workspace_id: prepared.workspace(),
+                task: prepared.task(),
+                source: &source,
+            },
+            &mut group,
+            || 12,
+            || false
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Execution(
+            carapana_daemon::SandboxExecutionError::Process(
+                carapana_daemon::ProcessError::HostUnavailable
+            )
+        ))
+    ));
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+    drop(request);
+    assert!(matches!(
+        prepared.release(),
+        Err(carapana_daemon::AdmittedSandboxError::CleanupUncertain)
+    ));
+    assert_eq!(admission.usage().unwrap().reserved_bytes, required);
+    assert_eq!(admission.usage().unwrap().quarantined_leases, 1);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
 }

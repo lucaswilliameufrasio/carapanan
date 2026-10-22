@@ -146,6 +146,12 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    Reservas abandonadas/crash continuam cobradas; idade não prova que consumidores liberaram páginas.
    Liberação explícita da lease é fronteira de contabilização, não prova de cgroup/RSS. Vincular a lease
    antes das alocações e condicionar sua liberação ao lifecycle comprovado continuam necessários.
+   PD-52 fornece essa composição interna no objeto admitido: reserva antes de imagens/snapshots,
+   payloads fechados antes da liberação, token exato e estado pronto versus cleanup incerto. Estados
+   Running/erro de processo/panic não autorizam liberação; Drop pronto usa o lifecycle conhecido,
+   não presume fim de consumidores por estar sendo descartado. Recovery de reservas órfãs ainda
+   não existe; quarentena sem TTL pode reduzir capacidade até reconciliação segura futura. A conta
+   nominal não mede RSS/pressão nem cobre toda metadata/caches do OS ou resultados externos retidos.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

@@ -35,6 +35,8 @@ use carapana_storage::{
 
 #[cfg(unix)]
 pub use ipc::{IpcAttachment, IpcError, IpcServer, request as ipc_request};
+#[cfg(target_os = "linux")]
+pub use process::{AdmittedSandboxError, AdmittedSandboxProposal, SandboxPreparationSpec};
 #[cfg(unix)]
 pub use process::{
     CapturedProcessEnd, OwnedProcessInfo, OwnedProcessOutput, ProcessCaptureSettings, ProcessError,

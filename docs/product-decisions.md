@@ -1273,3 +1273,25 @@ desativados.
 - Preferido a contador isolado por processo (reinício/múltiplas conexões poderiam sobre-admitir) ou
   reutilizar quota de disco como se fosse RAM. Schema v8 adiciona tabelas próprias sem alterar artifacts,
   staging, sessões/eventos ou seus IDs. Limites finais e admissão por pressão real ainda são próprios.
+
+## PD-52 — Reserva antes das imagens e ownership até liberação comprovada
+
+**Data:** 22 de outubro de 2026
+
+**Status:** composição interna admitida; sem ativação de tools, defaults finais ou recovery automático.
+
+- A factory admite um orçamento nominal compartilhado antes de verificar/copiar/selar payloads. A
+  conta conservadora inclui teto do cgroup, runtime declarado, duas vezes snapshots declarados e
+  buffers limitados conhecidos. Não equivale a RSS real nem inclui toda memória externa/caches do OS.
+  Não escolher defaults de máquina; a capacidade do catálogo continua explicitamente configurada.
+- O objeto admitido possui proposta imutável e lease, nessa ordem de drop. O efeito aceita apenas
+  aprovação desse objeto, reusando as mesmas revalidações de PD-50; não expõe um token convertido ou
+  aprovação sintetizada. Preparação negada não aloca imagens/staging; falha de construção fecha seus
+  payloads antes de liberar a reserva. Nenhum efeito é autorizado só por obter capacidade.
+- Release consome o objeto, primeiro fecha payloads/staging e depois libera a lease. Só é permitido
+  no estado pronto, nunca durante execução ou após erro de processo com cleanup desconhecido. Drop
+  no estado pronto usa a mesma liberação após fechar payloads; a prova é o lifecycle pronto, não o Drop.
+  Panic/resultado incerto conservam a cobrança em quarentena; erros de autorização após cleanup
+  confirmado podem voltar a pronto. Não usar TTL ou contador de processo como prova de consumidores.
+- Preferido a reservar depois do memfd ou liberar a lease antes dos buffers. Recovery de órfãos,
+  fairness/pressão real, UI autenticada e conteúdo/segredos continuam gates separados.
