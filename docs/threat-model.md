@@ -101,9 +101,12 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    espera do host, timeout/cancelamento/EOF e transporte de tails bounded têm testes reais sintéticos.
    Não há integração com provider/tools; fuga de sessão/grupo e orçamento agregado do workload ainda
    exigem namespaces/cgroup no launcher, sem extrapolar a garantia atual do guardian Unix.
-   PD-39 prepara controles de memória/PIDs em cgroup v2 explicitamente delegado. Nenhuma delegação
-   de teste foi fornecida ainda: criação/readback reais não estão comprovados neste host; preparação
-   vazia não comprova contenção de workloads. Falta handshake antes do exec, saturação e lifecycle real.
+   PD-39 prepara controles de memória/PIDs em cgroup v2 explicitamente delegado. A validação inicial
+   sem pai configurado comprovou somente recusa segura, não criação/readback ou contenção de workloads.
+   A prova opt-in transitória autorizada em 22/10 passou depois: criação/readback/remoção, bloqueio real
+   de forks e OOM kill foram comprovados em fixtures finitos admitidos por gate byte. O launcher geral
+   ainda precisa de handshake antes do exec e retenção/recolhimento de seus recursos, sem assumir que
+   a memória do interpretador confiável anterior à migração foi contabilizada no grupo.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

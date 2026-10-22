@@ -474,6 +474,135 @@ mod linux {
                 before
             );
         }
+
+        struct ProbeChild {
+            child: std::process::Child,
+            group: File,
+        }
+
+        impl ProbeChild {
+            fn admit(group: &PreparedCgroup<'_>, script: &str) -> Self {
+                use std::process::{Command, Stdio};
+                let directory = group.directory.try_clone().unwrap();
+                let child = Command::new("/usr/bin/python3")
+                    .args(["-I", "-c", script])
+                    .env_clear()
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+                let mut probe = Self {
+                    child,
+                    group: directory,
+                };
+                // The fixed trusted script asserts a gate byte before allocating/forking. A failed
+                // admission or controller EOF never lets the synthetic workload run outside its group.
+                write_control(&probe.group, "cgroup.procs", &probe.child.id().to_string()).unwrap();
+                probe.child.stdin.take().unwrap().write_all(b"1").unwrap();
+                probe
+            }
+
+            fn wait(&mut self) -> std::process::ExitStatus {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    if let Some(status) = self.child.try_wait().unwrap() {
+                        return status;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "synthetic cgroup probe exceeded deadline"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+
+        impl Drop for ProbeChild {
+            fn drop(&mut self) {
+                // Only the freshly created test group, by pinned descriptor, not a process search.
+                let _ = write_control(&self.group, "cgroup.kill", "1");
+                if self.child.try_wait().ok().flatten().is_none() {
+                    let _ = self.child.kill();
+                }
+                let _ = self.child.wait();
+            }
+        }
+
+        fn event_count(value: &str, key: &str) -> u64 {
+            value
+                .lines()
+                .find_map(|line| {
+                    let (name, count) = line.split_once(' ')?;
+                    if name == key {
+                        count.trim().parse().ok()
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0)
+        }
+
+        #[test]
+        fn should_enforce_real_delegated_memory_and_pid_limits_when_requested() {
+            let Some(path) = std::env::var_os("CARAPANA_TEST_CGROUP_PARENT") else {
+                assert!(
+                    std::env::var_os("CARAPANA_REQUIRE_CGROUP").is_none(),
+                    "positive cgroup gate requires an explicitly delegated test parent"
+                );
+                return;
+            };
+            let mut parent = DelegatedCgroup::open(Path::new(&path)).unwrap();
+            {
+                let group = parent
+                    .prepare(CgroupLimits::new(64 * 1024 * 1024, 4).unwrap())
+                    .unwrap();
+                let script = "import os,sys,time,errno,signal\nassert sys.stdin.buffer.read(1)==b'1'\nchildren=[]\nblocked=False\ntry:\n for _ in range(16):\n  try:\n   pid=os.fork()\n  except OSError as e:\n   assert e.errno==errno.EAGAIN\n   blocked=True\n   break\n  if pid==0:\n   time.sleep(5)\n   os._exit(0)\n  children.append(pid)\n assert blocked\nfinally:\n for pid in children:\n  os.kill(pid,signal.SIGTERM)\n for pid in children:\n  os.waitpid(pid,0)\nprint('pids-limited')";
+                let mut probe = ProbeChild::admit(&group, script);
+                assert!(probe.wait().success(), "synthetic PID-limit probe failed");
+                let mut output = String::new();
+                probe
+                    .child
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .take(128)
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert_eq!(output.trim(), "pids-limited");
+                assert!(
+                    event_count(
+                        &read_control(&group.directory, "pids.events").unwrap(),
+                        "max"
+                    ) > 0
+                );
+                drop(probe);
+                group.verify_empty().unwrap();
+                group.release().unwrap();
+            }
+            {
+                let group = parent
+                    .prepare(CgroupLimits::new(32 * 1024 * 1024, 4).unwrap())
+                    .unwrap();
+                // calloc/mmap may reserve virtual zero pages without faulting them in. Materialize
+                // every page explicitly; allocation length alone is not a physical-memory workload.
+                let script = "import sys\nassert sys.stdin.buffer.read(1)==b'1'\nvalue=bytearray(128*1024*1024)\nfor offset in range(0,len(value),4096): value[offset]=1\nprint(len(value))";
+                let mut probe = ProbeChild::admit(&group, script);
+                assert!(
+                    !probe.wait().success(),
+                    "memory probe exceeded its cgroup budget without OOM"
+                );
+                assert!(
+                    event_count(
+                        &read_control(&group.directory, "memory.events").unwrap(),
+                        "oom_kill"
+                    ) > 0
+                );
+                drop(probe);
+                group.verify_empty().unwrap();
+                group.release().unwrap();
+            }
+        }
     }
 }
 

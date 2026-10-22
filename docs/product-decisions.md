@@ -1003,6 +1003,25 @@ desativados.
   gerenciador de sessão. Rever se o provisionamento da delegação for impraticável. RLIMIT isolado não
   substitui orçamento agregado de memória/descendentes, e este slice não limita CPU/I/O/HugeTLB por si só.
 
+### Evidência adicional de PD-39 — fixture transitório autorizado em 22 de outubro
+
+- O operador autorizou especificamente criar uma unidade transitória exclusiva de teste via
+  `systemd-run --user --wait --collect`, com nome único `carapana-cgroup-test-<id>`,
+  `Delegate=memory pids` e `DelegateSubgroup=runner`. Não se trata de autorização genérica para
+  reconfigurar o host nem de mudar o backend do produto para systemd.
+- `scripts/test-delegated-cgroup.sh` verifica estar dentro da unidade nova antes de configurar seu pai
+  de teste. O backend continua recebendo explicitamente um pai já preparado; não habilita controladores.
+- Testes reais passaram criando/configurando/removendo filhos vazios e com workloads sintéticos:
+  gate byte por stdin antes de fork/alocação, número de forks finito e confirmação de `pids.events:max`;
+  alocação finita sob 32 MiB/swap zero, confirmando `memory.events:oom_kill`. Cleanup usa descritor do
+  grupo próprio, recolhe o filho direto e remove os grupos; nenhuma unidade de teste ficou carregada.
+- A inicialização confiável de Python pode anteceder a migração no fixture; isso não prova contabilizar
+  memória anterior à admissão nem oferece uma API de migração de workloads arbitrários. O launcher
+  ainda exige handshake no guardian antes do exec e lifecycle próprio; não inferir isso desta prova.
+- A prova de memória materializa as páginas com escritas de 4 KiB: reservar comprimento de bytearray
+  sozinho pode ser somente alocação virtual e não comprova pressão física. A repetição reproduziu essa
+  lacuna antes do ajuste; depois, três campanhas consecutivas passaram os eventos reais de pids/OOM.
+
 ## PD-40 — Leitura limitada e não bloqueante de stdout/stderr
 
 **Data:** 22 de outubro de 2026

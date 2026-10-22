@@ -4123,6 +4123,20 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   correção; somente o fixture agora canonicaliza sua raiz antes de capturar o workspace. Nenhuma regra
   de produção de symlink/confinamento foi relaxada. A pergunta sobre unidade transitória cgroup foi
   interrompida pelo reinício e ainda não recebeu autorização; nenhuma unidade foi criada.
+- Após novo pedido explícito, o operador autorizou a unidade transitória exclusiva de teste. O fixture
+  `scripts/test-delegated-cgroup.sh` foi implementado e executado sem sudo ou configuração persistente;
+  passou a prova real de criação/readback/remoção e de enforcement de memória/PIDs em cgroup v2.
+  Workloads sintéticos aguardam gate byte antes de fork/alocação; verificações exigem eventos reais
+  `pids.events:max` e `memory.events:oom_kill`. Cleanup removeu os grupos e nenhuma unidade própria
+  ficou carregada. O produto não passou a depender de systemd nem recebeu descoberta/config automática.
+- A repetição encontrou uma lacuna do fixture de memória: `bytearray` pode reservar páginas zero
+  virtualmente sem materializá-las, então a tentativa não garantiu OOM. O fixture agora escreve em cada
+  página (passo de 4 KiB) após o gate de admissão; a campanha completa passou três execuções isoladas
+  consecutivas, incluindo os eventos de pids e OOM. Unidades transitórias próprias foram coletadas.
+- O CI `39736753908`, em `06d8b99`, confirmou a correção de fixtures em Rust/macOS e passou também
+  Rust/Ubuntu e Web/Linux. Após a prova real cgroup, o gate comum integral passou com 31 testes de
+  sandbox, 42 tools, 41 core, 47 daemon e demais suites/doctests, format/lint/check/Clippy/build,
+  24 Vitest e 64 E2E. A prova privilegiada não existe: todas as campanhas usaram usuário normal.
 
 ---
 

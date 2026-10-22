@@ -330,6 +330,22 @@ preparação real nem enforcement. Preparar um grupo vazio também não comprova
 sobre processos: o launcher continua bloqueado até handshake de admissão, testes de
 saturação e supervisão/cancelamento. macOS retorna unsupported.
 
+Para executar a prova isolada quando não há pai de teste permanente, o operador pode
+optar explicitamente por `TMPDIR=/var/tmp bash scripts/test-delegated-cgroup.sh`.
+O fixture exige Linux não-root e systemd de usuário com `DelegateSubgroup`: cria
+uma unidade transitória própria com `Delegate=memory pids`, coloca o runner em
+subgrupo, confirma a identidade da unidade e habilita controladores somente nela.
+Não usa sudo nem modifica outras unidades/configurações persistentes. Ao terminar,
+o manager e o trap encerram/coletam somente a unidade de nome único dessa execução.
+Isso é ferramenta opt-in de teste, não dependência ou descoberta automática do produto.
+
+Além da criação/readback/remoção, a suíte opt-in agora comprova limites de PIDs e
+memória com scripts sintéticos finitos, bloqueados por stdin até admissão no grupo.
+O teste exige evento `pids.events:max` e OOM kill no cgroup; o orçamento máximo da
+tentativa de alocação sintética é 128 MiB, com cgroup de 32 MiB e swap desativado.
+Não há fork ilimitado nem execução de código do workspace. Essa prova não substitui
+o handshake/lifecycle de um launcher de produção nem comprova limite de CPU/I/O.
+
 ### Revisão do Delivery 0
 
 **Conjunto aprovado pelo responsável pelo produto em 6 de outubro de 2026.**
