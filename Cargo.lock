@@ -277,6 +277,7 @@ dependencies = [
 name = "carapana-daemon"
 version = "0.0.0"
 dependencies = [
+ "carapana-core",
  "carapana-protocol",
  "carapana-sandbox",
  "carapana-storage",

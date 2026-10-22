@@ -40,6 +40,10 @@ pub use process::{
     CapturedProcessEnd, OwnedProcessInfo, OwnedProcessOutput, ProcessCaptureSettings, ProcessError,
     ProcessShutdownPolicy, ProcessSpec, ProcessSupervisor, run_process_host,
 };
+#[cfg(target_os = "linux")]
+pub use process::{
+    SandboxExecutionError, SandboxExecutionLimits, SandboxExecutionProposal, SandboxExecutionScope,
+};
 
 static GENERATED_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

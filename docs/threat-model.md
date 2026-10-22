@@ -137,6 +137,11 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    não executáveis. Cópias seladas não mudam após edição da fonte; lease de staging acompanha o launch.
    Transporte em lotes não amplia os limites de runtime/seleção. Aprovação exata, classificação de
    conteúdo/segredos e memória global adicional da preparação ainda não são inferidas dessa reserva.
+   PD-50 consome aprovação concreta da proposta imutável completa; verifica identidade/limites/staging
+   e revalida token depois do filesystem, antes da admissão/transmissão e durante a captura. Expiração
+   e revogação encerram o cgroup; incerteza de cleanup tem precedência sobre erro de autorização.
+   Tests reais incluem revogação após target exec'd e rejeição antes de admissão. Continua sem autenticar
+   eventos UI, classificar conteúdo/segredos ou prover admissão global de memória/concurrency de preparação.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

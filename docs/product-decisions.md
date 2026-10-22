@@ -1236,3 +1236,22 @@ desativados.
   Há shmem adicional e cópia do Bubblewrap ainda sujeitos à futura admissão global de preparação;
   reserva de staging não é contabilização de toda memória do processo. Imagem não classifica segredos
   nem autentica seleção/aprovação. Sem copy-back ou escrita automática na fonte/workspace real.
+
+## PD-50 — Aprovação exata da execução composta
+
+**Data:** 22 de outubro de 2026
+
+**Status:** efeito interno tipado, ainda sem handler de tools/UI/provider.
+
+- Uma proposta imutável possui workspace/tarefa, identidade física da fonte, launch completo com
+  runtime e snapshots reservados, argumentos, scratch e budgets de captura/memória/PIDs. Exigir uma
+  imagem de workspace reservada, inclusive para seleção vazia; não aceitar novos bytes/paths/limites
+  no efeito. Reusar controlador genérico de PD-34/42, sem serializar ou clonar proposta/token.
+- Consumir token concreto por valor e revalidar escopo, prazo monotônico e revogação no começo, antes
+  da admissão, antes de transmitir código e durante a captura. Conferir workspace físico, staging e
+  limites exatos da lease antes do efeito; validar o token novamente após verificações de filesystem.
+  Intervenção/expiração em execução provoca cleanup do cgroup e erro, sem fallback ou retry automático.
+- Preferido a token de comando desacoplado do runtime/staging ou flags booleanas de aprovação.
+  Os eventos de operador e o relógio são fornecidos pelo controlador confiável, nunca pelo modelo.
+  Isto não autentica eventos UI/IPC, classifica segredos, resolve concorrência/admissão global ou
+  autoriza ativar ToolCallRequested. Primitives sem aprovação seguem somente para provas internas.

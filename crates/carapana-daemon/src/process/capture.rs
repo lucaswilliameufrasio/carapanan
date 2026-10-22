@@ -9,6 +9,28 @@ use crate::process_output::{
 const MAX_TRANSPORT_TAIL_BYTES: usize = 8192;
 const MAX_CAPTURE_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 
+#[cfg(target_os = "linux")]
+pub(super) enum AdmissionCheck {
+    BeforeEffect,
+    Authorization,
+}
+
+#[cfg(target_os = "linux")]
+pub(super) struct ScopedLaunchGate<'image, 'store, 'check> {
+    pub(super) image: Option<&'image carapana_sandbox::image_launcher::SandboxImageLaunch<'store>>,
+    pub(super) validate: Option<&'check mut dyn FnMut(AdmissionCheck) -> Result<(), ProcessError>>,
+}
+
+#[cfg(target_os = "linux")]
+impl ScopedLaunchGate<'_, '_, '_> {
+    fn check(&mut self, phase: AdmissionCheck) -> Result<(), ProcessError> {
+        if let Some(validate) = self.validate.as_mut() {
+            validate(phase)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessCaptureSettings {
@@ -19,6 +41,18 @@ pub struct ProcessCaptureSettings {
 }
 
 impl ProcessCaptureSettings {
+    pub fn stdout_tail_bytes(&self) -> usize {
+        self.stdout_tail_bytes
+    }
+    pub fn stderr_tail_bytes(&self) -> usize {
+        self.stderr_tail_bytes
+    }
+    pub fn max_capture_bytes(&self) -> u64 {
+        self.max_capture_bytes
+    }
+    pub fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout_ms)
+    }
     pub fn new(
         stdout_tail_bytes: usize,
         stderr_tail_bytes: usize,
@@ -175,7 +209,17 @@ impl ProcessSupervisor {
         group: &mut carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>,
         is_cancelled: impl FnMut() -> bool,
     ) -> Result<OwnedProcessOutput, ProcessError> {
-        self.run_resource_scoped_inner(session_id, spec, settings, group, None, is_cancelled)
+        self.run_resource_scoped_inner(
+            session_id,
+            spec,
+            settings,
+            group,
+            ScopedLaunchGate {
+                image: None,
+                validate: None,
+            },
+            is_cancelled,
+        )
     }
 
     /// Internal Linux composition: empty-workspace sealed-image helper inside the admitted guardian.
@@ -194,20 +238,32 @@ impl ProcessSupervisor {
             vec!["__carapana_internal_image_launcher_v1".into()],
             "/",
         );
-        self.run_resource_scoped_inner(session_id, spec, settings, group, Some(image), is_cancelled)
+        self.run_resource_scoped_inner(
+            session_id,
+            spec,
+            settings,
+            group,
+            ScopedLaunchGate {
+                image: Some(image),
+                validate: None,
+            },
+            is_cancelled,
+        )
     }
 
     #[cfg(target_os = "linux")]
-    fn run_resource_scoped_inner(
+    pub(super) fn run_resource_scoped_inner(
         &mut self,
         session_id: &str,
         mut spec: ProcessSpec,
         settings: ProcessCaptureSettings,
         group: &mut carapana_sandbox::delegated_cgroup::PreparedCgroup<'_>,
-        image: Option<&carapana_sandbox::image_launcher::SandboxImageLaunch<'_>>,
+        mut gate: ScopedLaunchGate<'_, '_, '_>,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<OwnedProcessOutput, ProcessError> {
         settings.validate()?;
+        gate.check(AdmissionCheck::Authorization)?;
+        let image = gate.image;
         group
             .verify_ready_for_admission()
             .map_err(|_| ProcessError::ResourceAdmissionFailed)?;
@@ -294,9 +350,11 @@ impl ProcessSupervisor {
                     stderr_bytes: 0,
                 });
             }
+            gate.check(AdmissionCheck::Authorization)?;
             group
                 .admit_blocked_child(&mut host)
                 .map_err(|_| ProcessError::ResourceAdmissionFailed)?;
+            gate.check(AdmissionCheck::Authorization)?;
             write_frame(&mut control, &HostControl::Admit)?;
             if let Some((_, receiver)) = &input {
                 input_socket::send(&control, receiver, Instant::now() + HOST_START_TIMEOUT)?;
@@ -310,6 +368,7 @@ impl ProcessSupervisor {
                 return Err(ProcessError::HostProtocol);
             }
             if let (Some(image), Some((sender, _))) = (image, &input) {
+                gate.check(AdmissionCheck::BeforeEffect)?;
                 image
                     .send(sender, Instant::now() + HOST_START_TIMEOUT)
                     .map_err(|_| ProcessError::HostProtocol)?;
@@ -318,6 +377,7 @@ impl ProcessSupervisor {
                 Instant::now() + Duration::from_millis(settings.timeout_ms) + HOST_SHUTDOWN_TIMEOUT;
             let mut stop_requested = false;
             loop {
+                gate.check(AdmissionCheck::Authorization)?;
                 if !stop_requested && is_cancelled() {
                     write_frame(&mut control, &HostControl::Stop)?;
                     stop_requested = true;

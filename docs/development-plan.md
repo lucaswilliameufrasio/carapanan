@@ -4217,6 +4217,21 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   lint/check/Clippy/build, suites Rust/doctests (50 sandbox), 24 Vitest e 64 E2E. A primeira tentativa
   parou em quatro empréstimos desnecessários nos fixtures; corrigidos sem suppressions. Nenhuma
   unidade própria ficou carregada, sem alterar snapshots/timeouts.
+- `272ad85` publicou PD-49; CI `39795317999` passou Web/Linux e Rust/Ubuntu/macOS.
+  PD-50 adiciona `SandboxExecutionProposal` imutável e efeito `run_approved_image_process`, que consome
+  token concreto e vincula IDs/identidade física, runtime, snapshots reservados, argv/scratch e budgets
+  de captura/memória/PIDs. Sem argumentos ou arquivos substituídos depois da revisão. Relógio/escopo
+  pertencem ao controlador confiável; não são input de modelo ou autenticação implícita de UI.
+- Três campanhas reais passaram nove backend cgroup + seis CLI resource-scoped + quinze image_launcher.
+  Provas novas: limite revisado exato de oito bytes, request errado recusado, oito rejeições sem admitir
+  guardian (expiração/revogação/drop/IDs/workspace físico/limites/staging), expiração após Ready antes da
+  admissão e revogação após observar target exec'd com cleanup. Compile-fail impede Debug da proposta,
+  token de comando no efeito e reuso por movimento. Cleanup incerto conserva erro próprio, sem ser
+  mascarado por erro de aprovação; nenhuma unidade própria ficou carregada.
+- Gate integral após PD-50 passou: format/lint/check/Clippy/build, todas as suites Rust/doctests,
+  24 Vitest e 64 E2E. Relógio após Ready foi avançado deterministicamente no fixture e o grupo
+  permaneceu pronto/não admitido, sem sleeps usados como prova de expiração. Nenhum snapshot/timeout
+  foi alterado; admissão global de preparação, conteúdo/segredos e origem autenticada de UI seguem próprios.
 
 ---
 

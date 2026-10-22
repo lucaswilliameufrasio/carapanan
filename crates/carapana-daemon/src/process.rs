@@ -30,6 +30,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 mod capture;
 #[cfg(target_os = "linux")]
+mod execution_approval;
+#[cfg(target_os = "linux")]
+pub use execution_approval::{
+    SandboxExecutionError, SandboxExecutionLimits, SandboxExecutionProposal, SandboxExecutionScope,
+};
+#[cfg(target_os = "linux")]
 mod input_socket;
 pub use capture::{CapturedProcessEnd, OwnedProcessOutput, ProcessCaptureSettings};
 
@@ -109,6 +115,7 @@ pub enum ProcessError {
     ShutdownTimedOut,
     ResourceAdmissionFailed,
     ResourceCleanupFailed,
+    ExecutionApprovalInvalid,
     Io(io::Error),
     Serialization(serde_json::Error),
     Signal(Errno),
@@ -138,6 +145,9 @@ impl fmt::Display for ProcessError {
             Self::ResourceCleanupFailed => formatter.write_str(
                 "owned resource scope cleanup is uncertain; retain its resources for review",
             ),
+            Self::ExecutionApprovalInvalid => {
+                formatter.write_str("sandbox execution approval is no longer valid")
+            }
             Self::Io(error) => write!(formatter, "owned-process I/O failed: {error}"),
             Self::Serialization(error) => {
                 write!(formatter, "owned-process protocol failed: {error}")
@@ -165,6 +175,7 @@ impl Error for ProcessError {
             | Self::ShutdownTimedOut
             | Self::ResourceAdmissionFailed
             | Self::ResourceCleanupFailed
+            | Self::ExecutionApprovalInvalid
             | Self::Signal(_) => None,
         }
     }

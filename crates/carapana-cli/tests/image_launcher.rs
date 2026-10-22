@@ -657,3 +657,420 @@ fn should_reject_changed_staging_before_sending_any_workspace_bytes() {
     drop(launch);
     assert_eq!(store.usage().unwrap().reserved_bytes, 0);
 }
+
+fn reviewed_proposal<'store>(
+    fixture: &SnapshotFixture,
+    store: &'store mut carapana_storage::ArtifactStore,
+    program: &str,
+    arguments: Vec<OsString>,
+    capture: carapana_daemon::ProcessCaptureSettings,
+) -> (carapana_daemon::SandboxExecutionProposal<'store>, PathBuf) {
+    use carapana_sandbox::selected_snapshots::{
+        ReservedSelectedSnapshotBundle, SelectedSnapshotPolicy,
+    };
+    let selected = ReservedSelectedSnapshotBundle::prepare(
+        store,
+        &fixture.metadata(),
+        &[PathBuf::from("input.txt")],
+        SelectedSnapshotPolicy::new(1, 1024).unwrap(),
+        1000,
+    )
+    .unwrap();
+    let staging = selected.staging_root().to_owned();
+    let launch = SandboxImageLaunch::new(
+        image(program),
+        PathBuf::from("/runtime/bin/program"),
+        arguments,
+        1024 * 1024,
+        policy(),
+    )
+    .unwrap()
+    .with_workspace(selected.seal_for_launch().unwrap())
+    .unwrap();
+    let limits = carapana_daemon::SandboxExecutionLimits::new(
+        capture,
+        carapana_sandbox::delegated_cgroup::CgroupLimits::new(128 * 1024 * 1024, 32).unwrap(),
+    )
+    .unwrap();
+    let proposal = carapana_daemon::SandboxExecutionProposal::new(
+        carapana_core::trust::WorkspaceId::new("review-workspace").unwrap(),
+        carapana_core::trust::TaskId::new("review-task").unwrap(),
+        &fixture.metadata(),
+        launch,
+        limits,
+    )
+    .unwrap();
+    (proposal, staging)
+}
+
+#[test]
+fn should_enforce_the_exact_approved_image_snapshot_and_output_budget() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_core::{
+        command_approval::{ApprovalSubject, CommandApprovalError},
+        trust::{TaskId, WorkspaceId},
+    };
+    let fixture = SnapshotFixture::new();
+    let mut store = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let capture =
+        carapana_daemon::ProcessCaptureSettings::new(4, 4, 8, Duration::from_secs(10)).unwrap();
+    let (proposal, staging) = reviewed_proposal(
+        &fixture,
+        &mut store,
+        "/usr/bin/cat",
+        vec!["/workspace/input.txt".into()],
+        capture,
+    );
+    assert_eq!(
+        proposal.launch().program(),
+        Path::new("/runtime/bin/program")
+    );
+    assert_eq!(proposal.limits().capture().max_capture_bytes(), 8);
+    let mut request = proposal.request_approval(100, 10).unwrap();
+    let other_request = proposal.request_approval(100, 10).unwrap();
+    assert!(matches!(
+        request.approve_by_operator(
+            &other_request.id(),
+            proposal.workspace(),
+            proposal.task(),
+            11
+        ),
+        Err(CommandApprovalError::WrongRequest)
+    ));
+    drop(other_request);
+    let token = request
+        .approve_by_operator(&request.id(), proposal.workspace(), proposal.task(), 11)
+        .unwrap();
+    fs::write(fixture.0.join("input.txt"), b"external source edit\n").unwrap();
+    let source = fixture.metadata();
+    let workspace = WorkspaceId::new("review-workspace").unwrap();
+    let task = TaskId::new("review-task").unwrap();
+    let mut group = parent.prepare(proposal.limits().resources()).unwrap();
+    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        .unwrap()
+        .run_approved_image_process(
+            token,
+            carapana_daemon::SandboxExecutionScope {
+                session_id: "synthetic-approved",
+                workspace_id: &workspace,
+                task: &task,
+                source: &source,
+            },
+            &mut group,
+            || 12,
+            || false,
+        )
+        .unwrap();
+    assert_eq!(
+        output.end(),
+        carapana_daemon::CapturedProcessEnd::CaptureLimit
+    );
+    assert_eq!(output.stdout_bytes(), 8);
+    assert_eq!(output.stdout_tail(), b"cted");
+    assert_eq!(
+        fs::read(fixture.0.join("input.txt")).unwrap(),
+        b"external source edit\n"
+    );
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+    assert!(matches!(
+        request.approve_by_operator(&request.id(), proposal.workspace(), proposal.task(), 12),
+        Err(CommandApprovalError::NotPending)
+    ));
+    drop(request);
+    drop(proposal);
+    assert!(!staging.exists());
+    assert_eq!(store.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_reject_stale_scope_staging_and_limits_without_admitting_a_guardian() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_core::{
+        command_approval::{ApprovalSubject, CommandApprovalError},
+        trust::{TaskId, WorkspaceId},
+    };
+    use carapana_daemon::SandboxExecutionError;
+    for case in 0..8 {
+        let fixture = SnapshotFixture::new();
+        let other = SnapshotFixture::new();
+        let mut store = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+        let capture =
+            carapana_daemon::ProcessCaptureSettings::new(32, 32, 1024, Duration::from_secs(10))
+                .unwrap();
+        let (proposal, staging) =
+            reviewed_proposal(&fixture, &mut store, "/usr/bin/true", Vec::new(), capture);
+        let mut request = Some(proposal.request_approval(100, 10).unwrap());
+        let id = request.as_ref().unwrap().id();
+        let token = request
+            .as_mut()
+            .unwrap()
+            .approve_by_operator(&id, proposal.workspace(), proposal.task(), 11)
+            .unwrap();
+        if case == 1 {
+            request.as_mut().unwrap().invalidate();
+        }
+        if case == 2 {
+            drop(request.take());
+        }
+        if case == 7 {
+            fs::write(staging.join("input.txt"), b"changed staging").unwrap();
+        }
+        let source = if case == 5 {
+            other.metadata()
+        } else {
+            fixture.metadata()
+        };
+        let workspace = WorkspaceId::new(if case == 3 {
+            "other"
+        } else {
+            "review-workspace"
+        })
+        .unwrap();
+        let task = TaskId::new(if case == 4 { "other" } else { "review-task" }).unwrap();
+        let limits = if case == 6 {
+            carapana_sandbox::delegated_cgroup::CgroupLimits::new(64 * 1024 * 1024, 32).unwrap()
+        } else {
+            proposal.limits().resources()
+        };
+        let mut group = parent.prepare(limits).unwrap();
+        let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+            .unwrap()
+            .run_approved_image_process(
+                token,
+                carapana_daemon::SandboxExecutionScope {
+                    session_id: "synthetic-approved",
+                    workspace_id: &workspace,
+                    task: &task,
+                    source: &source,
+                },
+                &mut group,
+                || if case == 0 { 100 } else { 12 },
+                || false,
+            );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("invalid approval reached execution"),
+        };
+        match case {
+            0 => assert!(matches!(
+                error,
+                SandboxExecutionError::Approval(CommandApprovalError::Expired)
+            )),
+            1 | 2 => assert!(matches!(
+                error,
+                SandboxExecutionError::Approval(CommandApprovalError::Invalidated)
+            )),
+            3 => assert!(matches!(
+                error,
+                SandboxExecutionError::Approval(CommandApprovalError::WrongWorkspace)
+            )),
+            4 => assert!(matches!(
+                error,
+                SandboxExecutionError::Approval(CommandApprovalError::WrongTask)
+            )),
+            5 => assert!(matches!(
+                error,
+                SandboxExecutionError::PhysicalWorkspaceMismatch
+            )),
+            6 => assert!(matches!(error, SandboxExecutionError::LimitMismatch)),
+            _ => assert!(matches!(error, SandboxExecutionError::StagingChanged)),
+        }
+        group.verify_ready_for_admission().unwrap();
+        group.release().unwrap();
+        drop(request);
+        drop(proposal);
+        assert_eq!(store.usage().unwrap().reserved_bytes, 0);
+    }
+}
+
+#[test]
+fn should_revoke_an_approved_image_after_observing_the_target_running() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_core::command_approval::{ApprovalSubject, CommandApprovalError};
+    let fixture = SnapshotFixture::new();
+    let mut store = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let argument = format!(
+        "30.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let capture =
+        carapana_daemon::ProcessCaptureSettings::new(32, 32, 1024, Duration::from_secs(10))
+            .unwrap();
+    let (proposal, _) = reviewed_proposal(
+        &fixture,
+        &mut store,
+        "/usr/bin/sleep",
+        vec![argument.clone().into()],
+        capture,
+    );
+    let mut request = proposal.request_approval(100, 10).unwrap();
+    let token = request
+        .approve_by_operator(&request.id(), proposal.workspace(), proposal.task(), 11)
+        .unwrap();
+    let mut group = parent.prepare(proposal.limits().resources()).unwrap();
+    let source = fixture.metadata();
+    let start = Instant::now();
+    let mut observed = false;
+    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        .unwrap()
+        .run_approved_image_process(
+            token,
+            carapana_daemon::SandboxExecutionScope {
+                session_id: "synthetic-revocation",
+                workspace_id: proposal.workspace(),
+                task: proposal.task(),
+                source: &source,
+            },
+            &mut group,
+            || 12,
+            || {
+                observed |= observed_scoped_target(&argument);
+                if observed {
+                    request.invalidate();
+                }
+                start.elapsed() > Duration::from_secs(8)
+            },
+        );
+    assert!(observed, "revocation must follow target exec");
+    assert!(matches!(
+        result,
+        Err(carapana_daemon::SandboxExecutionError::Approval(
+            CommandApprovalError::Invalidated
+        ))
+    ));
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+}
+
+#[test]
+fn should_recheck_approval_expiry_after_ready_but_before_admission() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_core::command_approval::{ApprovalSubject, CommandApprovalError};
+    let fixture = SnapshotFixture::new();
+    let mut store = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let capture =
+        carapana_daemon::ProcessCaptureSettings::new(32, 32, 1024, Duration::from_secs(10))
+            .unwrap();
+    let (proposal, _) =
+        reviewed_proposal(&fixture, &mut store, "/usr/bin/true", Vec::new(), capture);
+    let mut request = proposal.request_approval(100, 10).unwrap();
+    let token = request
+        .approve_by_operator(&request.id(), proposal.workspace(), proposal.task(), 11)
+        .unwrap();
+    let mut group = parent.prepare(proposal.limits().resources()).unwrap();
+    let source = fixture.metadata();
+    let now = std::cell::Cell::new(12);
+    let checks = std::cell::Cell::new(0);
+    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        .unwrap()
+        .run_approved_image_process(
+            token,
+            carapana_daemon::SandboxExecutionScope {
+                session_id: "synthetic-expiry",
+                workspace_id: proposal.workspace(),
+                task: proposal.task(),
+                source: &source,
+            },
+            &mut group,
+            || now.get(),
+            || {
+                checks.set(checks.get() + 1);
+                if checks.get() == 2 {
+                    now.set(100);
+                }
+                false
+            },
+        );
+    assert!(
+        checks.get() >= 2,
+        "fixture must reach ReadyForAdmission before advancing its clock"
+    );
+    assert!(matches!(
+        result,
+        Err(carapana_daemon::SandboxExecutionError::Approval(
+            CommandApprovalError::Expired
+        ))
+    ));
+    group.verify_ready_for_admission().unwrap();
+    group.release().unwrap();
+}
+
+#[test]
+fn should_require_a_reserved_workspace_from_the_reviewed_physical_source() {
+    use carapana_core::trust::{TaskId, WorkspaceId};
+    use carapana_daemon::{
+        SandboxExecutionError, SandboxExecutionLimits, SandboxExecutionProposal,
+    };
+    let fixture = SnapshotFixture::new();
+    let capture =
+        carapana_daemon::ProcessCaptureSettings::new(32, 32, 1024, Duration::from_secs(10))
+            .unwrap();
+    let limits = SandboxExecutionLimits::new(
+        capture,
+        carapana_sandbox::delegated_cgroup::CgroupLimits::new(128 * 1024 * 1024, 32).unwrap(),
+    )
+    .unwrap();
+    let launch = SandboxImageLaunch::new(
+        image("/usr/bin/true"),
+        PathBuf::from("/runtime/bin/program"),
+        Vec::new(),
+        1024,
+        policy(),
+    )
+    .unwrap();
+    assert!(matches!(
+        SandboxExecutionProposal::new(
+            WorkspaceId::new("w").unwrap(),
+            TaskId::new("t").unwrap(),
+            &fixture.metadata(),
+            launch,
+            limits
+        ),
+        Err(SandboxExecutionError::MissingReservedWorkspace)
+    ));
+    let mut store = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let selected = carapana_sandbox::selected_snapshots::ReservedSelectedSnapshotBundle::prepare(
+        &mut store,
+        &fixture.metadata(),
+        &[PathBuf::from("input.txt")],
+        carapana_sandbox::selected_snapshots::SelectedSnapshotPolicy::new(1, 1024).unwrap(),
+        1000,
+    )
+    .unwrap()
+    .seal_for_launch()
+    .unwrap();
+    let launch = SandboxImageLaunch::new(
+        image("/usr/bin/true"),
+        PathBuf::from("/runtime/bin/program"),
+        Vec::new(),
+        1024,
+        policy(),
+    )
+    .unwrap()
+    .with_workspace(selected)
+    .unwrap();
+    let other = SnapshotFixture::new();
+    assert!(matches!(
+        SandboxExecutionProposal::new(
+            WorkspaceId::new("w").unwrap(),
+            TaskId::new("t").unwrap(),
+            &other.metadata(),
+            launch,
+            limits
+        ),
+        Err(SandboxExecutionError::PhysicalWorkspaceMismatch)
+    ));
+    assert_eq!(store.usage().unwrap().reserved_bytes, 0);
+}
