@@ -114,6 +114,10 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    descritor permite cleanup com perda do controller e setsid, com testes reais. O target não herda o
    controle. Não confundir resource scoping com sandbox: sem mounts mínimos o target ainda poderia
    acessar cgroupfs/host; ligar esses controles ao launcher completo continua necessário.
+   PD-45 permite consumir o manifesto em cópias memfd seladas contra alteração de bytes/tamanho,
+   evitando montar o objeto original mutável. Hash da cópia é conferido após os seals; isso não é
+   classificação de segredos, aprovação nem reserva global de memória. A preparação consome shmem
+   fora do cgroup do target e ainda deve ter admissão global e transporte controlado ao guardian.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

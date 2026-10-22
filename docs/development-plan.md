@@ -4163,6 +4163,12 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   campanhas reais (nove cgroup + seis guardian) passaram, incluindo saída de erro normal (1). Gate final
   após essa correção passou integralmente: formatter/lint/check/Clippy/build, todas as suites Rust e
   doctests, 24 Vitest e 64 E2E, com Bubblewrap obrigatório. Não houve alteração de timeouts/snapshots.
+- CI `39784061018` do HEAD `eab8f0a` confirmado verde em Web/Linux e Rust/Ubuntu/macOS.
+  Continuação PD-45 fecha a mutabilidade dos bytes de runtime entre hash e futuro mount: manifesto
+  verificado é consumido em cópias memfd seladas, com budgets explícitos, leitura posicional limitada,
+  identidade antes/depois e SHA-256 da cópia já selada. Descritores continuam CLOEXEC. Não há descoberta
+  de dependências, mounts ou execução nova; transporte ao guardian e admissão global de memória para
+  preparação continuam pendências próprias, não garantias desta imagem por si só.
 
 ---
 

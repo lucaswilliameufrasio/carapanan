@@ -5,6 +5,9 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+mod image;
+pub use image::{RuntimeImage, RuntimeImageFile};
+
 const MAX_FILES: usize = 128;
 const MAX_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -27,6 +30,8 @@ pub enum RuntimeManifestError {
     UnsafeSource,
     HashMismatch,
     SourceChanged,
+    ImageUnavailable,
+    ImageSealRejected,
 }
 
 /// Explicit ceilings; no product defaults or automatic budget expansion.
@@ -159,6 +164,15 @@ pub struct VerifiedRuntimeManifest {
 }
 
 impl VerifiedRuntimeManifest {
+    /// Consume mutable-source evidence into private kernel-sealed copies, within explicit ceilings.
+    /// This neither approves execution nor installs mounts or transports descriptors to a child.
+    pub fn freeze(
+        self,
+        policy: RuntimeManifestPolicy,
+    ) -> Result<RuntimeImage, RuntimeManifestError> {
+        image::freeze(self, policy)
+    }
+
     pub fn verify(
         specs: Vec<RuntimeFileSpec>,
         policy: RuntimeManifestPolicy,
@@ -492,6 +506,47 @@ mod linux {
             use std::os::fd::AsRawFd;
             assert!(file.descriptor().as_raw_fd() >= 0);
             assert!(manifest.revalidate().is_ok());
+        }
+
+        #[test]
+        fn should_freeze_only_verified_files_with_their_exact_metadata_and_bytes() {
+            let spec = system_spec();
+            let expected = fs::read(&spec.source).unwrap();
+            let digest = spec.expected_sha256;
+            let policy = RuntimeManifestPolicy::new(2, 1024 * 1024, 1024 * 1024).unwrap();
+            let image = VerifiedRuntimeManifest::verify(vec![spec], policy)
+                .unwrap()
+                .freeze(policy)
+                .unwrap();
+            assert_eq!(image.files().len(), 1);
+            assert_eq!(image.total_bytes(), expected.len() as u64);
+            let entry = image.files().next().unwrap();
+            assert_eq!(entry.destination(), Path::new("/runtime/bin/true"));
+            assert_eq!(entry.role(), RuntimeFileRole::Executable);
+            assert_eq!(entry.size_bytes(), expected.len() as u64);
+            assert_eq!(entry.sha256(), &digest);
+            let mut bytes = vec![0; expected.len()];
+            rustix::io::pread(entry.descriptor(), &mut bytes, 0).unwrap();
+            assert_eq!(bytes, expected);
+            assert!(rustix::io::pwrite(entry.descriptor(), b"x", 0).is_err());
+        }
+
+        #[test]
+        fn should_reject_a_freeze_budget_smaller_than_the_complete_verified_manifest() {
+            let policy = RuntimeManifestPolicy::new(2, 1024 * 1024, 2 * 1024 * 1024).unwrap();
+            let first = system_spec();
+            let mut second = system_spec();
+            second.destination = PathBuf::from("/runtime/second");
+            let manifest = VerifiedRuntimeManifest::verify(vec![first, second], policy).unwrap();
+            assert!(matches!(
+                manifest.freeze(RuntimeManifestPolicy::new(1, 1024 * 1024, 1024 * 1024).unwrap()),
+                Err(RuntimeManifestError::TooManyFiles)
+            ));
+            let manifest = VerifiedRuntimeManifest::verify(vec![system_spec()], policy).unwrap();
+            assert!(matches!(
+                manifest.freeze(RuntimeManifestPolicy::new(1, 1, 1).unwrap()),
+                Err(RuntimeManifestError::ByteBudgetExceeded)
+            ));
         }
 
         #[test]

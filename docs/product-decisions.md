@@ -1139,3 +1139,22 @@ desativados.
 - Isso não isola filesystem/rede nem impede acesso malicioso ao cgroupfs se o target ainda enxergar o
   host. O futuro launcher deve esconder esses controles/FDs e vincular mounts/runtime/budgets à aprovação.
   Fixtures são scripts sintéticos confiáveis; não ativar ToolCallRequested a partir dessa integração.
+
+## PD-45 — Imagem de runtime imutável antes dos mounts
+
+**Data:** 22 de outubro de 2026
+
+**Status:** preparação interna Linux; não ativa launcher/tools.
+
+- O manifesto verificado de PD-38 fixa identidade, mas não impede escrita in-place após o hash.
+  Antes de transportar bytes para mounts, consumir esse manifesto numa imagem de arquivos `memfd`
+  selados contra escrita, crescimento, truncamento e remoção de seals. Não reabrir paths para mounts.
+- Revalidar as fontes antes da cópia, copiar em chunks limitados com orçamento explícito por arquivo
+  e agregado, comparar tamanho/identidade antes/depois e conferir SHA-256 da cópia selada. Falha não
+  retorna imagem parcial nem faz fallback para o arquivo original. Descritores mantêm CLOEXEC;
+  transporte ao guardian é etapa separada, sem alteração global de flags ou herança automática.
+- Preferido a bind de arquivos originais (janela de mutação) ou cópia em paths temporários mutáveis.
+  O custo é memória/shmem adicional de até o orçamento solicitado, sem cache persistente ou artifacts.
+  Esse orçamento não é uma reserva global de memória: o launcher ainda precisa limitar admissão e
+  contabilizar a preparação fora do cgroup do target. Não alegar que selar classifica segredos,
+  autentica aprovação, comprova executabilidade ou resolve mounts/lifecycle por si só.
