@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-19",
+  "applies_to": [
+    "compression-evaluation-2026-10-19-cpu-quota.json",
+    "compression-transport-evaluation-2026-10-19-cpu-quota.json"
+  ],
+  "runtime": {
+    "container_image": "mcr.microsoft.com/playwright:v1.58.2-noble",
+    "container_runtime": "rootless Docker; preloaded image; pull disabled",
+    "network_mode": "none",
+    "root_filesystem": "read-only",
+    "tmpfs": "/tmp: 16 MiB, noexec, nosuid",
+    "source_mount": "prototypes mounted read-only",
+    "python": "3.12.3",
+    "brotli": "1.1.0",
+    "zstd": "1.5.5"
+  },
+  "observed_cgroup_v2": {
+    "cpu_max": "100000 100000",
+    "cpu_quota_cores": 1,
+    "memory_max_bytes": 536870912
+  },
+  "host": {
+    "system": "Linux",
+    "kernel": "7.2.3-1-cachyos",
+    "architecture": "x86_64",
+    "cpu_model": "AMD Ryzen 9 7900 12-Core Processor"
+  },
+  "interpretation": "A CPU-quota proxy, not a measurement on low-power hardware. The physical CPU remains a Ryzen 9 7900; the 512 MiB limit did not create memory pressure.",
+  "validation": "8 compression harness unit tests passed in the same container configuration."
+}

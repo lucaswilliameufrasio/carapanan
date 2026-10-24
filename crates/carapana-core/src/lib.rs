@@ -2,8 +2,10 @@
 use carapana_protocol::{Autonomy, WorkMode};
 
 pub mod approval;
+pub mod command_approval;
 pub mod configuration;
 pub mod intervention;
+pub mod provider;
 pub mod queue;
 pub mod session;
 pub mod tracing;

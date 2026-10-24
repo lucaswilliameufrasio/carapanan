@@ -4,13 +4,38 @@ use std::{error::Error, fmt, path::Path, time::Duration};
 
 use rusqlite::{Connection, TransactionBehavior};
 
+mod artifact_store;
+mod preparation_admission;
 mod session_store;
 mod user_database;
+mod workspace;
 
-pub use session_store::{
-    PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionStatus,
+pub use artifact_store::{
+    ArtifactCleanupReport, ArtifactKind, ArtifactMetadata, ArtifactPolicy, ArtifactStore,
+    ArtifactStoreError, ArtifactUsage, DEFAULT_ARTIFACT_RETENTION,
+    DEFAULT_ARTIFACT_STORE_QUOTA_BYTES, DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_ORPHAN_GRACE,
+    StagingReservation,
 };
-pub use user_database::{UserDatabaseError, open_user_database, user_database_path};
+pub use preparation_admission::{
+    PreparationAdmissionError, PreparationAdmissionPolicy, PreparationAdmissionStore,
+    PreparationAdmissionUsage, PreparationLease,
+};
+pub use session_store::{
+    PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionEventRecord,
+    StoredSessionStatus,
+};
+pub use user_database::{
+    UserDatabaseError, open_user_database, user_data_directory, user_database_path,
+};
+pub use workspace::{
+    MAX_WORKSPACE_DIRECTORY_READ_ENTRIES, MAX_WORKSPACE_FILE_HASH_BYTES,
+    MAX_WORKSPACE_FILE_READ_BYTES, MAX_WORKSPACE_FILE_WRITE_BYTES, WorkspaceDirectoryEntry,
+    WorkspaceDirectoryEntryKind, WorkspaceDirectoryIdentity, WorkspaceDirectoryListing,
+    WorkspaceDirectoryReadError, WorkspaceFileMetadata, WorkspaceFileMetadataError,
+    WorkspaceFileReadError, WorkspaceFileSnapshot, WorkspaceFileValidation,
+    WorkspaceFileValidationStatus, WorkspaceFileWriteError, WorkspaceMetadata,
+    WorkspaceMetadataError, WorkspaceValidationReport,
+};
 
 /// Per-user index and lifecycle facade over the user's single SQLite database.
 pub struct SessionRegistry {
@@ -39,6 +64,16 @@ impl SessionRegistry {
         self.database.create_session(session_id, now_ms)
     }
 
+    pub fn create_with_workspace(
+        &mut self,
+        session_id: &str,
+        workspace: WorkspaceMetadata,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database
+            .create_session_with_workspace(session_id, workspace, now_ms)
+    }
+
     pub fn enqueue(
         &mut self,
         session_id: &str,
@@ -48,8 +83,67 @@ impl SessionRegistry {
         self.database.enqueue_message(session_id, message, now_ms)
     }
 
+    pub fn observe_workspace_file(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database
+            .observe_workspace_file(session_id, relative_path, now_ms)
+    }
+
+    pub fn observe_workspace_file_with_hash(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database
+            .observe_workspace_file_with_hash(session_id, relative_path, now_ms)
+    }
+
+    pub fn validate_workspace_files(&self, session_id: &str) -> Result<(), SessionStoreError> {
+        self.database.validate_workspace_files(session_id)
+    }
+
+    pub fn review_workspace_files(
+        &self,
+        session_id: &str,
+    ) -> Result<WorkspaceValidationReport, SessionStoreError> {
+        self.database.review_workspace_files(session_id)
+    }
+
+    pub fn acknowledge_recovery_path(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<WorkspaceFileValidation, SessionStoreError> {
+        self.database
+            .acknowledge_recovery_path(session_id, relative_path, now_ms)
+    }
+
+    pub fn resume_recovered_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.resume_recovered_session(session_id, now_ms)
+    }
+
     pub fn get(&self, session_id: &str) -> Result<PersistedSession, SessionStoreError> {
         self.database.load_session(session_id)
+    }
+
+    pub fn session_events_after(
+        &mut self,
+        session_id: &str,
+        after_sequence: i64,
+        limit: u16,
+    ) -> Result<(Vec<StoredSessionEventRecord>, i64, bool), SessionStoreError> {
+        self.database
+            .session_events_after(session_id, after_sequence, limit)
     }
 
     pub fn list(&mut self) -> Result<Vec<PersistedSession>, SessionStoreError> {
@@ -86,6 +180,22 @@ impl SessionRegistry {
             .complete_active_message(session_id, outcome, now_ms)
     }
 
+    pub fn hibernate(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.hibernate_session(session_id, now_ms)
+    }
+
+    pub fn wake_hibernated(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        self.database.wake_hibernated_session(session_id, now_ms)
+    }
+
     pub fn recover_after_restart(
         &mut self,
         now_ms: i64,
@@ -94,7 +204,8 @@ impl SessionRegistry {
     }
 }
 
-pub const SCHEMA_VERSION: i64 = 1;
+// Version 8 adds shared preparation admission; older executors must refuse this catalog.
+pub const SCHEMA_VERSION: i64 = 8;
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE sessions (
@@ -120,6 +231,38 @@ CREATE TABLE session_snapshots (
     state_json TEXT NOT NULL CHECK (json_valid(state_json)),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+const ARTIFACT_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS artifact_records (
+    artifact_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('durable', 'temporary')),
+    state TEXT NOT NULL CHECK (state IN ('pending', 'ready', 'deleting')),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+    reserved_bytes INTEGER NOT NULL CHECK (reserved_bytes >= 0),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+    expires_at_ms INTEGER,
+    sha256 BLOB,
+    CHECK (
+        (kind = 'durable' AND expires_at_ms IS NULL)
+        OR (kind = 'temporary' AND expires_at_ms IS NOT NULL AND expires_at_ms >= created_at_ms)
+    ),
+    CHECK (
+        (state = 'pending' AND size_bytes = 0 AND reserved_bytes > 0 AND sha256 IS NULL)
+        OR (state = 'ready' AND reserved_bytes = 0 AND sha256 IS NOT NULL AND length(sha256) = 32)
+        OR (state = 'deleting' AND reserved_bytes = 0 AND sha256 IS NOT NULL AND length(sha256) = 32)
+    )
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS artifact_records_state_expiry
+    ON artifact_records(state, expires_at_ms, artifact_id);
+
+CREATE TABLE IF NOT EXISTS artifact_staging (
+    artifact_id INTEGER PRIMARY KEY NOT NULL,
+    device BLOB NOT NULL CHECK (length(device) = 8),
+    inode BLOB NOT NULL CHECK (length(inode) = 8),
+    FOREIGN KEY (artifact_id) REFERENCES artifact_records(artifact_id) ON DELETE CASCADE
 ) STRICT;
 "#;
 
@@ -171,6 +314,15 @@ impl Database {
         session_store::create_session(self, session_id, now_ms)
     }
 
+    pub fn create_session_with_workspace(
+        &mut self,
+        session_id: &str,
+        workspace: WorkspaceMetadata,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::create_session_with_workspace(self, session_id, workspace, now_ms)
+    }
+
     /// Append one queued message and update the materialized snapshot atomically.
     pub fn enqueue_message(
         &mut self,
@@ -179,6 +331,52 @@ impl Database {
         now_ms: i64,
     ) -> Result<PersistedSession, SessionStoreError> {
         session_store::enqueue_message(self, session_id, message, now_ms)
+    }
+
+    pub fn observe_workspace_file(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::observe_workspace_file(self, session_id, relative_path, now_ms)
+    }
+
+    pub fn observe_workspace_file_with_hash(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::observe_workspace_file_with_hash(self, session_id, relative_path, now_ms)
+    }
+
+    pub fn validate_workspace_files(&self, session_id: &str) -> Result<(), SessionStoreError> {
+        session_store::validate_workspace_files(self, session_id)
+    }
+
+    pub fn review_workspace_files(
+        &self,
+        session_id: &str,
+    ) -> Result<WorkspaceValidationReport, SessionStoreError> {
+        session_store::review_workspace_files(self, session_id)
+    }
+
+    pub fn acknowledge_recovery_path(
+        &mut self,
+        session_id: &str,
+        relative_path: impl AsRef<Path>,
+        now_ms: i64,
+    ) -> Result<WorkspaceFileValidation, SessionStoreError> {
+        session_store::acknowledge_recovery_path(self, session_id, relative_path, now_ms)
+    }
+
+    pub fn resume_recovered_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::resume_recovered_session(self, session_id, now_ms)
     }
 
     /// Load from the snapshot, falling back to replaying the event log if needed.
@@ -192,6 +390,16 @@ impl Database {
         session_id: &str,
     ) -> Result<Vec<StoredSessionEvent>, SessionStoreError> {
         session_store::session_events(self, session_id)
+    }
+
+    /// Return a bounded contiguous event page after the caller's inclusive cursor.
+    pub fn session_events_after(
+        &mut self,
+        session_id: &str,
+        after_sequence: i64,
+        limit: u16,
+    ) -> Result<(Vec<StoredSessionEventRecord>, i64, bool), SessionStoreError> {
+        session_store::session_events_after(self, session_id, after_sequence, limit)
     }
 
     pub fn list_sessions(&mut self) -> Result<Vec<PersistedSession>, SessionStoreError> {
@@ -238,6 +446,22 @@ impl Database {
         session_store::complete_active_message(self, session_id, outcome, now_ms)
     }
 
+    pub fn hibernate_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::hibernate_session(self, session_id, now_ms)
+    }
+
+    pub fn wake_hibernated_session(
+        &mut self,
+        session_id: &str,
+        now_ms: i64,
+    ) -> Result<PersistedSession, SessionStoreError> {
+        session_store::wake_hibernated_session(self, session_id, now_ms)
+    }
+
     /// Recover all active sessions into a paused state. No work is resumed or repeated.
     pub fn recover_active_sessions(
         &mut self,
@@ -253,7 +477,7 @@ impl Database {
         connection.busy_timeout(Duration::from_secs(5))?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version != 0 && version != SCHEMA_VERSION {
+        if version != 0 && !(1..=SCHEMA_VERSION).contains(&version) {
             return Err(MigrationError::UnsupportedSchemaVersion(version));
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -280,6 +504,13 @@ impl Database {
         match version {
             0 => {
                 transaction.execute_batch(INITIAL_SCHEMA)?;
+                transaction.execute_batch(ARTIFACT_SCHEMA)?;
+                transaction.execute_batch(preparation_admission::SCHEMA)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            1..=7 => {
+                transaction.execute_batch(ARTIFACT_SCHEMA)?;
+                transaction.execute_batch(preparation_admission::SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             SCHEMA_VERSION => {}
@@ -293,7 +524,9 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{Database, MigrationError, SCHEMA_VERSION};
+    use super::{
+        Database, MigrationError, SCHEMA_VERSION, StoredSessionEvent, StoredSessionStatus,
+    };
     use rusqlite::Connection;
     use std::{fs, path::PathBuf, time::SystemTime};
 
@@ -305,7 +538,11 @@ mod tests {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            Self(std::env::temp_dir().join(format!("carapana-storage-{nonce}.sqlite3")))
+            Self(
+                std::fs::canonicalize(std::env::temp_dir())
+                    .unwrap()
+                    .join(format!("carapana-storage-{nonce}.sqlite3")),
+            )
         }
     }
 
@@ -357,6 +594,90 @@ mod tests {
             .pragma_query_value(None, "journal_mode", |row| row.get(0))
             .unwrap();
         assert_eq!(journal_mode, "wal");
+    }
+
+    #[test]
+    fn should_migrate_version_one_sessions_without_losing_their_event_history() {
+        let path = TestDatabase::new();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database.create_session("legacy-session", 10).unwrap();
+            database
+                .connection
+                .execute(
+                    "UPDATE session_snapshots SET state_json = json_remove(state_json, '$.workspace') WHERE session_id = ?1",
+                    ["legacy-session"],
+                )
+                .unwrap();
+            database
+                .connection
+                .execute(
+                    "UPDATE session_events SET payload_json = json_remove(payload_json, '$.workspace') WHERE session_id = ?1 AND event_type = 'created'",
+                    ["legacy-session"],
+                )
+                .unwrap();
+            database
+                .connection
+                .pragma_update(None, "user_version", 1)
+                .unwrap();
+        }
+
+        let mut database = Database::open(&path.0).unwrap();
+        assert_eq!(database.schema_version().unwrap(), SCHEMA_VERSION);
+        let session = database.load_session("legacy-session").unwrap();
+        assert!(session.workspace.is_none());
+        assert_eq!(session.event_sequence, 1);
+        assert_eq!(
+            database.session_events("legacy-session").unwrap(),
+            vec![StoredSessionEvent::Created {
+                session_id: "legacy-session".into(),
+                workspace: None,
+            }]
+        );
+        let rebuilt = database.rebuild_snapshot("legacy-session").unwrap();
+        assert!(rebuilt.workspace.is_none());
+    }
+
+    #[test]
+    fn should_migrate_version_three_sessions_before_hash_metadata_is_read() {
+        let path = TestDatabase::new();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database.create_session("legacy-session", 10).unwrap();
+            database
+                .connection
+                .pragma_update(None, "user_version", 3)
+                .unwrap();
+        }
+
+        let database = Database::open(&path.0).unwrap();
+        assert_eq!(database.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            database
+                .load_session("legacy-session")
+                .unwrap()
+                .event_sequence,
+            1
+        );
+    }
+
+    #[test]
+    fn should_migrate_version_four_before_hibernation_events_are_written() {
+        let path = TestDatabase::new();
+        {
+            let mut database = Database::open(&path.0).unwrap();
+            database.create_session("legacy-session", 10).unwrap();
+            database
+                .connection
+                .pragma_update(None, "user_version", 4)
+                .unwrap();
+        }
+
+        let database = Database::open(&path.0).unwrap();
+        assert_eq!(database.schema_version().unwrap(), SCHEMA_VERSION);
+        let session = database.load_session("legacy-session").unwrap();
+        assert_eq!(session.status, StoredSessionStatus::Paused);
+        assert_eq!(session.event_sequence, 1);
     }
 
     #[test]

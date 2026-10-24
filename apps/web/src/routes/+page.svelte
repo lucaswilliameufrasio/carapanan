@@ -61,6 +61,7 @@
   } from '#lib/prototype.ts';
 
   let ui: PrototypeState = $state(initialState());
+  let hydrated = $state(false);
   let configuration = $state(initialConfiguration());
   let update = $state(initialUpdate());
   const models = $derived(providerModels(configuration.providers));
@@ -329,6 +330,7 @@
       systemDark = query.matches;
     };
     query.addEventListener('change', handler);
+    hydrated = true;
     return () => query.removeEventListener('change', handler);
   });
   $effect(() => {
@@ -355,7 +357,8 @@
 >
 <svelte:window onkeydown={keydown} />
 
-<div class="app" data-theme={isDark ? 'dark' : 'light'}>
+<noscript>Este protótipo interativo precisa de JavaScript. Nenhum comando será executado.</noscript>
+<div class="app" data-theme={isDark ? 'dark' : 'light'} inert={!hydrated} aria-busy={!hydrated}>
   <a class="skip-link" href="#main">{t('conversation')}</a>
   <header class="app-header">
     <button
