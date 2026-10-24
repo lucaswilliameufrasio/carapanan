@@ -1364,3 +1364,149 @@ fn should_quarantine_admission_instead_of_releasing_after_a_process_error() {
     assert_eq!(admission.usage().unwrap().quarantined_leases, 1);
     assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
 }
+
+#[test]
+fn should_release_admission_after_revocation_collects_a_running_image() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_core::command_approval::{ApprovalSubject, CommandApprovalError, CommandProposal};
+    let fixture = SnapshotFixture::new();
+    let source = fixture.metadata();
+    let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let base = preparation_command();
+    let argument = format!(
+        "30.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let command = CommandProposal::new(
+        base.workspace().clone(),
+        base.task().clone(),
+        base.executable().to_owned(),
+        vec![argument.clone().into()],
+        PathBuf::new(),
+    )
+    .unwrap();
+    let paths = [PathBuf::from("input.txt")];
+    let mut spec = preparation_spec(&command, &paths);
+    spec.runtime_files = runtime_specs("/usr/bin/sleep");
+    let required = spec.required_bytes().unwrap();
+    let policy = carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap();
+    let mut admissions =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let prepared = carapana_daemon::AdmittedSandboxProposal::prepare(
+        spec,
+        &source,
+        &mut artifacts,
+        &mut admissions,
+        1000,
+    )
+    .unwrap();
+    let observer =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let mut request = prepared.request_approval(100, 10).unwrap();
+    let token = request
+        .approve_by_operator(&request.id(), prepared.workspace(), prepared.task(), 11)
+        .unwrap();
+    let mut group = parent.prepare(prepared.limits().resources()).unwrap();
+    let start = Instant::now();
+    let mut observed = false;
+    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        .unwrap()
+        .run_admitted_image_process(
+            token,
+            carapana_daemon::SandboxExecutionScope {
+                session_id: "synthetic-admitted-revocation",
+                workspace_id: prepared.workspace(),
+                task: prepared.task(),
+                source: &source,
+            },
+            &mut group,
+            || 12,
+            || {
+                assert_eq!(observer.usage().unwrap().reserved_bytes, required);
+                observed |= observed_scoped_target(&argument);
+                if observed {
+                    request.invalidate();
+                }
+                start.elapsed() > Duration::from_secs(8)
+            },
+        );
+    assert!(observed, "revocation must follow target exec");
+    assert!(matches!(
+        result,
+        Err(carapana_daemon::AdmittedSandboxError::Execution(
+            carapana_daemon::SandboxExecutionError::Approval(CommandApprovalError::Invalidated)
+        ))
+    ));
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, required);
+    drop(request);
+    drop(prepared);
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(observer.usage().unwrap().quarantined_leases, 0);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_quarantine_admission_after_a_controller_panic_before_effect() {
+    let Some(mut parent) = delegated_parent() else {
+        return;
+    };
+    use carapana_core::command_approval::ApprovalSubject;
+    let fixture = SnapshotFixture::new();
+    let source = fixture.metadata();
+    let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let command = preparation_command();
+    let paths = [PathBuf::from("input.txt")];
+    let spec = preparation_spec(&command, &paths);
+    let required = spec.required_bytes().unwrap();
+    let mut admissions = carapana_storage::PreparationAdmissionStore::open(
+        fixture.database(),
+        carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap(),
+    )
+    .unwrap();
+    let prepared = carapana_daemon::AdmittedSandboxProposal::prepare(
+        spec,
+        &source,
+        &mut artifacts,
+        &mut admissions,
+        1000,
+    )
+    .unwrap();
+    let mut request = prepared.request_approval(100, 10).unwrap();
+    let token = request
+        .approve_by_operator(&request.id(), prepared.workspace(), prepared.task(), 11)
+        .unwrap();
+    let mut group = parent.prepare(prepared.limits().resources()).unwrap();
+    let mut supervisor =
+        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana")).unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        supervisor.run_admitted_image_process(
+            token,
+            carapana_daemon::SandboxExecutionScope {
+                session_id: "synthetic-admitted-panic",
+                workspace_id: prepared.workspace(),
+                task: prepared.task(),
+                source: &source,
+            },
+            &mut group,
+            || panic!("synthetic controller clock panic before guardian spawn"),
+            || false,
+        )
+    }));
+    assert!(result.is_err());
+    group.verify_ready_for_admission().unwrap();
+    group.release().unwrap();
+    drop(request);
+    // Even though this fixture independently proves no guardian started, an interrupted effect
+    // cannot infer that proof. Drop must not turn Running into Ready or silently release capacity.
+    drop(prepared);
+    assert_eq!(admissions.usage().unwrap().reserved_bytes, required);
+    assert_eq!(admissions.usage().unwrap().quarantined_leases, 1);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+}

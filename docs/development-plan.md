@@ -4257,6 +4257,16 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - A conta é nominal, não medição de RSS/pressão ou limite total da máquina. Recovery de órfãos,
   defaults calibrados, fairness, UI autenticada, conteúdo/segredos e Git/worktree seguem pendentes;
   `ToolCallRequested` permanece inerte. CI de PD-50 e PD-51 confirmado verde nos três jobs.
+- Provas adicionais do lifecycle admitido passaram em três campanhas reais: revogação após observar
+  o alvo executando conserva a reserva até cleanup confirmado e descarte dos payloads; panic injetado
+  no relógio antes de criar o guardian conserva quarentena, mesmo com grupo ainda pronto. São 21 testes
+  image launcher. A prova de panic não simula um panic durante execução nem uma falha de cleanup kernel.
+- CI `39808928031` de `6d7904f` passou Web/Linux e Rust/Ubuntu/macOS. Ao repetir o gate local em 24/10,
+  a prova SCM_RIGHTS encontrou uma corrida no próprio teste: EOF imediato concorre com fork/exec de
+  outros testes, pois CLOEXEC não fecha descritores no intervalo anterior ao exec. Falha reproduzida
+  na suíte paralela; 100 runs isolados passaram e a instrumentação observou EOF posterior. A prova
+  agora cria seus sockets somente após re-exec isolado do teste exato, mantendo EOF imediato e prazo
+  bounded/reaping do filho. Trinta repetições da suíte sandbox completa passaram sem alterar protocolo.
 
 ---
 

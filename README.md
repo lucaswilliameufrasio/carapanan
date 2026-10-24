@@ -399,6 +399,14 @@ just verify
 e macOS (incluindo PTY). Toolchains vêm de `mise.toml` e `rust-toolchain.toml`;
 instalação JS e verificações Rust usam os lockfiles sem resolução nova.
 
+Os E2E iniciam servidores próprios em loopback nas portas 4173 (preview) e 4174
+(dev), sem reutilizar processos existentes ou escolher outra porta silenciosamente.
+Para rodar junto de outros projetos, configure duas portas livres e distintas:
+
+```sh
+CARAPANA_E2E_PREVIEW_PORT=34173 CARAPANA_E2E_DEV_PORT=34174 mise exec -- make verify
+```
+
 As referências visuais `*-linux.png` preservam as capturas locais; a CI usa
 `CARAPANA_SNAPSHOT_ENV=ubuntu` e as referências `*-ubuntu.png`, capturadas em
 Ubuntu 24.04 e revisadas separadamente devido às diferenças de rasterização

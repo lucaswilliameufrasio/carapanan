@@ -515,6 +515,33 @@ mod tests {
             io::Read,
             os::{fd::AsFd, unix::net::UnixStream},
         };
+        // CLOEXEC closes descriptors at exec, not at fork. Other parallel tests spawn children,
+        // which may temporarily retain these endpoints and invalidate an immediate-EOF assertion.
+        // Create all endpoints only in an isolated re-exec running this single test. Keep the
+        // strict EOF proof; do not turn a leaked right into an accepted WouldBlock or a retry.
+        const CHILD: &str = "CARAPANA_SYNTHETIC_RIGHTS_CLOSE_RECEIVER";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "runtime_manifest::image::transport::tests::should_close_all_received_rights_on_count_mismatch_and_ancillary_truncation"])
+                .env_clear().env(CHILD, "1").stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null()).spawn().unwrap();
+            let until = deadline();
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(
+                        status.success(),
+                        "isolated received-rights closure proof failed"
+                    );
+                    return;
+                }
+                if Instant::now() >= until {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("isolated received-rights closure proof exceeded deadline");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
         for count in [2, MAX_FILES + 1] {
             let (sender, receiver) = UnixDatagram::pair().unwrap();
             let (writer, mut reader) = UnixStream::pair().unwrap();
