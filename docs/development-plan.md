@@ -4272,21 +4272,21 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   ou defaults finais. Verifica antes das imagens, ao entrar no efeito e novamente nas fronteiras
   `BeforeEffect`, inclusive antes de transmitir descritores; cleanup incerto continua prioritário.
   Rejeição antes das imagens libera a reserva nominal sem tocar runtime/seleção inválidos.
-  O gate não mede RSS, não lê limites herdados do controlador e não monitora pressão continuamente;
-  esses itens, recovery de órfãos, fairness e calibração por máquina continuam pendentes.
+  O gate não mede RSS nem monitora pressão continuamente; recovery de órfãos, fairness e calibração
+  por máquina continuam pendentes. A hierarquia herdada é coberta separadamente pela PD-54 abaixo.
 - Validação local de PD-53 em 24/10: cinco testes de parser/política e uma regressão CLI de rejeição
   antes de fontes inválidas passaram com sinais reais do kernel/SQLite/filesystem. O gate integral
   comum com Bubblewrap obrigatório e portas E2E 34173/34174 passou: 27 Vitest, 66 E2E, suites Rust,
   doctests, format/lint/check/Clippy/build. Testes que exigem cgroup opt-in não executam o corpo neste
-  gate: a campanha adicional falhou antes de iniciar por indisponibilidade do `systemd --user`
-  (conexão ao bus recusada). PD-53 permanece local e não publicada, aguardando essa prova real.
-  Nenhum serviço/configuração persistente foi alterado para contornar a ausência de ambiente.
+  gate. A tentativa inicial da campanha real falhou antes de iniciar: `systemd --user` estava
+  indisponível após OOM; investigação confirmou `user@1000.service=failed`, `MainPID=0`, `Result=signal`,
+  `ExecMainStatus=9`. Nenhum serviço/configuração persistente foi alterado para contornar a ausência.
 - O CI `40109502711` de `48f222d` passou Rust nas duas plataformas, mas Web encontrou interação
   anterior à hidratação em `Should keep the execution unchanged and snapshot the queued profile`.
   Artifact/DOM/trace preservados e revisados; regressão com scripts atrasados falhou antes da correção
   em desktop/mobile. `f02c475` mantém a aplicação inerte até mount, informa ausência de JavaScript e
   sincroniza o helper de teste nesse marco. Vinte execuções dos dois cenários afetados e o gate
-  integral comum passaram, sem snapshots/timeouts alterados; confirmação remota ainda pendente.
+  integral comum passaram, sem snapshots/timeouts alterados.
 - CI `40110323707` de `f02c475` confirmado verde: Web/Linux e Rust/Ubuntu/macOS.
 - PD-54 complementa PD-53 com a hierarquia visível de memória do controlador: descritores no
   cgroup2 padrão, no-follow, membership limitado e revalidado, margem mínima de `memory.max/high`
@@ -4295,9 +4295,12 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - Dez testes de saúde do host/hierarquia passaram três repetições: parser, políticas, limites
   herdados, `max`, saturação, PSI, caminhos, symlink, filesystem incorreto e leitura real do próprio
   cgroup. Gate comum integral passou com 27 Vitest, 66 E2E e todas as suites Rust/doctests/builds.
-  A campanha com unidade transitória continua pendente: diagnóstico somente leitura deste host
-  retorna `user@1000.service=failed`, `MainPID=0`, `Result=signal`, `ExecMainStatus=9`; conexões via
-  bus local, socket privado e transporte machine foram recusadas. Nenhum restart foi executado.
+- Em seguida, após recuperação do gerenciador, `TMPDIR=/var/tmp bash scripts/test-delegated-cgroup.sh`
+  passou na unidade transitória delegada: `carapana-sandbox delegated_cgroup` (9/9),
+  `carapana-cli --test captured_cgroup` (6/6) e `carapana-cli --test image_launcher` (22/22), incluindo
+  limites reais de memória/PIDs, cleanup e lifecycle. A mensagem de panic em um teste é injetada
+  deliberadamente e o próprio teste passou. Não houve alteração persistente do host.
+- PD-53/54 foram publicadas em `01467e0`; CI `40114438822` passou Web/Linux e Rust/Ubuntu/macOS.
 
 ---
 
