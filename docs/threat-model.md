@@ -152,6 +152,15 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    não presume fim de consumidores por estar sendo descartado. Recovery de reservas órfãs ainda
    não existe; quarentena sem TTL pode reduzir capacidade até reconciliação segura futura. A conta
    nominal não mede RSS/pressão nem cobre toda metadata/caches do OS ou resultados externos retidos.
+   PD-53 complementa a conta nominal com `MemAvailable`/PSI reais do host Linux, usando política
+   explícita e leituras bounded que falham fechadas. Reamostra antes das imagens e nas fronteiras
+   do efeito aprovado, incluindo transmissão. Não é reserva atômica contra outras aplicações nem
+   acompanhamento contínuo: PSI é média histórica. Limites herdados do cgroup do controlador e
+   RSS real não são inferidos desses sinais; os limites do cgroup do alvo continuam obrigatórios.
+   PD-54 considera também a menor margem entre ancestrais visíveis do controlador e seu maior PSI,
+   validando cgroup2, descritores no-follow e membership antes/depois. Raiz virtual com contadores
+   é recusada por ocultar ancestrais. Leituras não são snapshot atômico, nem autorização para alterar
+   hierarquia ou reiniciar serviços; o monitoramento contínuo e recovery de órfãos seguem pendentes.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

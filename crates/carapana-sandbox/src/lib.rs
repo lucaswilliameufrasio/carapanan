@@ -6,6 +6,8 @@
 
 pub mod delegated_cgroup;
 #[cfg(target_os = "linux")]
+pub mod host_memory;
+#[cfg(target_os = "linux")]
 pub mod image_launcher;
 pub mod runtime_manifest;
 pub mod selected_snapshots;

@@ -11,6 +11,7 @@ use carapana_core::{
 };
 use carapana_sandbox::{
     delegated_cgroup::PreparedCgroup,
+    host_memory::{HostMemoryAdmissionPolicy, HostMemoryError},
     image_launcher::{MAX_SCRATCH_BYTES, MAX_SETUP_BYTES, SandboxImageLaunch},
     runtime_manifest::{
         RuntimeFileSpec, RuntimeManifestError, RuntimeManifestPolicy, VerifiedRuntimeManifest,
@@ -35,6 +36,7 @@ pub struct SandboxPreparationSpec<'input> {
     pub selected_policy: SelectedSnapshotPolicy,
     pub scratch_bytes: u64,
     pub limits: SandboxExecutionLimits,
+    pub host_memory_policy: HostMemoryAdmissionPolicy,
 }
 impl SandboxPreparationSpec<'_> {
     /// Conservative nominal payload reservation, not a benchmark-derived RSS claim.
@@ -79,6 +81,7 @@ impl SandboxPreparationSpec<'_> {
 pub enum AdmittedSandboxError {
     InvalidPreparation,
     Admission(PreparationAdmissionError),
+    HostMemory(HostMemoryError),
     Runtime(RuntimeManifestError),
     Snapshots(SnapshotPreparationError),
     Execution(SandboxExecutionError),
@@ -88,6 +91,7 @@ impl fmt::Display for AdmittedSandboxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Admission(error) => error.fmt(formatter),
+            Self::HostMemory(error) => error.fmt(formatter),
             Self::Execution(error) => error.fmt(formatter),
             Self::InvalidPreparation => {
                 formatter.write_str("sandbox preparation intent is invalid")
@@ -134,6 +138,7 @@ pub struct AdmittedSandboxProposal<'store, 'admission> {
     proposal: Option<SandboxExecutionProposal<'store>>,
     admission: Option<PreparationLease<'admission>>,
     phase: Cell<PreparationPhase>,
+    host_memory_policy: HostMemoryAdmissionPolicy,
 }
 impl<'store, 'admission> AdmittedSandboxProposal<'store, 'admission> {
     pub fn prepare(
@@ -149,6 +154,9 @@ impl<'store, 'admission> AdmittedSandboxProposal<'store, 'admission> {
             .reserve(required, now_ms)
             .map_err(AdmittedSandboxError::Admission)?;
         let built = (|| {
+            spec.host_memory_policy
+                .check(required)
+                .map_err(AdmittedSandboxError::HostMemory)?;
             let runtime = VerifiedRuntimeManifest::verify(spec.runtime_files, spec.runtime_policy)
                 .and_then(|manifest| manifest.freeze(spec.runtime_policy))
                 .map_err(AdmittedSandboxError::Runtime)?;
@@ -187,6 +195,7 @@ impl<'store, 'admission> AdmittedSandboxProposal<'store, 'admission> {
                 proposal: Some(proposal),
                 admission: Some(admission),
                 phase: Cell::new(PreparationPhase::Ready),
+                host_memory_policy: spec.host_memory_policy,
             }),
             Err(error) => {
                 // No descriptors were exported. Closure locals/payloads have already been dropped.
@@ -220,6 +229,9 @@ impl<'store, 'admission> AdmittedSandboxProposal<'store, 'admission> {
     }
     pub fn limits(&self) -> SandboxExecutionLimits {
         self.reviewed().limits()
+    }
+    pub fn host_memory_policy(&self) -> HostMemoryAdmissionPolicy {
+        self.host_memory_policy
     }
     pub fn runtime_files(
         &self,
@@ -308,6 +320,11 @@ impl<'store> ReviewedSandboxSubject<'store> for AdmittedSandboxProposal<'store, 
     fn execution(&self) -> &SandboxExecutionProposal<'store> {
         self.reviewed()
     }
+    fn validate_preparation(&self) -> Result<(), SandboxExecutionError> {
+        self.host_memory_policy
+            .check(self.limits().resources().memory_bytes())
+            .map_err(SandboxExecutionError::HostMemory)
+    }
 }
 
 impl ProcessSupervisor {
@@ -334,6 +351,12 @@ impl ProcessSupervisor {
         if admitted.phase.get() != PreparationPhase::Ready {
             return Err(AdmittedSandboxError::CleanupUncertain);
         }
+        // Payloads already exist; reserve room for the still-unstarted cgroup, not a second copy
+        // of the whole preparation. No host or target has started when this check rejects.
+        admitted
+            .host_memory_policy
+            .check(admitted.limits().resources().memory_bytes())
+            .map_err(AdmittedSandboxError::HostMemory)?;
         // A panic, reentrant attempt or unknown process failure must never enable release.
         admitted.phase.set(PreparationPhase::Running);
         let result = self.run_reviewed_image_process(&approval, scope, group, clock, is_cancelled);
@@ -363,6 +386,7 @@ mod tests {
             SandboxExecutionError::Approval(CommandApprovalError::Expired),
             SandboxExecutionError::Approval(CommandApprovalError::Invalidated),
             SandboxExecutionError::StagingChanged,
+            SandboxExecutionError::HostMemory(HostMemoryError::PressureExceeded),
         ] {
             assert!(completion_phase(&Err(error)) == PreparationPhase::Ready);
         }

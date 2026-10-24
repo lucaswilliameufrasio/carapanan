@@ -4267,6 +4267,37 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   na suíte paralela; 100 runs isolados passaram e a instrumentação observou EOF posterior. A prova
   agora cria seus sockets somente após re-exec isolado do teste exato, mantendo EOF imediato e prazo
   bounded/reaping do filho. Trinta repetições da suíte sandbox completa passaram sem alterar protocolo.
+- PD-53 adiciona política explícita de saúde do host Linux ao objeto admitido: leitura bounded de
+  `MemAvailable` e PSI `some/full avg10`, sem fallback para RAM total/pressão zero, amostras do modelo
+  ou defaults finais. Verifica antes das imagens, ao entrar no efeito e novamente nas fronteiras
+  `BeforeEffect`, inclusive antes de transmitir descritores; cleanup incerto continua prioritário.
+  Rejeição antes das imagens libera a reserva nominal sem tocar runtime/seleção inválidos.
+  O gate não mede RSS, não lê limites herdados do controlador e não monitora pressão continuamente;
+  esses itens, recovery de órfãos, fairness e calibração por máquina continuam pendentes.
+- Validação local de PD-53 em 24/10: cinco testes de parser/política e uma regressão CLI de rejeição
+  antes de fontes inválidas passaram com sinais reais do kernel/SQLite/filesystem. O gate integral
+  comum com Bubblewrap obrigatório e portas E2E 34173/34174 passou: 27 Vitest, 66 E2E, suites Rust,
+  doctests, format/lint/check/Clippy/build. Testes que exigem cgroup opt-in não executam o corpo neste
+  gate: a campanha adicional falhou antes de iniciar por indisponibilidade do `systemd --user`
+  (conexão ao bus recusada). PD-53 permanece local e não publicada, aguardando essa prova real.
+  Nenhum serviço/configuração persistente foi alterado para contornar a ausência de ambiente.
+- O CI `40109502711` de `48f222d` passou Rust nas duas plataformas, mas Web encontrou interação
+  anterior à hidratação em `Should keep the execution unchanged and snapshot the queued profile`.
+  Artifact/DOM/trace preservados e revisados; regressão com scripts atrasados falhou antes da correção
+  em desktop/mobile. `f02c475` mantém a aplicação inerte até mount, informa ausência de JavaScript e
+  sincroniza o helper de teste nesse marco. Vinte execuções dos dois cenários afetados e o gate
+  integral comum passaram, sem snapshots/timeouts alterados; confirmação remota ainda pendente.
+- CI `40110323707` de `f02c475` confirmado verde: Web/Linux e Rust/Ubuntu/macOS.
+- PD-54 complementa PD-53 com a hierarquia visível de memória do controlador: descritores no
+  cgroup2 padrão, no-follow, membership limitado e revalidado, margem mínima de `memory.max/high`
+  menos `memory.current` e maior PSI entre ancestrais. Subárvore apresentada como raiz é rejeitada
+  quando expõe `memory.current`, em vez de assumir ancestrais sem limites. Sem modificar controles.
+- Dez testes de saúde do host/hierarquia passaram três repetições: parser, políticas, limites
+  herdados, `max`, saturação, PSI, caminhos, symlink, filesystem incorreto e leitura real do próprio
+  cgroup. Gate comum integral passou com 27 Vitest, 66 E2E e todas as suites Rust/doctests/builds.
+  A campanha com unidade transitória continua pendente: diagnóstico somente leitura deste host
+  retorna `user@1000.service=failed`, `MainPID=0`, `Result=signal`, `ExecMainStatus=9`; conexões via
+  bus local, socket privado e transporte machine foram recusadas. Nenhum restart foi executado.
 
 ---
 

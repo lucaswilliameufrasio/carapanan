@@ -1094,6 +1094,11 @@ fn preparation_spec<'input>(
     paths: &'input [PathBuf],
 ) -> carapana_daemon::SandboxPreparationSpec<'input> {
     carapana_daemon::SandboxPreparationSpec {
+        // Permissive fixture policy, not calibrated production defaults.
+        host_memory_policy: carapana_sandbox::host_memory::HostMemoryAdmissionPolicy::new(
+            0, 10000, 10000,
+        )
+        .unwrap(),
         command,
         runtime_files: runtime_specs("/usr/bin/cat"),
         runtime_policy: policy(),
@@ -1211,6 +1216,48 @@ fn should_release_capacity_after_failed_construction_or_ready_payload_drop() {
     drop(prepared); // Ready independently proves no exported consumer is still running.
     assert_eq!(admission.usage().unwrap().reserved_bytes, 0);
     assert_eq!(admission.usage().unwrap().quarantined_leases, 0);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_reject_host_memory_before_invalid_sources_and_release_the_nominal_reservation() {
+    let fixture = SnapshotFixture::new();
+    let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let command = preparation_command();
+    let paths = [PathBuf::from("missing-selected-file")];
+    let mut spec = preparation_spec(&command, &paths);
+    let required = spec.required_bytes().unwrap();
+    spec.host_memory_policy =
+        carapana_sandbox::host_memory::HostMemoryAdmissionPolicy::new(u64::MAX, 10000, 10000)
+            .unwrap();
+    spec.runtime_files = vec![
+        RuntimeFileSpec::new(
+            PathBuf::from("/usr/bin/carapana-no-such-runtime-fixture"),
+            PathBuf::from("/runtime/bin/program"),
+            RuntimeFileRole::Executable,
+            [0; 32],
+        )
+        .unwrap(),
+    ];
+    let mut admissions = carapana_storage::PreparationAdmissionStore::open(
+        fixture.database(),
+        carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare(
+            spec,
+            &fixture.metadata(),
+            &mut artifacts,
+            &mut admissions,
+            1000,
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::HostMemory(
+            carapana_sandbox::host_memory::HostMemoryError::InsufficientAvailable
+        ))
+    ));
+    assert_eq!(admissions.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(admissions.usage().unwrap().quarantined_leases, 0);
     assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
 }
 

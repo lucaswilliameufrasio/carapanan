@@ -1295,3 +1295,43 @@ desativados.
   confirmado podem voltar a pronto. Não usar TTL ou contador de processo como prova de consumidores.
 - Preferido a reservar depois do memfd ou liberar a lease antes dos buffers. Recovery de órfãos,
   fairness/pressão real, UI autenticada e conteúdo/segredos continuam gates separados.
+
+## PD-53 — Gate explícito de disponibilidade e pressão do host Linux
+
+**Data:** 24 de outubro de 2026
+
+**Status:** implementação interna; sem defaults finais, ativação de tools ou promessa de RSS total.
+
+- Além do ledger nominal, consultar `MemAvailable` e PSI de memória (`some/full avg10`) diretamente
+  do kernel, com leituras bounded e parser estrito. Política explícita define margem disponível e
+  tetos PSI em basis points; não aceitar amostras do modelo/UI como evidência de saúde do host.
+  Ausência, formato inválido e overflow bloqueiam, sem fallback para RAM total ou pressão zero.
+- Reservar capacidade compartilhada primeiro e verificar saúde antes de criar payloads; reamostrar
+  antes da execução aprovada. Rejeição não espera em fila nem aumenta limites. Política permanece
+  imutável com a proposta para review. Testes usam somente leituras reais/sintéticas, sem produzir OOM.
+- É gate do host, não leitura de RSS nem garantia atômica contra outras aplicações: PSI é média
+  histórica e disponibilidade pode mudar após a leitura. O cgroup do alvo continua obrigatório;
+  limites herdados do cgroup do controlador, monitoramento durante execução, fairness, recovery de
+  órfãos e benchmarks por máquina continuam pendentes. Não anunciar este sinal como proteção completa.
+- Preferido a assumir que reserva nominal implica ausência de pressão ou escolher defaults finais
+  em um Ryzen como substituto dos demais hosts. Revisitar limites só com benchmarks autorizados.
+
+## PD-54 — Considerar os limites herdados do controlador na admissão
+
+**Data:** 24 de outubro de 2026
+
+**Status:** composição interna com PD-53; sem alteração de unidades ou controles do host.
+
+- A saúde do host não revela a margem dentro de uma sessão/container limitada. Ler membership
+  cgroup v2 do próprio controlador e percorrer a hierarquia visível via descritores no mount padrão,
+  sem seguir symlinks. Verificar o filesystem cgroup2 e limitar profundidade, paths e leituras.
+- Combinar `MemAvailable` com a menor margem `memory.max/high - memory.current` entre os ancestrais;
+  usar o maior PSI `some/full avg10` observado. `max` significa sem teto naquele nível, não pressão
+  zero nem permissão para ignorar um ancestral. Confirmar membership antes/depois da leitura e falhar
+  fechado em mudança, dados inválidos, mount não suportado ou controles ausentes. Raiz que expõe
+  `memory.current` indica subárvore/namespace com ancestrais ocultos e é rejeitada, não presumida global.
+- Reutilizar a mesma política explícita/imutável e as mesmas fronteiras de PD-53. Somente leitura:
+  não habilitar controllers, mover o controlador, alterar limites ou reiniciar serviços.
+- Não é amostragem atômica nem prova de RSS individual: contadores podem mudar, e ancestrais ocultos
+  por cgroup namespace/mount não são observáveis. A configuração suportada exige hierarquia padrão
+  visível; isolamento do alvo e calibração continuam provas independentes.

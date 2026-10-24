@@ -37,6 +37,7 @@ impl SandboxExecutionLimits {
 #[derive(Debug)]
 pub enum SandboxExecutionError {
     Approval(CommandApprovalError),
+    HostMemory(carapana_sandbox::host_memory::HostMemoryError),
     MissingReservedWorkspace,
     PhysicalWorkspaceMismatch,
     StagingChanged,
@@ -48,6 +49,7 @@ impl fmt::Display for SandboxExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Approval(_) => "sandbox approval is no longer valid",
+            Self::HostMemory(_) => "sandbox host memory admission is no longer valid",
             Self::MissingReservedWorkspace => {
                 "sandbox execution requires reserved selected snapshots"
             }
@@ -141,6 +143,9 @@ impl ApprovalSubject for SandboxExecutionProposal<'_> {
 // payload. Never accept a generic external ApprovalSubject plus an unrelated launch argument.
 pub(super) trait ReviewedSandboxSubject<'store>: ApprovalSubject {
     fn execution(&self) -> &SandboxExecutionProposal<'store>;
+    fn validate_preparation(&self) -> Result<(), SandboxExecutionError> {
+        Ok(())
+    }
 }
 impl<'store> ReviewedSandboxSubject<'store> for SandboxExecutionProposal<'store> {
     fn execution(&self) -> &SandboxExecutionProposal<'store> {
@@ -210,6 +215,7 @@ impl ProcessSupervisor {
                         .validate_for_effect(scope.workspace_id, scope.task, clock())
                         .map_err(SandboxExecutionError::Approval)?;
                     if let AdmissionCheck::BeforeEffect = phase {
+                        approval.proposal().validate_preparation()?;
                         if actual_limits != proposal.limits.resources {
                             return Err(SandboxExecutionError::LimitMismatch);
                         }
