@@ -4445,6 +4445,10 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   Oito testes Python passaram três repetições; wrapper real e gate integral de Rust 1.99.1 passaram
   com 27 Vitest, 66 E2E, 130 testes de storage, demais suites Rust/doctests/Clippy/builds.
   Log: `/var/tmp/carapanan-verify-probe-cleanup-final-20261025.log`. Confirmação macOS depende do novo CI.
+- Correção publicada em `b70d8f9`. CI `40175166034` confirmado verde em Web/Linux e Rust/Ubuntu/macOS
+  com Rust 1.99.1. Isso fecha a regressão do runner no macOS do CI, não a medição manual do Mac M3/16 GB.
+  O lote funcional está publicado; Mac de referência, workloads completos para defaults finais,
+  recovery de crash durante execução sem prova e gates de conteúdo/segredos/UI continuam abertos.
 
 ---
 
