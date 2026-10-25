@@ -17,6 +17,25 @@ MAX_OUTPUT = 8192
 TIMEOUT = 30
 
 
+def stop_and_reap(process):
+    # poll() may reap a child that already exited; never signal its recycled group id afterward.
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            # Group signaling can be refused on macOS. Popen retains/rechecks the directly owned
+            # child; do not broaden discovery or attempt to signal an arbitrary replacement PID.
+            try:
+                process.kill()
+            except OSError:
+                # A signal error is acceptable only if wait below proves that this child ended.
+                pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        raise TimeoutError("probe cleanup could not be confirmed") from None
+
+
 def validate_probe(value):
     if not isinstance(value, dict):
         raise ValueError("invalid probe result")
@@ -79,14 +98,11 @@ def measure(binary):
                 if process.returncode != 0:
                     raise ValueError("probe failed")
         finally:
-            if usage is None:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                _, status, _ = os.wait4(process.pid, 0)
-                process.returncode = os.waitstatus_to_exitcode(status)
-            process.stdout.close()
+            try:
+                if usage is None:
+                    stop_and_reap(process)
+            finally:
+                process.stdout.close()
     return {
         "schema_version": 1,
         "binary_sha256": digest.hexdigest(),

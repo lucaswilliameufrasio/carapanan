@@ -4432,6 +4432,19 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   Rust/doctests/Clippy/builds. Log: `/var/tmp/carapanan-verify-rust-1.99.1-launcher-final-20261025.log`.
   Nenhuma assertion de shutdown/exit code ou timeout foi removida. O operador autorizou commit/push
   desse lote após o gate, mantendo PR sem merge/deploy e ferramentas reais inertes.
+- Lote PD-55–61 publicado em `97d39c7` na branch `feat/delivery-2-local-ipc` após o gate local de
+  Rust 1.99.1 e scan staged redigido do Gitleaks sem findings. Os scripts já estão disponíveis para
+  a validação manual do Mac. Sem merge/deploy.
+- CI `40174283239` passou Web/Linux e Rust/Ubuntu; Rust/macOS encontrou `EPERM` em `killpg` no
+  cleanup do teste de output excessivo do runner Python. A exceção interrompia wait/fechamento do
+  pipe. O runner agora verifica se o filho já saiu antes de sinalizar e, se sinal de grupo falhar,
+  usa somente o handle do filho próprio; espera bounded comprova término ou reporta cleanup incerto.
+  O pipe fecha inclusive em erro. Não há sudo, busca por PID/nome alheio ou afirmação de sandbox.
+- Regressão local com `EPERM` injetado e filho/pipe reais falhou sem correção e passou com ela;
+  verifica reap e fechamento do pipe. Teste separado conserva erro quando cleanup não é comprovado.
+  Oito testes Python passaram três repetições; wrapper real e gate integral de Rust 1.99.1 passaram
+  com 27 Vitest, 66 E2E, 130 testes de storage, demais suites Rust/doctests/Clippy/builds.
+  Log: `/var/tmp/carapanan-verify-probe-cleanup-final-20261025.log`. Confirmação macOS depende do novo CI.
 
 ---
 

@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 spec = importlib.util.spec_from_file_location("admission_probe", Path(__file__).parents[1] / "measure-admission-probe.py")
@@ -67,6 +67,33 @@ class AdmissionProbeTests(unittest.TestCase):
                 with self.assertRaises(TimeoutError):
                     probe.measure(executable)
 
+    def test_reaps_the_owned_child_when_group_kill_is_refused(self):
+        children = []
+        original_spawn = subprocess.Popen
+
+        def spawn(*arguments, **options):
+            child = original_spawn(*arguments, **options)
+            children.append(child)
+            return child
+
+        with tempfile.TemporaryDirectory() as root:
+            executable = self.executable(root, "printf '%09000d' 0\nexec /bin/sleep 5")
+            try:
+                with patch.object(probe.subprocess, "Popen", side_effect=spawn):
+                    with patch.object(probe.os, "killpg", side_effect=PermissionError("synthetic group refusal")):
+                        with self.assertRaisesRegex(ValueError, "output budget exceeded"):
+                            probe.measure(executable)
+                self.assertEqual(len(children), 1)
+                self.assertIsNotNone(children[0].returncode)
+                self.assertTrue(children[0].stdout.closed)
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=2)
+                    if not child.stdout.closed:
+                        child.stdout.close()
+
     def test_repository_rust_pin_wins_over_an_unavailable_global_override(self):
         root = Path(__file__).parents[2]
         pin_line = next(line for line in (root / "rust-toolchain.toml").read_text().splitlines() if line.startswith('channel = "'))
@@ -76,6 +103,15 @@ class AdmissionProbeTests(unittest.TestCase):
         result = subprocess.run(["bash", str(root / "scripts/rust-toolchain-command.sh"), "rustc", "--version"],
                                 env=environment, check=True, text=True, capture_output=True)
         self.assertTrue(result.stdout.startswith("rustc " + pin + " "))
+
+    def test_does_not_hide_unconfirmed_cleanup_after_signal_refusal(self):
+        child = Mock(pid=123456789)
+        child.poll.return_value = None
+        child.kill.side_effect = PermissionError("synthetic child refusal")
+        child.wait.side_effect = subprocess.TimeoutExpired("synthetic-probe", 5)
+        with patch.object(probe.os, "killpg", side_effect=PermissionError("synthetic group refusal")):
+            with self.assertRaisesRegex(TimeoutError, "cleanup could not be confirmed"):
+                probe.stop_and_reap(child)
 
 
 if __name__ == "__main__":
