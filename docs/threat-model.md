@@ -1,6 +1,6 @@
 # Carapanã — threat model e gates de execução
 
-**Data:** 21 de outubro de 2026. **Escopo:** estado atual do Delivery 4.
+**Data:** 25 de outubro de 2026. **Escopo:** estado atual do Delivery 4.
 
 Este documento distingue primitives verificadas de garantias de um executor ainda não implementado.
 Ler junto de [PD-23–33](product-decisions.md) e do [plano](development-plan.md#158-delivery-4--core-coding-tools).
@@ -39,24 +39,24 @@ Somente etapas implementadas e testadas podem ser ligadas. Um probe positivo nã
 
 ## Matriz de ameaças e evidência atual
 
-| Ameaça                                      | Mitigação existente e evidência                                                                                                        | Lacuna/gate bloqueante                                                                                      |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Traversal/symlink/substituição do workspace | `carapana-storage::workspace`: acesso relativo a descritores, `NOFOLLOW`, identidade, limites; testes reais de substituição e symlinks | Revalidar no futuro ponto de efeito; não há transação filesystem global                                     |
-| Segredos em nomes protegidos                | Leitura/search/snapshot recusam nomes conhecidos, inclusive env e credenciais                                                          | Denylist de nomes não classifica segredos em conteúdo/output; não montar o repo inteiro para comandos       |
-| Config maliciosa ampliando poderes          | `WorkspaceTrust`, grants exatos por action/resource/task, precedência de config; testes em `carapana-core`                             | Ainda modelam decisões; enforcement de execução não está ligado                                             |
-| Prompt injection de provider/tool/MCP       | `ToolCallRequested` é evento de dados, sem executor; testes de provider                                                                | Não interpretar instruções embutidas como autorização; preservar fronteira ao introduzir executor           |
-| Aprovação reaproveitada ou obsoleta         | Grants `Once` não clonáveis, task/expiry/action/resource exatos; invalidação de approval pendente                                      | Vincular executável/argv/cwd/mounts/rede e conteúdo de edição à aprovação real                              |
-| Edição sobrescrevendo trabalho              | Snapshot, comparação de bytes/metadata e rename relativo, recusa de metadata não preservável                                           | Não é compare-and-swap contra processos externos; concorrência precisa confirmação própria                  |
-| Exfiltração filesystem/rede por comando     | Probe Bubblewrap fixo verifica readonly, namespaces e loopback isolado, ambiente limpo                                                 | Não há launcher para comandos gerais, política de mounts mínimos nem controle de saída para provider        |
-| Elevação de privilégios                     | Probe exige backend root-owned sem setuid/gravação ampla, `NoNewPrivs=1` e capabilities zeradas                                        | Verificação completa no processo de execução; seccomp e superfície de syscalls ainda não comprovados        |
-| Sandbox ausente ou parcialmente funcional   | Probe retorna erro sem fallback; macOS é unsupported; gate opt-in exige prova positiva                                                 | Não reportar proteção do runtime a partir de tests que aceitam indisponibilidade segura                     |
-| Processo órfão/fuga de lifecycle            | Supervisor de grupos próprio, host com pipe de controle e testes de shutdown/restart/descendentes                                      | Integrar o futuro launcher ao supervisor, budgets, cancelamento e isolamento; não matar por nome/PID alheio |
-| Output/RAM/disco ilimitados                 | Store reserva quota, stream limitado, SHA-256, item count e cleanup bounded; probe limita pipes/tempo                                  | Captura streaming de stdout/stderr de comandos gerais ainda não existe; não usar buffer ilimitado           |
-| Crash/catálogo e arquivos divergentes       | Estados pending/ready/deleting, quota de órfãos, graça de sete dias, retries de ID limitados; testes reais                             | Não prometer atomicidade DB+filesystem; metadata durável ausente/corrompida é preservada e reportada        |
-| Um catálogo apagando blobs de outro         | Store aceita só `sessions.sqlite3` por diretório privado; teste de recusa antes de I/O                                                 | Não compartilhar diretório de blobs entre catálogos independentes nem fazer restore isolado sem revisão     |
-| Exposição em diagnósticos/logs              | Probe imprime somente resultado fixo; raw stdout/stderr de falha não sai no CLI; tipos sensíveis evitam Debug onde documentado         | Revisar erros e todos os novos sinks; proteção de conteúdo não é inferida de privacidade do diretório       |
-| Dispositivo pareado roubado/rede remota     | IPC local privado e nenhuma execução remota deste slice                                                                                | Pairing/revogação, políticas globais e transporte remoto pertencem a deliveries futuros                     |
-| Supply-chain/update comprometido            | Lockfile, dependências exatas existentes, CI de build/test                                                                             | Assinatura/instalação/rollback e verificação de binários não estão implementados como fluxo de update real  |
+| Ameaça                                      | Mitigação existente e evidência                                                                                                        | Lacuna/gate bloqueante                                                                                          |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Traversal/symlink/substituição do workspace | `carapana-storage::workspace`: acesso relativo a descritores, `NOFOLLOW`, identidade, limites; testes reais de substituição e symlinks | Revalidar no futuro ponto de efeito; não há transação filesystem global                                         |
+| Segredos em nomes protegidos                | Leitura/search/snapshot recusam nomes conhecidos, inclusive env e credenciais                                                          | Denylist de nomes não classifica segredos em conteúdo/output; não montar o repo inteiro para comandos           |
+| Config maliciosa ampliando poderes          | `WorkspaceTrust`, grants exatos, precedência de config; propostas internas imutáveis vinculam limites, runtime e snapshots             | Origem autenticada UI/IPC e confiança em extensões ainda não ligadas ao executor                                |
+| Prompt injection de provider/tool/MCP       | `ToolCallRequested` é evento de dados, sem executor; testes de provider                                                                | Não interpretar instruções embutidas como autorização; preservar fronteira ao introduzir executor               |
+| Aprovação reaproveitada ou obsoleta         | Tokens de uso único para proposta exata de edição/execução; expiry/revogação revalidadas antes do efeito e durante execução            | Falta origem autenticada UI/IPC e classificação de conteúdo; token interno não autentica clique/evento          |
+| Edição sobrescrevendo trabalho              | Snapshot, comparação de bytes/metadata e rename relativo, recusa de metadata não preservável                                           | Não é compare-and-swap contra processos externos; concorrência precisa confirmação própria                      |
+| Exfiltração filesystem/rede por comando     | Launcher interno monta somente arquivos selados de runtime e seleção, readonly, ambiente limpo, sem cgroupfs/rede do host              | Conteúdo/segredos e controle de saída para provider ainda bloqueiam comandos gerais/tools reais                 |
+| Elevação de privilégios                     | Probe exige backend root-owned sem setuid/gravação ampla, `NoNewPrivs=1` e capabilities zeradas                                        | Verificação completa no processo de execução; seccomp e superfície de syscalls ainda não comprovados            |
+| Sandbox ausente ou parcialmente funcional   | Probe retorna erro sem fallback; macOS é unsupported; gate opt-in exige prova positiva                                                 | Não reportar proteção do runtime a partir de tests que aceitam indisponibilidade segura                         |
+| Processo órfão/fuga de lifecycle            | Launcher integrado ao guardian/cgroup, kill switch privado, cleanup/reap; testes de perda do controlador e descendente com setsid      | Recovery de leases órfãs ainda conserva cobrança; não inferir término por PID/idade ou matar processos alheios  |
+| Output/RAM/disco ilimitados                 | Captura bounded/timeout; quota de artifacts; ledger global e por workspace, sinais host/cgroup antes/durante execução; testes reais    | Sem hard quota global de RSS/disco, calibração final ou scheduler justo; raw tails continuam sem sinks externos |
+| Crash/catálogo e arquivos divergentes       | Estados pending/ready/deleting, quota de órfãos, graça de sete dias, retries de ID limitados; testes reais                             | Não prometer atomicidade DB+filesystem; metadata durável ausente/corrompida é preservada e reportada            |
+| Um catálogo apagando blobs de outro         | Store aceita só `sessions.sqlite3` por diretório privado; teste de recusa antes de I/O                                                 | Não compartilhar diretório de blobs entre catálogos independentes nem fazer restore isolado sem revisão         |
+| Exposição em diagnósticos/logs              | Probe imprime somente resultado fixo; raw stdout/stderr de falha não sai no CLI; tipos sensíveis evitam Debug onde documentado         | Revisar erros e todos os novos sinks; proteção de conteúdo não é inferida de privacidade do diretório           |
+| Dispositivo pareado roubado/rede remota     | IPC local privado e nenhuma execução remota deste slice                                                                                | Pairing/revogação, políticas globais e transporte remoto pertencem a deliveries futuros                         |
+| Supply-chain/update comprometido            | Lockfile, dependências exatas existentes, CI de build/test                                                                             | Assinatura/instalação/rollback e verificação de binários não estão implementados como fluxo de update real      |
 
 ## Prova positiva e testes de recusa
 
@@ -160,7 +160,38 @@ a campanha de power-loss, auditoria independente ou prova contra atacantes com a
    PD-54 considera também a menor margem entre ancestrais visíveis do controlador e seu maior PSI,
    validando cgroup2, descritores no-follow e membership antes/depois. Raiz virtual com contadores
    é recusada por ocultar ancestrais. Leituras não são snapshot atômico, nem autorização para alterar
-   hierarquia ou reiniciar serviços; o monitoramento contínuo e recovery de órfãos seguem pendentes.
+   hierarquia ou reiniciar serviços. PD-55 reamostra a mesma política no loop de execução admitida,
+   sem reservar o teto do alvo duas vezes; a primeira amostra é imediata e as seguintes espaçadas
+   por ao menos 100 ms monotônicos. Violações/erros encerram o escopo antes de retornar; cleanup
+   incerto tem precedência e mantém quarentena. Não há garantia contra OOM entre amostras ou limite
+   global de RSS, e suspensão/carga pode atrasar o monitor. Recovery de órfãos segue separado.
+   PD-56 adiciona tetos explícitos de bytes/leases por identidade física do workspace na mesma
+   transação dos limites globais. Sessões no mesmo diretório compartilham conta; entradas antigas
+   sem identidade são cobradas em todas as contas, sem liberação retroativa. API sem identidade
+   não contorna isolamento configurado. Quarentena conserva a conta. Isso não é escalonamento justo
+   nem mínimo garantido para cada workspace; concorrentes ainda podem consumir a capacidade total.
+   PD-57 permite reconciliar apenas novos preparos cuja proveniência persistida registra ausência de
+   exportação: exige controle privado de identidade exata e lock exclusivo livre. O controlador marca
+   exportação duravelmente antes de iniciar guardian; erro ou commit incerto impede o efeito. Leases
+   antigas/raw/exportadas continuam cobradas. Substituição/ausência de controles falha fechada. Lock
+   livre sozinho não comprova cleanup após exportar; essa recuperação continua bloqueada. A memória
+   recuperada não implica remoção de staging/artifacts, cujas quotas e protocolos são independentes.
+   PD-58 persiste separadamente a conclusão dos consumidores após cleanup/reap comprovados e antes
+   de Ready. Com lock do dono livre, recovery explícito dessa fase pode recuperar imagens retidas
+   por um controlador que morreu depois da execução. Nova exportação invalida a confirmação antes
+   do efeito; panic/erros de processo não a produzem. Isso não recupera crash durante execução ou
+   ausência de prova persistida, nem transforma morte do controlador em prova de término do alvo.
+   PD-59 adiciona somente espera explícita de capacidade bounded e persistida, com FIFO por workspace
+   e rotação entre elegíveis. Claim e reserva são atômicos e não autorizam execução. Reinício não
+   restaura aprovação nem inicia consumidores. Cancelar/expirar espera não libera leases ativas.
+   A política opt-in bloqueia admissão imediata como bypass; sem fila configurada conserva o contrato
+   anterior. Justiça de turnos não garante latência, capacidade mínima ou progresso se os trabalhos
+   ativos não terminarem; tickets não são fila durável de comandos executáveis.
+   PD-60 distingue no catálogo novas intenções gerenciadas anteriores ao registro de posse. Uma
+   reconciliação IMMEDIATE que vence essa fase impede o registro por FK, antes de qualquer alocação.
+   Isso não reclassifica leases antigas/raw. Arquivos de controle sem registro podem sobreviver a
+   crash; não são usados como prova nem apagados por suposição. A criação recusa excesso num orçamento
+   finito de entradas de controle, sem alegar hard quota de disco ou aumentar limites automaticamente.
 4. Execução local explicitamente aprovada e testes adversariais reais; somente depois conectar tools.
 5. Git/worktree operacional e aplicação de edições com os mesmos gates, preservação e evidência de validação.
    PD-42 integra aprovação tipada de uma edição ao snapshot/diff e à escrita atômica existente. O efeito

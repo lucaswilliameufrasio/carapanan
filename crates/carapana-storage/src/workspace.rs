@@ -31,6 +31,15 @@ pub struct WorkspaceDirectoryIdentity {
     inode: u64,
 }
 
+impl WorkspaceDirectoryIdentity {
+    pub(crate) fn admission_key(&self) -> [u8; 16] {
+        let mut key = [0_u8; 16];
+        key[..8].copy_from_slice(&self.device.to_be_bytes());
+        key[8..].copy_from_slice(&self.inode.to_be_bytes());
+        key
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceDirectoryEntryKind {
     RegularFile,

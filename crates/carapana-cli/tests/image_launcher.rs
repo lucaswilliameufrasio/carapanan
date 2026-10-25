@@ -420,7 +420,10 @@ fn observed_scoped_target(unique_argument: &str) -> bool {
     // Observe only this explicitly delegated test parent's own job groups. Never discover, signal,
     // or inspect unrelated host processes. A unique synthetic argv proves the final target exec'd.
     let root = std::env::var_os("CARAPANA_TEST_CGROUP_PARENT").unwrap();
-    for entry in fs::read_dir(root).unwrap().take(64) {
+    // cgroup control files count too: parallel fixtures have exceeded the old 64-entry prefix.
+    // Keep an explicit finite budget, but fail rather than silently hiding a later live target.
+    for (index, entry) in fs::read_dir(root).unwrap().take(1025).enumerate() {
+        assert!(index < 1024, "synthetic cgroup observation budget exceeded");
         let entry = entry.unwrap();
         if !entry
             .file_name()
@@ -1262,6 +1265,220 @@ fn should_reject_host_memory_before_invalid_sources_and_release_the_nominal_rese
 }
 
 #[test]
+fn should_charge_all_sessions_of_one_physical_workspace_before_preparing_another_image() {
+    let fixture = SnapshotFixture::new();
+    let other_fixture = SnapshotFixture::new();
+    let source = fixture.metadata();
+    let other_source = other_fixture.metadata();
+    let command = preparation_command();
+    let paths = [PathBuf::from("input.txt")];
+    let required = preparation_spec(&command, &paths).required_bytes().unwrap();
+    let policy = carapana_storage::PreparationAdmissionPolicy::with_workspace_limits(
+        2 * required,
+        2,
+        required,
+        1,
+    )
+    .unwrap();
+    let mut first_store =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let mut second_store =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let observer =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let mut first_artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let mut second_artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let first = carapana_daemon::AdmittedSandboxProposal::prepare(
+        preparation_spec(&command, &paths),
+        &source,
+        &mut first_artifacts,
+        &mut first_store,
+        1,
+    )
+    .unwrap();
+    let missing = [PathBuf::from("missing-selected-file")];
+    let mut invalid = preparation_spec(&command, &missing);
+    invalid.runtime_files = vec![
+        RuntimeFileSpec::new(
+            PathBuf::from("/usr/bin/carapana-no-such-runtime-fixture"),
+            PathBuf::from("/runtime/bin/program"),
+            RuntimeFileRole::Executable,
+            [0; 32],
+        )
+        .unwrap(),
+    ];
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare(
+            invalid,
+            &source,
+            &mut second_artifacts,
+            &mut second_store,
+            2
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Admission(
+            carapana_storage::PreparationAdmissionError::WorkspaceCapacityExceeded
+        ))
+    ));
+    let other = carapana_daemon::AdmittedSandboxProposal::prepare(
+        preparation_spec(&command, &paths),
+        &other_source,
+        &mut second_artifacts,
+        &mut second_store,
+        3,
+    )
+    .unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 2 * required);
+    assert_eq!(
+        observer
+            .workspace_usage(&source.directory_identity())
+            .unwrap()
+            .reserved_bytes,
+        required
+    );
+    assert_eq!(
+        observer
+            .workspace_usage(&other_source.directory_identity())
+            .unwrap()
+            .reserved_bytes,
+        required
+    );
+    first.release().unwrap();
+    assert_eq!(
+        observer
+            .workspace_usage(&source.directory_identity())
+            .unwrap()
+            .reserved_bytes,
+        0
+    );
+    assert_eq!(
+        observer
+            .workspace_usage(&other_source.directory_identity())
+            .unwrap()
+            .reserved_bytes,
+        required
+    );
+    other.release().unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(first_artifacts.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_prepare_queued_images_only_on_their_current_fair_turn() {
+    let fixture = SnapshotFixture::new();
+    let other_fixture = SnapshotFixture::new();
+    let source = fixture.metadata();
+    let other_source = other_fixture.metadata();
+    let command = preparation_command();
+    let paths = [PathBuf::from("input.txt")];
+    let required = preparation_spec(&command, &paths).required_bytes().unwrap();
+    let policy = carapana_storage::PreparationAdmissionPolicy::with_workspace_limits(
+        2 * required,
+        2,
+        required,
+        1,
+    )
+    .unwrap();
+    let mut first_store =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    first_store
+        .configure_queue(
+            carapana_storage::PreparationQueuePolicy::new(4, 2, Duration::from_secs(10)).unwrap(),
+        )
+        .unwrap();
+    let a1 = first_store
+        .enqueue_preparation(&source.directory_identity(), required, 1)
+        .unwrap();
+    let a2 = first_store
+        .enqueue_preparation(&source.directory_identity(), required, 1)
+        .unwrap();
+    let b1 = first_store
+        .enqueue_preparation(&other_source.directory_identity(), required, 1)
+        .unwrap();
+    let mut second_store =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let mut observer =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let mut first_artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let mut second_artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 0);
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare(
+            preparation_spec(&command, &paths),
+            &source,
+            &mut first_artifacts,
+            &mut first_store,
+            2
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Admission(
+            carapana_storage::PreparationAdmissionError::QueueRequired
+        ))
+    ));
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare_queued(
+            preparation_spec(&command, &paths),
+            &source,
+            &mut first_artifacts,
+            &mut first_store,
+            &a2,
+            2
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Admission(
+            carapana_storage::PreparationAdmissionError::QueueNotReady
+        ))
+    ));
+    assert!(matches!(
+        carapana_daemon::AdmittedSandboxProposal::prepare_queued(
+            preparation_spec(&command, &paths),
+            &other_source,
+            &mut first_artifacts,
+            &mut first_store,
+            &a1,
+            2
+        ),
+        Err(carapana_daemon::AdmittedSandboxError::Admission(
+            carapana_storage::PreparationAdmissionError::QueueNotReady
+        ))
+    ));
+    let first = carapana_daemon::AdmittedSandboxProposal::prepare_queued(
+        preparation_spec(&command, &paths),
+        &source,
+        &mut first_artifacts,
+        &mut first_store,
+        &a1,
+        2,
+    )
+    .unwrap();
+    let other = carapana_daemon::AdmittedSandboxProposal::prepare_queued(
+        preparation_spec(&command, &paths),
+        &other_source,
+        &mut second_artifacts,
+        &mut second_store,
+        &b1,
+        2,
+    )
+    .unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 2 * required);
+    assert!(
+        !observer.cancel_preparation(&a1).unwrap(),
+        "claim is not a cancelable waiting request anymore"
+    );
+    first.release().unwrap();
+    let next = carapana_daemon::AdmittedSandboxProposal::prepare_queued(
+        preparation_spec(&command, &paths),
+        &source,
+        &mut first_artifacts,
+        &mut first_store,
+        &a2,
+        3,
+    )
+    .unwrap();
+    assert!(observer.pending_preparations(3).unwrap().is_empty());
+    next.release().unwrap();
+    other.release().unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
 fn should_keep_admission_through_review_execution_and_payload_release() {
     let Some(mut parent) = delegated_parent() else {
         return;
@@ -1555,5 +1772,380 @@ fn should_quarantine_admission_after_a_controller_panic_before_effect() {
     drop(prepared);
     assert_eq!(admissions.usage().unwrap().reserved_bytes, required);
     assert_eq!(admissions.usage().unwrap().quarantined_leases, 1);
+    assert_eq!(admissions.recover_unexported().unwrap().recovered_leases, 0);
+    assert_eq!(admissions.recover_completed().unwrap().recovered_leases, 0);
+    assert_eq!(admissions.usage().unwrap().reserved_bytes, required);
+    assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
+}
+
+#[test]
+fn should_recover_abandoned_prepared_images_only_before_the_export_barrier() {
+    const CHILD: &str = "CARAPANA_PREPARED_IMAGE_EXIT_FIXTURE";
+    if let Some(root) = std::env::var_os(CHILD) {
+        let fixture = SnapshotFixture(PathBuf::from(root));
+        let source = fixture.metadata();
+        let command = preparation_command();
+        let paths = [PathBuf::from("input.txt")];
+        let spec = preparation_spec(&command, &paths);
+        let required = spec.required_bytes().unwrap();
+        let policy = carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap();
+        let mut admissions =
+            carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+        let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+        let _prepared = carapana_daemon::AdmittedSandboxProposal::prepare(
+            spec,
+            &source,
+            &mut artifacts,
+            &mut admissions,
+            1000,
+        )
+        .unwrap();
+        // Simulate loss without destructors after real memfd/staging construction, before export.
+        std::process::exit(0);
+    }
+    let fixture = SnapshotFixture::new();
+    let command = preparation_command();
+    let paths = [PathBuf::from("input.txt")];
+    let required = preparation_spec(&command, &paths).required_bytes().unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "should_recover_abandoned_prepared_images_only_before_the_export_barrier",
+        ])
+        .env_clear()
+        .env(CHILD, &fixture.0)
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("synthetic prepared owner exceeded deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let policy = carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap();
+    let mut admissions =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let staging_before = artifacts.usage().unwrap().reserved_bytes;
+    assert!(staging_before > 0);
+    assert_eq!(admissions.usage().unwrap().reserved_bytes, required);
+    let recovered = admissions.recover_unexported().unwrap();
+    assert_eq!(recovered.recovered_leases, 1);
+    assert_eq!(recovered.recovered_bytes, required);
+    assert_eq!(recovered.control_cleanup_failures, 0);
+    assert_eq!(admissions.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(
+        artifacts.usage().unwrap().reserved_bytes,
+        staging_before,
+        "memory reconciliation must not erase staging's independent disk reservation"
+    );
+}
+
+#[test]
+fn should_recover_images_after_proven_scope_cleanup_and_later_owner_loss() {
+    const CHILD: &str = "CARAPANA_COMPLETED_IMAGE_EXIT_FIXTURE";
+    if let Some(root) = std::env::var_os(CHILD) {
+        use carapana_core::command_approval::ApprovalSubject;
+        let mut parent = delegated_parent().unwrap();
+        let fixture = SnapshotFixture(PathBuf::from(root));
+        let source = fixture.metadata();
+        let command = preparation_command();
+        let paths = [PathBuf::from("input.txt")];
+        let spec = preparation_spec(&command, &paths);
+        let required = spec.required_bytes().unwrap();
+        let policy = carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap();
+        let mut admissions =
+            carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+        let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+        let prepared = carapana_daemon::AdmittedSandboxProposal::prepare(
+            spec,
+            &source,
+            &mut artifacts,
+            &mut admissions,
+            1000,
+        )
+        .unwrap();
+        let mut request = prepared.request_approval(100, 10).unwrap();
+        let token = request
+            .approve_by_operator(&request.id(), prepared.workspace(), prepared.task(), 11)
+            .unwrap();
+        let mut group = parent.prepare(prepared.limits().resources()).unwrap();
+        let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+            .unwrap()
+            .run_admitted_image_process(
+                token,
+                carapana_daemon::SandboxExecutionScope {
+                    session_id: "synthetic-completed-recovery",
+                    workspace_id: prepared.workspace(),
+                    task: prepared.task(),
+                    source: &source,
+                },
+                &mut group,
+                || 12,
+                || false,
+            )
+            .unwrap();
+        assert_eq!(output.exit_code(), Some(0));
+        assert_eq!(output.stdout_tail(), b"selected synthetic bytes\n");
+        group.verify_empty().unwrap();
+        group.release().unwrap();
+        // Consumer cleanup was persisted, but payloads/lease still belong to this dying owner.
+        std::process::exit(0);
+    }
+    let Some(_parent) = delegated_parent() else {
+        return;
+    };
+    let fixture = SnapshotFixture::new();
+    let command = preparation_command();
+    let paths = [PathBuf::from("input.txt")];
+    let required = preparation_spec(&command, &paths).required_bytes().unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "should_recover_images_after_proven_scope_cleanup_and_later_owner_loss",
+        ])
+        .env_clear()
+        .env(CHILD, &fixture.0)
+        .env(
+            "CARAPANA_TEST_CGROUP_PARENT",
+            std::env::var_os("CARAPANA_TEST_CGROUP_PARENT").unwrap(),
+        )
+        .env("CARAPANA_REQUIRE_CGROUP", "1")
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("synthetic completed owner exceeded deadline");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let policy = carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap();
+    let mut admissions =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    assert_eq!(admissions.usage().unwrap().reserved_bytes, required);
+    assert_eq!(admissions.recover_unexported().unwrap().recovered_leases, 0);
+    let report = admissions.recover_completed().unwrap();
+    assert_eq!(report.recovered_bytes, required);
+    assert_eq!(report.control_cleanup_failures, 0);
+    assert_eq!(admissions.usage().unwrap().reserved_bytes, 0);
+}
+
+struct MemoryMonitorFixture {
+    directory: PathBuf,
+    child: Option<Child>,
+}
+
+impl Drop for MemoryMonitorFixture {
+    fn drop(&mut self) {
+        // Also runs on assertion failure; touch only the fresh fixture and its owned child.
+        let _ = fs::write(self.directory.join("memory.high"), "max");
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = fs::remove_dir(&self.directory);
+    }
+}
+
+#[test]
+fn should_stop_a_running_image_when_the_controllers_real_memory_headroom_falls() {
+    const CHILD: &str = "CARAPANA_SYNTHETIC_MEMORY_MONITOR_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        // Parent owns this child and moves it only while it is blocked here, before any workload.
+        std::io::stdin().read_exact(&mut [0_u8; 1]).unwrap();
+        running_memory_headroom_child();
+        return;
+    }
+    let Some(_delegated) = delegated_parent() else {
+        return;
+    };
+    let parent = PathBuf::from(std::env::var_os("CARAPANA_TEST_CGROUP_PARENT").unwrap());
+    let membership = fs::read_to_string("/proc/self/cgroup").unwrap();
+    assert_eq!(
+        membership.trim(),
+        format!(
+            "0::/{}/runner",
+            parent.strip_prefix("/sys/fs/cgroup").unwrap().display()
+        )
+    );
+    let unit = parent.file_name().unwrap().to_str().unwrap();
+    assert!(unit.starts_with("carapana-cgroup-test-") && unit.ends_with(".service"));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = parent.join(format!("memory-monitor-{}-{nonce}", std::process::id()));
+    fs::create_dir(&directory).unwrap();
+    let mut fixture = MemoryMonitorFixture {
+        directory: directory.clone(),
+        child: None,
+    };
+    // This fixture changes only a fresh child of this invocation's exclusive transient unit.
+    // No load generator, host unit changes, memory.max reductions or global pressure are needed.
+    fixture.child = Some(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "should_stop_a_running_image_when_the_controllers_real_memory_headroom_falls",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .env("CARAPANA_TEST_CGROUP_PARENT", &parent)
+            .env("CARAPANA_REQUIRE_CGROUP", "1")
+            .env("TMPDIR", std::env::temp_dir())
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let child = fixture.child.as_mut().unwrap();
+    let outcome = (|| {
+        fs::write(directory.join("cgroup.procs"), child.id().to_string()).unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(&[1]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return Some(status);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    })();
+    // Undo only this fixture's high watermark before collecting a timed-out owned child.
+    fs::write(directory.join("memory.high"), "max").unwrap();
+    drop(fixture);
+    assert!(!directory.exists(), "fixture cgroup cleanup failed");
+    assert!(
+        outcome.is_some_and(|status| status.success()),
+        "isolated memory monitor proof failed or timed out"
+    );
+}
+
+fn running_memory_headroom_child() {
+    use carapana_core::command_approval::{ApprovalSubject, CommandProposal};
+    let mut parent = delegated_parent().unwrap();
+    let membership = fs::read_to_string("/proc/self/cgroup").unwrap();
+    let own_path = membership.trim().strip_prefix("0::/").unwrap();
+    let own = Path::new("/sys/fs/cgroup").join(own_path);
+    let test_parent = PathBuf::from(std::env::var_os("CARAPANA_TEST_CGROUP_PARENT").unwrap());
+    assert_eq!(own.parent(), Some(test_parent.as_path()));
+    assert!(
+        own.file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("memory-monitor-")
+    );
+    let fixture = SnapshotFixture::new();
+    let source = fixture.metadata();
+    let mut artifacts = carapana_storage::ArtifactStore::open(fixture.database()).unwrap();
+    let base = preparation_command();
+    let argument = format!("30.{}", std::process::id());
+    let command = CommandProposal::new(
+        base.workspace().clone(),
+        base.task().clone(),
+        base.executable().to_owned(),
+        vec![argument.clone().into()],
+        PathBuf::new(),
+    )
+    .unwrap();
+    let paths = [PathBuf::from("input.txt")];
+    let mut spec = preparation_spec(&command, &paths);
+    spec.runtime_files = runtime_specs("/usr/bin/sleep");
+    // Explicit fixture margin, not a production default. No synthetic sample is injected.
+    spec.host_memory_policy = carapana_sandbox::host_memory::HostMemoryAdmissionPolicy::new(
+        8 * 1024 * 1024,
+        10000,
+        10000,
+    )
+    .unwrap();
+    let required = spec.required_bytes().unwrap();
+    let policy = carapana_storage::PreparationAdmissionPolicy::new(required, 1).unwrap();
+    let mut admissions =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let prepared = carapana_daemon::AdmittedSandboxProposal::prepare(
+        spec,
+        &source,
+        &mut artifacts,
+        &mut admissions,
+        1000,
+    )
+    .unwrap();
+    let observer =
+        carapana_storage::PreparationAdmissionStore::open(fixture.database(), policy).unwrap();
+    let mut request = prepared.request_approval(100, 10).unwrap();
+    let token = request
+        .approve_by_operator(&request.id(), prepared.workspace(), prepared.task(), 11)
+        .unwrap();
+    let mut group = parent.prepare(prepared.limits().resources()).unwrap();
+    let started = Instant::now();
+    let mut observed = false;
+    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        .unwrap()
+        .run_admitted_image_process(
+            token,
+            carapana_daemon::SandboxExecutionScope {
+                session_id: "synthetic-running-memory",
+                workspace_id: prepared.workspace(),
+                task: prepared.task(),
+                source: &source,
+            },
+            &mut group,
+            || 12,
+            || {
+                assert_eq!(observer.usage().unwrap().reserved_bytes, required);
+                if !observed && observed_scoped_target(&argument) {
+                    observed = true;
+                    let current: u64 = fs::read_to_string(own.join("memory.current"))
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    // Leave some headroom; do not allocate to trigger pressure or risk a hard-limit OOM.
+                    fs::write(own.join("memory.high"), (current + 1024 * 1024).to_string())
+                        .unwrap();
+                }
+                started.elapsed() > Duration::from_secs(8)
+            },
+        );
+    fs::write(own.join("memory.high"), "max").unwrap();
+    assert!(observed, "memory change must follow target exec");
+    assert!(
+        matches!(
+            result,
+            Err(carapana_daemon::AdmittedSandboxError::Execution(
+                carapana_daemon::SandboxExecutionError::HostMemory(
+                    carapana_sandbox::host_memory::HostMemoryError::InsufficientAvailable
+                )
+            ))
+        ),
+        "running monitor must reject changed real headroom"
+    );
+    group.verify_empty().unwrap();
+    group.release().unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, required);
+    drop(request);
+    prepared.release().unwrap();
+    assert_eq!(observer.usage().unwrap().reserved_bytes, 0);
+    assert_eq!(observer.usage().unwrap().quarantined_leases, 0);
     assert_eq!(artifacts.usage().unwrap().reserved_bytes, 0);
 }

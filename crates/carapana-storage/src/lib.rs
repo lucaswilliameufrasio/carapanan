@@ -16,9 +16,10 @@ pub use artifact_store::{
     DEFAULT_ARTIFACT_STORE_QUOTA_BYTES, DEFAULT_MAX_ARTIFACT_BYTES, DEFAULT_ORPHAN_GRACE,
     StagingReservation,
 };
+pub use preparation_admission::queue::{PreparationQueuePolicy, PreparationQueueTicket};
 pub use preparation_admission::{
     PreparationAdmissionError, PreparationAdmissionPolicy, PreparationAdmissionStore,
-    PreparationAdmissionUsage, PreparationLease,
+    PreparationAdmissionUsage, PreparationLease, PreparationRecoveryReport,
 };
 pub use session_store::{
     PersistedSession, SessionStoreError, StoredSessionEvent, StoredSessionEventRecord,
@@ -205,7 +206,7 @@ impl SessionRegistry {
 }
 
 // Version 8 adds shared preparation admission; older executors must refuse this catalog.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 12;
 
 const INITIAL_SCHEMA: &str = r#"
 CREATE TABLE sessions (
@@ -506,11 +507,37 @@ impl Database {
                 transaction.execute_batch(INITIAL_SCHEMA)?;
                 transaction.execute_batch(ARTIFACT_SCHEMA)?;
                 transaction.execute_batch(preparation_admission::SCHEMA)?;
+                transaction.execute_batch(preparation_admission::RECOVERY_SCHEMA)?;
+                transaction.execute_batch(preparation_admission::queue::SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             1..=7 => {
                 transaction.execute_batch(ARTIFACT_SCHEMA)?;
                 transaction.execute_batch(preparation_admission::SCHEMA)?;
+                transaction.execute_batch(preparation_admission::RECOVERY_SCHEMA)?;
+                transaction.execute_batch(preparation_admission::queue::SCHEMA)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            8 => {
+                transaction.execute_batch(preparation_admission::MIGRATE_V8)?;
+                transaction.execute_batch(preparation_admission::MIGRATE_INTENT)?;
+                transaction.execute_batch(preparation_admission::RECOVERY_SCHEMA)?;
+                transaction.execute_batch(preparation_admission::queue::SCHEMA)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            9 => {
+                transaction.execute_batch(preparation_admission::MIGRATE_INTENT)?;
+                transaction.execute_batch(preparation_admission::RECOVERY_SCHEMA)?;
+                transaction.execute_batch(preparation_admission::queue::SCHEMA)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            10 => {
+                transaction.execute_batch(preparation_admission::MIGRATE_INTENT)?;
+                transaction.execute_batch(preparation_admission::queue::SCHEMA)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            11 => {
+                transaction.execute_batch(preparation_admission::MIGRATE_INTENT)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             SCHEMA_VERSION => {}

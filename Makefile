@@ -14,10 +14,11 @@ verify-web:
 
 # cargo test includes the real Unix PTY integration (Python 3 required).
 verify-rust:
-	cargo fmt --all -- --check
-	cargo clippy --workspace --all-targets --locked -- -D warnings
-	cargo test --workspace --locked
-	cargo build --workspace --locked
+	bash scripts/rust-toolchain-command.sh cargo fmt --all -- --check
+	python3 -m unittest discover -s scripts/tests -p 'test_admission_probe.py'
+	bash scripts/rust-toolchain-command.sh cargo clippy --workspace --all-targets --locked -- -D warnings
+	bash scripts/rust-toolchain-command.sh cargo test --workspace --locked
+	bash scripts/rust-toolchain-command.sh cargo build --workspace --locked
 
 dev:
 	@set -em; \
@@ -30,4 +31,4 @@ dev:
 	trap 'kill -TERM -- -$$web_pid 2>/dev/null || true; wait $$web_pid 2>/dev/null || true' EXIT; \
 	trap 'exit 130' INT; trap 'exit 143' TERM; \
 	printf 'Web: http://%s:%s · logs: %s\n' "$$web_host" "$$PORT" "$$web_log"; \
-	cargo run --manifest-path prototypes/terminal/Cargo.toml --
+	bash scripts/rust-toolchain-command.sh cargo run --manifest-path prototypes/terminal/Cargo.toml --

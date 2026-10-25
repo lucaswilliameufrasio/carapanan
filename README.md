@@ -16,7 +16,7 @@ não se conecta ao daemon. Não há provider real nem execução de tarefas/tool
 ## Experimentar
 
 Para desenvolver este protótipo: Node compatível com Vite 8, pnpm **12.9.1** e
-Rust **1.98.1** (versões em `mise.toml`). Isso não define dependências do usuário
+Rust **1.99.1** (JS em `mise.toml`, Rust em `rust-toolchain.toml`). Isso não define dependências do usuário
 final: o produto distribuído deverá funcionar sem instalar Node/Rust.
 
 ```sh
@@ -398,6 +398,12 @@ just verify
 `make verify-web` no Linux (incluindo snapshots) e `make verify-rust` no Linux
 e macOS (incluindo PTY). Toolchains vêm de `mise.toml` e `rust-toolchain.toml`;
 instalação JS e verificações Rust usam os lockfiles sem resolução nova.
+
+O gate Rust e a campanha delegada usam `scripts/rust-toolchain-command.sh`, que executa
+`rustup run` com a versão numérica de `rust-toolchain.toml`, sem instalar toolchains
+ou alterar defaults globais. Isso evita que um shim mise ou `RUSTUP_TOOLCHAIN` global
+substitua silenciosamente a versão verificada. Toolchain/componentes ausentes falham
+explicitamente; instale os requisitos separadamente antes do gate.
 
 Os E2E iniciam servidores próprios em loopback nas portas 4173 (preview) e 4174
 (dev), sem reutilizar processos existentes ou escolher outra porta silenciosamente.

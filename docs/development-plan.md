@@ -4302,6 +4302,137 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   deliberadamente e o próprio teste passou. Não houve alteração persistente do host.
 - PD-53/54 foram publicadas em `01467e0`; CI `40114438822` passou Web/Linux e Rust/Ubuntu/macOS.
 
+### Progresso do Delivery 4 — 25 de outubro de 2026
+
+- PD-55 adiciona reamostragem de memória ao loop de execução admitida: política imutável de
+  `MemAvailable`/PSI e hierarquia herdada, primeira leitura imediata, cadência monotônica de 100 ms.
+  Durante execução verifica margem remanescente, sem exigir novamente o teto inteiro já admitido.
+  Rejeição encerra o grupo; erro de cleanup/reap tem precedência e conserva quarentena.
+- Prova real em controlador-filho de subgrupo descartável: após observar o alvo executando,
+  reduz somente `memory.high` desse fixture (sem produzir OOM/pressão global), confirma erro
+  `InsufficientAvailable`, grupo vazio e reserva retida até descarte dos payloads. A regressão falhou
+  sem a checagem em execução e passou com ela. Dois testes unitários cobrem cadência e erros de leitura.
+- O observador de exec dos testes podia omitir grupos ao examinar só as primeiras 64 entradas do
+  pai; instrumentação observou 68 entradas entre controles e fixtures concorrentes. O orçamento agora
+  é explícito de 1024 entradas e excesso falha, sem prefixo silencioso que esconda alvo vivo.
+- Três campanhas transitórias consecutivas passaram: 9 testes backend cgroup, 6 captured cgroup e
+  23 image launcher por campanha. Gate integral local passou com Bubblewrap obrigatório: 27 Vitest,
+  66 E2E, suites Rust/doctests, format/lint/check/Clippy e builds. Sem alterações em unidades alheias.
+- PD-55 permanece local. A amostragem não é limite total de RSS nem garantia contra OOM entre leituras;
+  recovery de órfãos, fairness, calibração por máquina e gates de conteúdo/segredos/UI autenticada
+  continuam separados. Tools/`ToolCallRequested` continuam inertes; sem inferência/contexto reais.
+- PD-56 adiciona política explícita de bytes/leases por workspace físico, além do teto global,
+  na mesma transação SQLite. Device/inode é a chave, não sessão, caminho ou identidade do modelo;
+  o preparo revalida a fonte e reserva por essa chave antes de ler runtime/snapshots.
+- SQLite v9 preserva leases v8 sem atribuição: contam globalmente e em cada workspace. Drop/crash,
+  quarentena, tempo arbitrário e falhas de liberação não zeram a cobrança. Conexões com políticas
+  diferentes falham e reserva sem identidade não pode contornar um teto local mais restritivo.
+- Treze testes de admissão em storage passaram três repetições, incluindo concorrência real,
+  limites por bytes/slots, quarentena, migração v8 com sessões/artifacts preservados e v7. A integração
+  CLI prova dois preparos em workspaces distintos e rejeição de outro preparo no mesmo diretório
+  antes de tocar fontes inválidas. Três campanhas transitórias adicionais passaram com 9 backend,
+  6 captured cgroup e 24 image launcher. Gate integral local novamente verde: 27 Vitest, 66 E2E,
+  suites Rust/doctests, Clippy e builds, com Bubblewrap obrigatório. PD-55/56 permanecem locais.
+- Tetos por workspace são isolamento de capacidade, não scheduler justo nem garantia de ausência
+  de starvation. Não foram escolhidos defaults finais nem liberadas leases órfãs por PID/TTL.
+- PD-57 adiciona recovery explícito e limitado à fase anterior à exportação: arquivo de controle
+  privado com identidade persistida e lock exclusivo acompanha a lease após os payloads na ordem
+  de descarte. O preparo só aloca após confirmar esse registro. Antes de iniciar guardian/exportar,
+  grava barreira irreversível; falha ou commit incerto impede o efeito.
+- SQLite v10 acrescenta somente a proveniência de novos preparos recuperáveis. Leases v8/v9,
+  raw e já exportadas não recebem prova retrospectiva e continuam cobradas. Recovery bounded em
+  transação exige controle exato, íntegro e lock livre; não libera por idade, PID ou reinício.
+  Reconciliadores concorrentes não recuperam duas vezes; erros de delete mantêm a reserva e o controle.
+- Provas incluem saída real sem destrutores depois de construir memfds/staging (antes de exportar),
+  lock ocupado, barreira de exportação, falha de gravação, controles ausentes/substituídos, symlink,
+  hardlink, permissões/conteúdo inseguros e migração v9. A integração confirma que a recuperação de
+  memória não apaga a reserva de disco do staging; panic após a barreira permanece em quarentena.
+- Três repetições dos 22 testes de admissão em storage e três campanhas transitórias passaram,
+  cada campanha com 9 backend cgroup, 6 captured cgroup e 25 image launcher. Gate integral local
+  passou: 27 Vitest, 66 E2E, suites Rust/doctests, Clippy e builds, com Bubblewrap obrigatório.
+  PD-55/56/57 continuam locais, sem commit/push; nenhum serviço persistente foi alterado.
+- Recovery pós-exportação ainda não é implementado: lock livre do controlador não comprova fim de
+  consumidores. Fair scheduling/calibração, conteúdo/segredos, origem UI autenticada e Git/worktree
+  operacional continuam gates distintos; `ToolCallRequested`, inferência e contexto reais seguem inertes.
+- PD-58 estende a recuperação somente a execuções cujo término dos consumidores foi comprovado:
+  depois de cleanup/reap bem-sucedidos, persiste confirmação antes de Ready. Próxima execução invalida
+  a confirmação antes do efeito; erros de processo/panic nunca a produzem. Recuperação de concluídos
+  é explícita e separada da pré-exportação, exigindo também ausência do lock do dono dos payloads.
+- Integração real executa uma imagem aprovada, comprova grupo vazio/removido e encerra o dono sem
+  destrutores ainda retendo imagens; recovery de concluídos libera a reserva. O caso com panic após
+  barreira não é recuperado por nenhuma das duas APIs. Storage comprova lock vivo, prova ausente e
+  invalidação da prova anterior numa nova execução. Crash durante execução continua sem recovery.
+- Após PD-58, três repetições dos 24 testes de admissão em storage e três campanhas reais passaram:
+  9 backend cgroup, 6 captured cgroup, 26 image launcher por campanha. Gate integral passou novamente
+  com 27 Vitest, 66 E2E e suites Rust/doctests/Clippy/builds. PD-55–58 permanecem locais, sem publicação.
+- O operador aprovou a fila justa explícita em vez de manter recusa imediata (PD-59). SQLite v11
+  persiste intenções bounded de capacidade por workspace físico, sem payloads/comandos/aprovações.
+  A rotação persistida alterna workspaces elegíveis e preserva FIFO interno; novos workspaces entram
+  no fim. Workspace sem capacidade não bloqueia outros elegíveis nem perde sua posição na rotação.
+- Configuração da fila impede contorno pela admissão imediata. Claim explícito confere ticket,
+  workspace e orçamento recalculado, concede lease e remove intenção na mesma transação. O preparo
+  enfileirado reusa os gates de memória, snapshots e a aprovação exata posterior, sem execução
+  automática. Cancelamento/expiração afetam só espera, não leases já admitidas.
+- Três repetições dos 32 testes de admissão e três campanhas reais passaram: 9 backend, 6 captured
+  cgroup e 27 image launcher por campanha. Cobertura inclui FIFO/rotação, newcomers, saturação local,
+  espera total/por workspace, restore de metadados, expiração, cancelamento, replay, claim concorrente,
+  rollback, migração v10 e preparo integrado. A primeira rodada do gate integral após PD-59 atingiu
+  o timeout de 120 s da ferramenta durante E2E, após as campanhas; não é registrada como aprovação.
+  A repetição independente passou com portas 36173/36174: 27 Vitest, 66 E2E, 126 testes de storage,
+  demais suites Rust/doctests, Clippy e builds. PD-55–59 continuam locais, sem commit/push.
+- PD-60 registra a intenção gerenciada na própria reserva (SQLite v12), cobrindo a janela antes
+  de existir controle de posse. Recovery pode vencer essa fase sem payloads; a tentativa concorrente
+  de registrar posse falha por FK e não pode iniciar alocação. Se o registro vencer, permanecem
+  obrigatórios o lock e as provas anteriores. Reservas raw/legadas não são reclassificadas.
+- Testes novos cobrem o reconciliador vencendo um dono ainda vivo antes do registro, falha de registro
+  sem liberar raw leases e migração v11 conservadora. Controles órfãos vazios não são apagados sem
+  proveniência: criação enumera com orçamento finito de 4096 entradas e recusa excesso, evitando
+  crescimento irrestrito de metadata após crashes repetidos. Isso não é quota global de disco.
+- Após PD-60, os 36 testes de admissão em storage passaram três repetições. Três campanhas reais
+  passaram, com 9 backend cgroup, 6 captured cgroup e 27 image launcher por campanha. O gate inicial parou por
+  conflito transitório na porta dev 36174 antes de E2E. Prova isolada observou somente um listener
+  deste checkout e passou 66 E2E; não reproduziu a causa do conflito e não alterou o harness.
+  `make verify-rust` passou separadamente; em seguida o gate canônico integral passou com portas
+  36173/36174, 27 Vitest, 66 E2E, 130 testes de storage e suites Rust/doctests/Clippy/builds.
+  Logs finais: `/var/tmp/carapanan-verify-intent-canonical-final-20261025.log` e campanhas
+  `/var/tmp/carapanan-intent-recovery-cgroup-{1,2,3}-20261025.log`. PD-55–60 continuam locais.
+- O operador autorizou `tirion-tailscale` para diagnóstico/testes sintéticos; Mac será validado
+  manualmente pelo operador, sem SSH do agente. Preflight somente leitura confirmou i5-8265U/16 GB,
+  user manager acessível, dependências instaladas e pressão baixa no momento. Sem instalar software.
+- PD-61 acrescenta probe release do controle SQLite de admissão/fila, runner de saída bounded/schema
+  fechado, timeout/reap e campanha reproduzível. Um warmup e três amostras serializadas em Ryzen e
+  Tirion, com o mesmo SHA-256 de binário Rust 1.98.1, terminaram sem tickets ou reservas restantes.
+  Resumo revisado em `docs/benchmarks/admission-control-plane-2026-10-25.json`; instruções do Mac em
+  `docs/benchmarks/admission-resource-probe.md`. Unidades transitórias de 256 MiB/32 tarefas/CPU 100%
+  e 60 s, swap da unidade zero; sem instalações ou alterações persistentes. Artefatos remotos removidos.
+- A revisão detectou dois vieses antes de concluir o baseline: `ru_maxrss` podia incluir o wrapper
+  Python pré-exec, e shims/override global usavam Rust 1.99.1 apesar do pin 1.98.1. O probe Linux agora
+  reporta seu próprio VmHWM (mediana ~5,2 MiB nesse componente apenas); o runner identifica o dado
+  pré-exec como tal. Gate e campanha usam helper `rustup run` com o pin, sem instalar ou mudar defaults.
+  Seis testes Python cobrem schema, ambiente limpo, output excessivo, timeout/reap e override global.
+- Os tempos observados não ranqueiam capacidade dos hosts: fsync/contenção variam. O probe não mede
+  sessões, parsers, snapshots, agentes ou processos externos e não escolhe defaults finais. Validação
+  completa posterior ao ajuste de toolchain/probe ainda precisa ser confirmada; resultados anteriores
+  do gate não são apresentados como validação com o pin. PD-55–61 seguem locais, sem commit/push.
+- O operador corrigiu explicitamente o toolchain-alvo para **1.99.1**. `rust-toolchain.toml` e README
+  foram alinhados, preservando o helper que impede overrides silenciosos. O gate e três campanhas
+  concluídos em 1.98.1 são evidência histórica, não substituem nova validação em 1.99.1. Baseline de
+  1.98.1 será mantido identificado; repetir medidas com o pin solicitado antes de atualizar o resumo.
+- Probe reconstruído com Rust 1.99.1 e repetido em Ryzen/Tirion: mesmo binário
+  `70b05cd45124d6b9dfa4a0a089a053565c7fb706c2bd3dd3923f527b86ddfd58`, um warmup e três amostras
+  por máquina, todas sem reservas/tickets restantes. O resumo ativo usa 1.99.1 e o baseline 1.98.1 foi
+  separado como histórico. Mac continua manual; scripts e README seguem o pin 1.99.1 confirmado.
+- Três campanhas reais e três repetições dos testes de admissão passaram com 1.99.1. O gate integral
+  encontrou regressão no teste de `make dev`: o novo wrapper `rustup run` ultrapassava o cargo falso
+  do fixture e iniciava a TUI real sem terminal. Corrigida a prova de orquestração para interceptar
+  rustup, exigir o pin exato e encaminhar ao cargo controlado; o teste Python separado continua
+  verificando o rustc real com override global inválido. Fixture agora usa diretório exclusivo 0700.
+  Três repetições do launcher e seis testes Python passaram. A repetição do gate integral final em
+  **1.99.1 passou**: 27 Vitest, 66 E2E, seis testes Python, 130 testes de storage e todas as suites
+  Rust/doctests/Clippy/builds. Log: `/var/tmp/carapanan-verify-rust-1.99.1-launcher-final-20261025.log`.
+  Nenhuma assertion de shutdown/exit code ou timeout foi removida. O operador autorizou commit/push
+  desse lote após o gate, mantendo PR sem merge/deploy e ferramentas reais inertes.
+
 ---
 
 # 159. Delivery 5 — Context Engine

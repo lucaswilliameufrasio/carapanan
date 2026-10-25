@@ -13,6 +13,7 @@ const MAX_CAPTURE_TIMEOUT_MS: u64 = 60 * 60 * 1000;
 pub(super) enum AdmissionCheck {
     BeforeEffect,
     Authorization,
+    Running,
 }
 
 #[cfg(target_os = "linux")]
@@ -377,7 +378,7 @@ impl ProcessSupervisor {
                 Instant::now() + Duration::from_millis(settings.timeout_ms) + HOST_SHUTDOWN_TIMEOUT;
             let mut stop_requested = false;
             loop {
-                gate.check(AdmissionCheck::Authorization)?;
+                gate.check(AdmissionCheck::Running)?;
                 if !stop_requested && is_cancelled() {
                     write_frame(&mut control, &HostControl::Stop)?;
                     stop_requested = true;

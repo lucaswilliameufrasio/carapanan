@@ -146,6 +146,9 @@ pub(super) trait ReviewedSandboxSubject<'store>: ApprovalSubject {
     fn validate_preparation(&self) -> Result<(), SandboxExecutionError> {
         Ok(())
     }
+    fn validate_running_memory(&self) -> Result<(), SandboxExecutionError> {
+        Ok(())
+    }
 }
 impl<'store> ReviewedSandboxSubject<'store> for SandboxExecutionProposal<'store> {
     fn execution(&self) -> &SandboxExecutionProposal<'store> {
@@ -208,12 +211,18 @@ impl ProcessSupervisor {
         let proposal = approval.proposal().execution();
         let actual_limits = group.limits();
         let mut validation_error = None;
+        let mut memory_monitor = RunningMemoryMonitor::default();
         let result = {
             let mut validate = |phase| {
                 let check = (|| {
                     approval
                         .validate_for_effect(scope.workspace_id, scope.task, clock())
                         .map_err(SandboxExecutionError::Approval)?;
+                    if let AdmissionCheck::Running = phase {
+                        memory_monitor.check(Instant::now(), || {
+                            approval.proposal().validate_running_memory()
+                        })?;
+                    }
                     if let AdmissionCheck::BeforeEffect = phase {
                         approval.proposal().validate_preparation()?;
                         if actual_limits != proposal.limits.resources {
@@ -269,6 +278,81 @@ impl ProcessSupervisor {
                 SandboxExecutionError::Process(ProcessError::ExecutionApprovalInvalid),
             )),
             result => result.map_err(SandboxExecutionError::Process),
+        }
+    }
+}
+
+/// Bound read frequency using a local monotonic clock, never the approval/UI clock.
+#[derive(Default)]
+struct RunningMemoryMonitor {
+    last_check: Option<Instant>,
+}
+
+impl RunningMemoryMonitor {
+    fn check(
+        &mut self,
+        now: Instant,
+        read: impl FnOnce() -> Result<(), SandboxExecutionError>,
+    ) -> Result<(), SandboxExecutionError> {
+        const INTERVAL: Duration = Duration::from_millis(100);
+        if self
+            .last_check
+            .is_none_or(|last| now.saturating_duration_since(last) >= INTERVAL)
+        {
+            read()?;
+            self.last_check = Some(now);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod running_memory_tests {
+    use super::*;
+    use carapana_sandbox::host_memory::HostMemoryError;
+
+    #[test]
+    fn should_sample_immediately_and_again_at_the_monotonic_interval() {
+        let now = Instant::now();
+        let mut monitor = RunningMemoryMonitor::default();
+        let mut reads = 0;
+        monitor
+            .check(now, || {
+                reads += 1;
+                Ok(())
+            })
+            .unwrap();
+        for offset in [0, 20, 99] {
+            monitor
+                .check(now + Duration::from_millis(offset), || {
+                    panic!("must not resample before interval")
+                })
+                .unwrap();
+        }
+        monitor
+            .check(now + Duration::from_millis(100), || {
+                reads += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(reads, 2);
+    }
+
+    #[test]
+    fn should_fail_closed_for_every_sample_error_without_marking_it_healthy() {
+        for error in [
+            HostMemoryError::Unavailable,
+            HostMemoryError::InvalidSample,
+            HostMemoryError::InsufficientAvailable,
+            HostMemoryError::PressureExceeded,
+        ] {
+            let now = Instant::now();
+            let mut monitor = RunningMemoryMonitor::default();
+            assert!(
+                matches!(monitor.check(now, || Err(SandboxExecutionError::HostMemory(error))),
+                Err(SandboxExecutionError::HostMemory(actual)) if actual == error)
+            );
+            assert!(monitor.last_check.is_none());
         }
     }
 }

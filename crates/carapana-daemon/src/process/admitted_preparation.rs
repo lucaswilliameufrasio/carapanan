@@ -148,11 +148,49 @@ impl<'store, 'admission> AdmittedSandboxProposal<'store, 'admission> {
         admissions: &'admission mut PreparationAdmissionStore,
         now_ms: i64,
     ) -> Result<Self, AdmittedSandboxError> {
+        Self::prepare_inner(spec, source, artifacts, admissions, None, now_ms)
+    }
+
+    /// A queue ticket grants capacity order only; source, budgets, memory and later approval are
+    /// still independently validated. Recovered waiting metadata never executes this method itself.
+    pub fn prepare_queued(
+        spec: SandboxPreparationSpec<'_>,
+        source: &WorkspaceMetadata,
+        artifacts: &'store mut ArtifactStore,
+        admissions: &'admission mut PreparationAdmissionStore,
+        ticket: &carapana_storage::PreparationQueueTicket,
+        now_ms: i64,
+    ) -> Result<Self, AdmittedSandboxError> {
+        Self::prepare_inner(spec, source, artifacts, admissions, Some(ticket), now_ms)
+    }
+
+    fn prepare_inner(
+        spec: SandboxPreparationSpec<'_>,
+        source: &WorkspaceMetadata,
+        artifacts: &'store mut ArtifactStore,
+        admissions: &'admission mut PreparationAdmissionStore,
+        ticket: Option<&carapana_storage::PreparationQueueTicket>,
+        now_ms: i64,
+    ) -> Result<Self, AdmittedSandboxError> {
         let required = spec.required_bytes()?;
+        source
+            .verify_current()
+            .map_err(|_| AdmittedSandboxError::InvalidPreparation)?;
         // Must precede runtime verification/freezing and selected file reads/staging/sealing.
-        let admission = admissions
-            .reserve(required, now_ms)
-            .map_err(AdmittedSandboxError::Admission)?;
+        let admission = match ticket {
+            Some(ticket) => admissions.claim_queued_preparation(
+                ticket,
+                required,
+                now_ms,
+                &source.directory_identity(),
+            ),
+            None => admissions.reserve_unexported_for_workspace(
+                required,
+                now_ms,
+                &source.directory_identity(),
+            ),
+        }
+        .map_err(AdmittedSandboxError::Admission)?;
         let built = (|| {
             spec.host_memory_policy
                 .check(required)
@@ -325,6 +363,12 @@ impl<'store> ReviewedSandboxSubject<'store> for AdmittedSandboxProposal<'store, 
             .check(self.limits().resources().memory_bytes())
             .map_err(SandboxExecutionError::HostMemory)
     }
+    fn validate_running_memory(&self) -> Result<(), SandboxExecutionError> {
+        // The target is already charged. Do not require its full ceiling a second time.
+        self.host_memory_policy
+            .check(0)
+            .map_err(SandboxExecutionError::HostMemory)
+    }
 }
 
 impl ProcessSupervisor {
@@ -357,9 +401,26 @@ impl ProcessSupervisor {
             .host_memory_policy
             .check(admitted.limits().resources().memory_bytes())
             .map_err(AdmittedSandboxError::HostMemory)?;
+        admitted
+            .admission
+            .as_ref()
+            .ok_or(AdmittedSandboxError::CleanupUncertain)?
+            .mark_exported()
+            .map_err(AdmittedSandboxError::Admission)?;
         // A panic, reentrant attempt or unknown process failure must never enable release.
         admitted.phase.set(PreparationPhase::Running);
         let result = self.run_reviewed_image_process(&approval, scope, group, clock, is_cancelled);
+        if completion_phase(&result) == PreparationPhase::Ready {
+            // The supervisor returned only after cgroup termination and guardian reap, or before
+            // any consumer existed. Persist that proof before allowing Ready/reuse/recovery.
+            admitted.phase.set(PreparationPhase::CleanupUncertain);
+            admitted
+                .admission
+                .as_ref()
+                .ok_or(AdmittedSandboxError::CleanupUncertain)?
+                .mark_cleanup_confirmed()
+                .map_err(AdmittedSandboxError::Admission)?;
+        }
         admitted.phase.set(completion_phase(&result));
         result.map_err(AdmittedSandboxError::Execution)
     }

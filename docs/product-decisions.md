@@ -1335,3 +1335,147 @@ desativados.
 - Não é amostragem atômica nem prova de RSS individual: contadores podem mudar, e ancestrais ocultos
   por cgroup namespace/mount não são observáveis. A configuração suportada exige hierarquia padrão
   visível; isolamento do alvo e calibração continuam provas independentes.
+
+## PD-55 — Reamostrar saúde de memória durante a execução admitida
+
+**Data:** 25 de outubro de 2026
+
+**Status:** composição interna de PD-52/53/54; sem ativar tools ou escolher defaults de memória.
+
+- A disponibilidade pode mudar após a admissão. Reutilizar a política imutável do objeto admitido
+  no loop de supervisão, com primeira leitura imediata e cadência mínima de 100 ms pelo relógio
+  monotônico local. Esse intervalo limita leituras, não garante latência máxima sob suspensão/carga.
+- Durante a execução, verificar somente a margem remanescente e PSI (`check(0)`), não reservar
+  novamente o teto inteiro do alvo já admitido. Antes do efeito continua valendo a margem para
+  o alvo ainda não iniciado. Falha de leitura ou violação encerra o escopo, sem retry/fila/fallback.
+- O erro de memória só é devolvido depois de terminar o cgroup e reap do guardian; incerteza de
+  cleanup prevalece e mantém quarentena. Os payloads continuam cobrados até seu descarte.
+- Preferido a tratar a amostra inicial como válida durante toda a execução ou criar um monitor
+  assíncrono desvinculado do lifecycle. É amostragem periódica, não reserva atômica, limite global de
+  RSS ou proteção contra um OOM entre amostras; fairness, recovery e calibração continuam separados.
+- Prova local usa apenas um controlador-filho em subgrupo exclusivo da unidade transitória de
+  teste. Reduzir `memory.high` desse fixture após observar o alvo, sem alocar memória para produzir
+  pressão no host; nenhum controle de outra unidade pode ser alterado.
+
+## PD-56 — Isolar capacidade nominal por workspace físico
+
+**Data:** 25 de outubro de 2026
+
+**Status:** extensão interna do ledger; sem scheduler, defaults calibrados ou ativação de tools.
+
+- Permitir tetos explícitos de bytes/leases por workspace, nunca maiores que os globais. A mesma
+  transação `IMMEDIATE` verifica ambas as contas. Sessões do mesmo diretório compartilham a cota;
+  worktrees físicos distintos são contas distintas. A chave é device/inode validado, sem caminhos
+  ou ID vindo do modelo. O preparo valida a identidade antes de reservar e criar runtime/snapshots.
+- A API sem workspace só continua disponível quando limites locais e globais são iguais; não pode
+  contornar isolamento. Políticas de conexões diferentes devem coincidir exatamente.
+- Migrar SQLite v8 para v9 sem apagar reservas: linhas antigas sem identidade continuam cobradas
+  globalmente e conservadoramente em cada workspace. Nunca atribuir retrospectivamente uma lease
+  ao workspace atual, nem liberar por idade. Quarentena conserva a cota de origem.
+- Tetos locais reduzem monopolização, mas não reservam mínimo para cada workspace nem garantem
+  fairness/starvation: concorrentes ainda podem consumir o total. Sem defaults de hardware ou
+  prioridade implícita; revisitar distribuição apenas com decisão de produto e medidas.
+- Preferido a contadores só em memória (não coordenam processos) ou chave renovável de sessão
+  (permite escapar da cota). Reuso de inode pode causar cobrança conservadora até reconciliação,
+  não autoriza descarregar leases antigas. Recovery de órfãos continua independente.
+
+## PD-57 — Recovery limitado à preparação comprovadamente não exportada
+
+**Data:** 25 de outubro de 2026
+
+**Status:** composição interna; recuperação pós-exportação continua bloqueada sem prova adicional.
+
+- Registrar a posse de preparos recuperáveis com controle privado 0600, lock exclusivo do kernel e
+  identidade device/inode persistida. Payloads só podem ser construídos após confirmar o registro.
+  Antes de qualquer início de execução/exportação, persistir marca irreversível `exported=1`.
+  Falha/commit incerto impede o efeito. O lock acompanha o objeto e fecha após os payloads.
+- Recovery explícito e bounded exige registro `exported=0`, identidade exata e lock exclusivo livre;
+  não usa PID/TTL/relógio como evidência. Transação revalida a política e remove apenas essas leases.
+  Controles ausentes/substituídos/inseguros falham fechados. Locks ocupados preservam a reserva.
+- Leases antigas, raw ou já exportadas permanecem cobradas, inclusive após panic/crash. Isso não
+  prova cleanup de consumidores externos: somente o caso anterior à exportação é recuperável.
+  A API é fronteira do controlador confiável, não autorização para código arbitrário liberar IDs.
+- Preferido a liberar por ausência de PID ou timeout e a recuperar exportados com um simples lock
+  do controlador: consumidores podem sobreviver ao controlador. Não há recuperação automática na
+  abertura nem mudança de cgroups/unidades. Restore/cópia de catálogo com controles exige revisão própria.
+
+## PD-58 — Persistir a conclusão comprovada dos consumidores
+
+**Data:** 25 de outubro de 2026
+
+**Status:** composição interna; crash durante execução sem prova de cleanup continua em quarentena.
+
+- Após o supervisor devolver resultado com cleanup/reap comprovados, persistir confirmação de término
+  dos consumidores antes de voltar a Ready. Isso permite recovery explícito se o dono morrer depois
+  da execução, ainda retendo imagens. A marca de exportação não é apagada nem inferida de idade/PID.
+- Nova execução invalida essa confirmação na mesma barreira persistida anterior ao efeito. Erros
+  de processo, panic e cleanup incerto nunca confirmam término; falha de persistência conserva estado
+  incerto. Payloads permanecem cobrados enquanto o lock do dono existir.
+- Recovery de concluídos exige confirmação persistida e o mesmo lock/identidade de PD-57. É separado
+  do recovery pré-exportação. O setter no storage é fronteira do controlador confiável, como release,
+  não prova kernel independente nem API de liberação por ID. Não recupera automaticamente consumidores
+  que podem continuar vivos após perda do controlador durante uma execução.
+
+## PD-59 — Espera explícita, limitada e justa por workspace
+
+**Data:** 25 de outubro de 2026
+
+**Status:** aprovada pelo operador nesta conversa; substitui a recusa sem espera de PD-53 apenas
+quando a política explícita de fila estiver configurada. Sem ativar execução automática.
+
+- Persistir somente intenções de capacidade: identidade física do workspace, bytes nominais e
+  prazo. Limites explícitos de espera total, por workspace e duração; nenhum payload ou aprovação
+  é armazenado na fila. Ticket não autoriza comandos nem restaura aprovação após reinício.
+- FIFO dentro de cada workspace e rotação persistida entre workspaces. Novos workspaces entram
+  no fim da rotação, não na frente dos que já esperam. Ignorar temporariamente um workspace sem
+  capacidade local permite atender outro elegível, sem apagar a posição do bloqueado.
+- Claim explícito valida ticket, fonte física e orçamento recalculado; concede a lease e remove o
+  ticket na mesma transação. Configurar a fila impede contorno pela API de admissão imediata.
+  Depois disso, preparo, saúde de memória e aprovação exata continuam sendo gates independentes.
+- Cancelamento/expiração encerram somente a intenção; nunca liberam leases ativas. Recuperar a fila
+  não inicia trabalho. Políticas entre conexões devem coincidir. Sem retry automático de efeitos,
+  prioridades implícitas ou promessa de latência quando trabalhos ativos não liberam capacidade.
+
+## PD-60 — Proveniência da reserva anterior ao registro de posse
+
+**Data:** 25 de outubro de 2026
+
+**Status:** complemento interno de PD-57; sem recuperação de consumidores em execução.
+
+- Registrar na mesma transação da reserva se ela é uma intenção de preparo gerenciado. Somente
+  essas novas intenções podem ser reconciliadas quando ainda não existe registro de posse; linhas
+  antigas/raw não recebem essa classificação retrospectivamente.
+- O preparo não pode criar payloads antes de confirmar o registro de posse. Reconciliador mantém
+  transação `IMMEDIATE`: se vencer antes desse registro, remove a intenção sem payloads; a tentativa
+  concorrente de registrar posse falha por FK e não pode prosseguir para alocação. Se registro de
+  posse vencer, valem o lock e as provas de PD-57/58, nunca ausência de PID ou TTL.
+- Cobre crash na janela reserva/controle sem confundir metadata ausente de uma intenção incompleta
+  com prova para leases genéricas. Catalog restore/corrupção que perde proveniência não é suportado
+  como fonte de autorização para recovery; não inferir fases a partir de arquivos soltos.
+- Interrupção antes do registro pode deixar controles vazios sem proveniência de arquivo. Não
+  apagar entradas desconhecidas: a criação de controles limita a enumeração a 4096 entradas e
+  falha ao atingir o orçamento. Isso limita metadata acumulada, não é quota global de filesystem;
+  não contorna a recusa apagando arquivos ou aumentando limites automaticamente.
+
+## PD-61 — Toolchain efetivo e baseline sintético de admissão
+
+**Data:** 25 de outubro de 2026
+
+**Status:** medição do controle de admissão, não defaults finais de sessões/agentes.
+
+- O gate e campanhas invocam `rustup run` com o pin numérico do repositório. O operador confirmou
+  **1.99.1**, substituindo o pin antigo 1.98.1; não presumir o compilador efetivo a partir do arquivo.
+  O helper não instala software nem muda defaults; componente ausente falha explicitamente.
+- A campanha delegada limita a dois jobs a compilação Cargo dentro de sua unidade transitória,
+  evitando multiplicar compiladores no host compartilhado. Esse limite é do fixture de validação,
+  não um default final de concorrência do produto, nem um hard limit de RSS do compilador.
+- Probe release fixo, somente SQLite/leases/fila e fixtures próprias: 16 operações por fase, sem
+  inferência, contexto real, execução de tools ou alocação do orçamento nominal inteiro. Medir esse
+  componente não prova RSS de sessões, parsers, snapshots, agentes, providers ou processos externos.
+- Runner valida schema/output bounded e mata/recolhe seu filho próprio no timeout, sem alegar
+  sandbox genérico. `ru_maxrss` pode incluir memória pré-exec do wrapper: é identificado como tal.
+  Linux reporta separadamente VmHWM do próprio probe; não atribuir o wrapper ao RSS do harness.
+- Campanhas serializadas usam um warmup e três amostras em unidade transitória exclusiva limitada
+  (256 MiB, swap zero, 32 tarefas, CPU 100%, 60 s), sem reconfiguração persistente. O mesmo binário
+  é identificado por SHA-256. Resultados não autorizam comparar capacidade entre máquinas ou
+  escolher paralelismo final. Mac será validado manualmente pelo operador, sem SSH do agente.
