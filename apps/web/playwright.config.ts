@@ -1,10 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
+import { e2eServers } from './e2e-config';
+
+const servers = e2eServers(process.env);
 export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
   workers: 2,
   snapshotPathTemplate: `{testDir}/{testFilePath}-snapshots/{arg}-{projectName}-${process.env.CARAPANA_SNAPSHOT_ENV ?? '{platform}'}{ext}`,
-  use: { baseURL: 'http://127.0.0.1:4173', trace: 'retain-on-failure' },
+  use: { baseURL: servers.preview.url, trace: 'retain-on-failure' },
   projects: [
     { name: 'desktop', testMatch: 'prototype.spec.ts', use: { ...devices['Desktop Chrome'] } },
     { name: 'mobile', testMatch: 'prototype.spec.ts', use: { ...devices['Pixel 7'] } },
@@ -13,15 +16,14 @@ export default defineConfig({
       // These tests exercise one shared dev server and its source watcher.
       workers: 1,
       testMatch: 'dev.spec.ts',
-      use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:4174' },
+      use: { ...devices['Desktop Chrome'], baseURL: servers.dev.url },
     },
   ],
   webServer: [
     {
-      command: 'pnpm preview --port 4173',
-      url: 'http://127.0.0.1:4173',
+      ...servers.preview,
       reuseExistingServer: false,
     },
-    { command: 'pnpm dev --port 4174', url: 'http://127.0.0.1:4174', reuseExistingServer: false },
+    { ...servers.dev, reuseExistingServer: false },
   ],
 });

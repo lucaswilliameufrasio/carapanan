@@ -3,7 +3,11 @@ members = [
     "crates/carapana-protocol",
     "crates/carapana-core",
     "crates/carapana-storage",
+    "crates/carapana-sandbox",
     "crates/carapana-daemon",
+    "crates/carapana-cli",
+    "crates/carapana-tools",
+    "crates/carapana-openai",
     "prototypes/terminal",
 ]
 resolver = "3"

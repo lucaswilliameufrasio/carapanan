@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "scope": "sqlite-admission-control-plane-only",
+  "source_base_commit": "af607e52179b9cc2676024dc6b38e33f916975ad",
+  "uncommitted_candidate": true,
+  "rustc": "1.98.1",
+  "historical_only": true,
+  "superseded_by_operator_toolchain": "1.99.1",
+  "binary_sha256": "ada8438b6efd39ac78c45692fde3b4eb6f010c8f3f92cb78849205394ab551f0",
+  "iterations_per_phase": 16,
+  "warmup_samples": 1,
+  "measured_samples": 3,
+  "results": [
+    {
+      "machine_class": "Ryzen-9-7900-64GiB",
+      "self_rss_peak_bytes_median": 5447680,
+      "self_rss_peak_bytes_range": [5361664, 5455872],
+      "wall_ms_median": 808.291,
+      "immediate_total_us_median": 392246,
+      "enqueue_total_us_median": 59705,
+      "claim_total_us_median": 278084,
+      "all_samples_released_capacity": true
+    },
+    {
+      "machine_class": "i5-8265U-16GiB",
+      "self_rss_peak_bytes_median": 5443584,
+      "self_rss_peak_bytes_range": [5414912, 5480448],
+      "wall_ms_median": 249.108,
+      "immediate_total_us_median": 92476,
+      "enqueue_total_us_median": 22134,
+      "claim_total_us_median": 120640,
+      "all_samples_released_capacity": true
+    }
+  ],
+  "production_defaults_calibrated": false
+}

@@ -8,7 +8,7 @@ use std::{
 
 use crate::{Database, MigrationError};
 
-const DATABASE_FILE: &str = "sessions.sqlite3";
+pub(crate) const DATABASE_FILE: &str = "sessions.sqlite3";
 
 #[derive(Debug)]
 pub enum UserDatabaseError {
@@ -71,6 +71,20 @@ impl From<MigrationError> for UserDatabaseError {
 /// Linux honors an absolute `XDG_DATA_HOME`, otherwise using `$HOME/.local/share`.
 /// macOS uses `$HOME/Library/Application Support`. Other platforms fail closed.
 pub fn user_database_path() -> Result<PathBuf, UserDatabaseError> {
+    Ok(user_data_directory_path()?.join(DATABASE_FILE))
+}
+
+/// Resolve and prepare the private, per-user Carapanã data directory.
+///
+/// The directory is created with owner-only permissions when absent. Existing
+/// directories with broad permissions or symlink components are rejected.
+pub fn user_data_directory() -> Result<PathBuf, UserDatabaseError> {
+    let directory = user_data_directory_path()?;
+    ensure_private_directory(&directory)?;
+    Ok(directory)
+}
+
+fn user_data_directory_path() -> Result<PathBuf, UserDatabaseError> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     #[cfg(target_os = "linux")]
     let (platform, xdg_data_home) = (
@@ -82,8 +96,7 @@ pub fn user_database_path() -> Result<PathBuf, UserDatabaseError> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let (platform, xdg_data_home) = (Platform::Unsupported, None);
 
-    let directory = resolve_data_directory(platform, home, xdg_data_home)?;
-    Ok(directory.join(DATABASE_FILE))
+    resolve_data_directory(platform, home, xdg_data_home)
 }
 
 /// Open or initialize the private, per-user SQLite database.
@@ -136,9 +149,40 @@ fn home_or_error(home: Option<PathBuf>) -> Result<PathBuf, UserDatabaseError> {
 }
 
 #[cfg(unix)]
-fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
+fn reject_symlink_components(path: &Path) -> Result<(), UserDatabaseError> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(UserDatabaseError::UnsafePath(path.to_owned()));
+    }
+
+    let mut component_path = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => component_path.push(component.as_os_str()),
+            Component::Normal(name) => component_path.push(name),
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(UserDatabaseError::UnsafePath(path.to_owned()));
+            }
+        }
+
+        match fs::symlink_metadata(&component_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(UserDatabaseError::UnsafePath(component_path));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 
+    reject_symlink_components(path)?;
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.file_type().is_dir() || metadata.mode() & 0o077 != 0 {
@@ -150,6 +194,7 @@ fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
                 .parent()
                 .ok_or_else(|| UserDatabaseError::UnsafePath(path.to_owned()))?;
             fs::create_dir_all(parent)?;
+            reject_symlink_components(path)?;
             match fs::DirBuilder::new().mode(0o700).create(path) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -166,13 +211,13 @@ fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
 }
 
 #[cfg(not(unix))]
-fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
+pub(crate) fn ensure_private_directory(path: &Path) -> Result<(), UserDatabaseError> {
     let _ = path;
     Err(UserDatabaseError::UnsupportedPlatform)
 }
 
 #[cfg(unix)]
-fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
+pub(crate) fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
     match fs::symlink_metadata(path) {
@@ -203,7 +248,7 @@ fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
 }
 
 #[cfg(not(unix))]
-fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
+pub(crate) fn ensure_private_database_file(path: &Path) -> Result<(), UserDatabaseError> {
     let _ = path;
     Err(UserDatabaseError::UnsupportedPlatform)
 }
@@ -213,7 +258,7 @@ mod tests {
     use super::{Platform, UserDatabaseError, open_database_at, resolve_data_directory};
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
         time::SystemTime,
     };
@@ -228,10 +273,12 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "carapana-user-db-{}-{nonce}-{id}",
-                std::process::id()
-            ));
+            let path = fs::canonicalize(std::env::temp_dir())
+                .unwrap()
+                .join(format!(
+                    "carapana-user-db-{}-{nonce}-{id}",
+                    std::process::id()
+                ));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
@@ -348,5 +395,52 @@ mod tests {
             open_database_at(&database_link),
             Err(UserDatabaseError::UnsafePath(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_refuse_a_symlink_in_a_database_directory_ancestor() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = TestDirectory::new();
+        let external = root.0.join("external");
+        let linked_parent = root.0.join("linked-parent");
+        fs::create_dir(&external).unwrap();
+        fs::set_permissions(&external, fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(&external, &linked_parent).unwrap();
+
+        let database_path = linked_parent.join("private/sessions.sqlite3");
+        assert!(matches!(
+            open_database_at(&database_path),
+            Err(UserDatabaseError::UnsafePath(_))
+        ));
+        assert!(
+            fs::symlink_metadata(&linked_parent)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!external.join("private").exists());
+        assert!(!external.join("private/sessions.sqlite3").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_refuse_relative_and_parent_traversal_database_paths() {
+        let root = TestDirectory::new();
+        let relative_path = Path::new("relative/sessions.sqlite3");
+        assert!(matches!(
+            open_database_at(relative_path),
+            Err(UserDatabaseError::UnsafePath(_))
+        ));
+
+        let intermediate = root.0.join("intermediate");
+        fs::create_dir(&intermediate).unwrap();
+        let traversal_path = intermediate.join("../sessions.sqlite3");
+        assert!(matches!(
+            open_database_at(&traversal_path),
+            Err(UserDatabaseError::UnsafePath(_))
+        ));
+        assert!(!root.0.join("sessions.sqlite3").exists());
     }
 }

@@ -2,6 +2,8 @@ import { expect, type Page, test } from '@playwright/test';
 
 async function detail(page: Page) {
   await page.goto('/');
+  // SSR controls are visible before handlers exist; interaction needs the mount boundary.
+  await expect(page.locator('.app')).not.toHaveAttribute('inert');
   // Mobile home is selected on mount. Wait for the target rather than checking
   // its visibility once while hydration may still be completing.
   if ((page.viewportSize()?.width ?? 1280) <= 740) await page.locator('.attention-session').click();
@@ -24,6 +26,29 @@ async function nav(page: Page, name: string) {
     await page.locator('.app-header').getByRole('button', { name: 'Sessões', exact: true }).click();
   await page.locator('.navigation').getByRole('button', { name, exact: true }).click();
 }
+
+test('Should not accept controls before hydration and become interactive after scripts load', async ({
+  page,
+}) => {
+  const scripts = Promise.withResolvers<void>();
+  await page.route('**/_app/immutable/**/*.js', async (route) => {
+    await scripts.promise;
+    await route.continue();
+  });
+  try {
+    await page.goto('/', { waitUntil: 'commit' });
+    await expect(page.locator('.app')).toHaveAttribute('inert', '');
+  } finally {
+    scripts.resolve();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+  await expect(page.locator('.app')).not.toHaveAttribute('inert');
+  if ((page.viewportSize()?.width ?? 1280) <= 740) {
+    await page.locator('.attention-session').click();
+  }
+  await pick(page, 'Perfil', 'auto');
+  await expect(page.locator('.composer-footnote')).toContainText('Auto');
+});
 
 test('Should match browser theme chrome to the palette and honor reduced motion', async ({
   page,
@@ -730,6 +755,7 @@ test('Should change mode hue and effort intensity without recoloring the executi
 test('Should keep management content and controls in bounds at phone tablet and desktop widths', async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await detail(page);
   for (const width of [320, 900, 1440]) {
     await page.setViewportSize({ width, height: 956 });

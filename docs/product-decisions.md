@@ -130,7 +130,35 @@ trabalho, autonomia, provider, modelo e variante de reasoning próprios.
 - Não repetir automaticamente push/deploy/operação com resultado incerto; verificar antes.
 - Retomada revalida permissões e arquivos. Após espera longa, invalidar leituras antigas,
   reler arquivos afetados, conferir diff e adaptar o plano.
-- Conflitos com alterações do operador exigem confirmação, inclusive em Yolo.
+- Verificação metadata-only (identidade, tipo, permissões, tamanho e timestamps) não prova
+  que o conteúdo permaneceu igual e nunca libera retomada sozinha. O fingerprint limitado abaixo
+  é a única leitura/hash aprovada nesta fatia; expansão exige decisão própria.
+- Fingerprint de conteúdo aprovado somente para paths relativos explicitamente selecionados:
+  SHA-256 local de arquivos regulares até 1 MiB. Negar nomes iniciados por `.env`, componentes
+  `.ssh`/`.aws`, nomes contendo `secret`/`credential` (sem diferenciar maiúsculas) e extensões
+  `.pem`/`.key`. Não recursar, seguir symlinks, persistir conteúdo ou enviar bytes para IPC,
+  logs, modelo ou memória; persistir apenas o digest. Fingerprint não autoriza retomada sozinho.
+- Revisão read-only revalida somente os paths explicitamente registrados e reporta cada um
+  independentemente (`unchanged`, `changed`, `missing`, `unreadable`, `unsafe`, `too large`,
+  `unavailable`). Falha da raiz é global/fail-closed. A revisão não altera sessão, fila ou
+  workspace e não limpa a exigência de revalidação. Pelo socket Unix privado do mesmo usuário,
+  é permitido expor somente path relativo + status ao CLI/TUI; nunca conteúdo, digest, metadata
+  stat ou path absoluto. A visualização não confirma conflitos nem libera retomada.
+- Exceção limitada à criação explícita de uma sessão: a raiz absoluta do workspace pode ser
+  enviada como input pelo socket Unix privado. O daemon não a devolve em respostas nem a registra
+  em logs/erros. Essa exceção não altera o contrato de revisão, que continua expondo somente
+  paths relativos e status.
+- Política v1 de retomada após recovery: exigir revisão read-only fresca e confirmação humana
+  explícita de retomada, inclusive quando todos os paths reportam `unchanged`; metadata e
+  fingerprints, isoladamente, nunca autorizam retomada. `changed`, `missing` e `too_large`
+  exigem reconhecimento explícito por path. `unsafe`, `unreadable`, `unavailable` e qualquer
+  mudança na identidade da raiz bloqueiam retomada até serem resolvidos e revisados novamente.
+  O reconhecimento fica vinculado à identidade da raiz e às evidências locais disponíveis
+  (metadata stat e digest somente quando já autorizado). Qualquer mudança detectável após o
+  reconhecimento invalida a autorização e mantém a sessão pausada; metadata stat-only não
+  detecta alteração de conteúdo que preserve todos os metadados. Nunca retomar
+  automaticamente nem permitir bypass por Yolo. Conflitos com alterações do operador exigem
+  confirmação, inclusive em Yolo.
 - `Parar` interrompe o agente, cancela comandos e encerra processos temporários iniciados
   para o trabalho, com supervisão e encerramento seguro (dev server, API local, serviço de teste).
 - Não encerrar serviços anteriores. Processos marcados pelo operador como `Manter rodando`
@@ -186,6 +214,12 @@ conveniência não substitui essa comprovação.
 Pasta-limite é o diretório de abertura, não a raiz Git. Abrir em `repo/backend` não
 libera ações destrutivas automaticamente em `repo/frontend`. Mostrar o limite;
 ampliá-lo exige escolha explícita do operador.
+
+Para recovery, persistir a identidade da pasta-limite como caminho absoluto e o par
+device/inode observado no filesystem. Não canonicalizar nem seguir symlinks ao capturar
+ou revalidar essa identidade. Se o caminho deixar de existir, contiver symlink ou apontar
+para outra identidade, manter a sessão pausada. Esse registro é metadado, não autorização;
+não habilita retomada nem amplia permissões.
 
 ### Worktrees e alterações anteriores
 
@@ -409,3 +443,1045 @@ não autorizam antecipar runtime ao Delivery 0.
 
 No Delivery 0, evidências são de interação com mocks. Enforcement, integrações,
 performance e execução só são declarados validados com testes reais na etapa posterior.
+
+## PD-18 — Hibernação base e limite da supervisão de processos
+
+- Na fundação atual, hibernação é uma transição explícita do operador e altera somente o
+  estado persistido. Só pode ocorrer para sessão pausada, sem mensagem ativa e sem recovery
+  pendente; fila, seleções e histórico são preservados.
+- Acordar uma sessão hibernada sempre volta a `paused`. Nunca inicia mensagens da fila.
+- Essa transição não promete liberar working set, caches ou processos: a fundação atual não
+  possui esses recursos de runtime. Hibernação automática/reclaim só será implementada com
+  sinais de idle/pressão medidos e cleanup comprovado.
+- Supervisão efetiva só pode afetar processos criados e identificados pelo Carapanã; processos
+  anteriores ou marcados `Manter rodando` não são encerrados. A autorização específica de
+  12 de outubro de 2026 cobre somente a primitive definida em PD-19; não habilita, por si,
+  provider, tools, execução de tarefas ou autonomia. Contratos/estado inertes não implicam
+  capacidade operacional.
+
+## PD-19 — Supervisor local de processos próprios
+
+**Data:** 12 de outubro de 2026
+
+**Status:** aprovado para a fundação da Delivery 2; provider, tools e execução de tarefas seguem
+desativados.
+
+- O supervisor é Unix-only nesta entrega e permanece fora dos contratos IPC, CLI e TUI. Ele é
+  uma primitive interna para código futuro explicitamente autorizado; enfileirar/retomar mensagem
+  não chama o supervisor.
+- A API interna permite criar, listar, parar e reiniciar somente identificadores próprios; restart
+  encerra o grupo anterior antes de tentar iniciar a nova especificação no mesmo owner session.
+- A façade do `DaemonService` exige que a sessão proprietária exista no SQLite e que stop/restart
+  usem a mesma sessão registrada no processo. Esses métodos seguem indisponíveis no IPC.
+- O handshake do guardian permanece bounded a 15 s para acomodar inicialização concorrente de
+  executáveis nativos no macOS; o valor é timeout de startup, não duração máxima do trabalho.
+- Executar um binário absoluto já existente com argv separado, sem shell, sem herdar ambiente e
+  com stdin/stdout/stderr em `/dev/null`. Limitar quantidade/tamanho de args, caminho e processos
+  gerenciados; não registrar executable, args, cwd ou payload de controle.
+- Um modo privado do próprio binário Carapanã atua como guardian de cada processo e líder do
+  process group dedicado; o executável gerenciado herda esse grupo. O guardian recebe comandos em
+  pipes privados e, em stop, SIGINT/SIGTERM ou EOF do daemon, sinaliza o grupo com SIGTERM, aguarda
+  800 ms e então SIGKILL (incluindo a si próprio). Permanecer vivo como âncora durante a limpeza
+  impede reutilização do PGID enquanto ele envia sinais. O daemon aguarda os guardians por até 3 s.
+  Nunca procurar/alvejar processos por nome, workspace ou PID externo.
+- `KeepRunning` é uma política explícita de detach: shutdown da sessão/daemon ou saída natural do
+  líder não sinaliza o grupo. Uma parada direta e explícita de um identificador ainda controlado
+  pode encerrá-lo. Processos preservados não são re-adotados depois. Um gerenciador externo que
+  sinalize todos os processos de um cgroup ainda pode afetá-los; a política só controla sinais
+  enviados pelo supervisor Carapanã.
+- Os processos são identificados somente pela resposta do guardian recém-iniciado e pela relação
+  viva de pipes/handles: PID do executável e PGID/ PID do guardian são distintos. Não se restaura
+  identidade a partir de PIDs persistidos; após detach ou perda do guardian, o processo não é
+  re-adotado nem sinalizado pelo número antigo.
+- Trade-off: um guardian extra por processo consome recursos, mas o EOF permite cleanup depois de
+  crash do daemon, ao contrário de `Child` direto; um supervisor central seria mais econômico,
+  porém teria ownership e reconexão mais complexos. Process groups não contêm descendentes que
+  deliberadamente façam detach/setsid, nem sobrevivem a SIGKILL do guardian, encerramento forçado
+  do host ou falha da máquina; esses limites não são anunciados como garantias.
+
+## PD-20 — Catálogo puro de capacidades de provider
+
+- A primeira fatia do Delivery 3 mantém o catálogo de provider/modelo/variante como dados puros
+  em `carapana-core`, separado de transporte, autenticação, persistência e IPC. O protocolo atual
+  continua carregando os identificadores capturados como strings.
+- A resolução valida a seleção exata e retorna capabilities declaradas para aquela variante;
+  provider/modelo/variante ausentes ou incompatíveis falham explicitamente, sem fallback.
+- Capabilities são metadados, não autorização: `tool_calling` não habilita tool executável.
+  Esta fatia usa somente catálogos de teste; não realiza auth, chamadas de rede ou inferência.
+- Adapter ChatGPT real, uso de credenciais, inferência e prova na conta autorizada continuam
+  bloqueados até autorização específica e comprovação conforme PD-02/PD-17.
+
+## PD-21 — Contrato assíncrono de streaming de provider
+
+**Data:** 12 de outubro de 2026
+
+**Status:** aprovado para contrato e testes mock-only; não habilita integração real.
+
+- `carapana-core` define request, eventos e errors tipados em torno de `futures-core::Stream`.
+  O core não escolhe nem depende de executor async; adapters futuros fornecem a stream.
+- Cancelamento é um token compartilhável e independente de runtime. Adapters devem observar
+  seu future de cancelamento e encerrar o transporte/stream; o consumidor pode também descartar
+  a stream. A interface não promete retry, reconnect ou cancelamento de trabalho remoto que o
+  adapter não consiga interromper.
+- Mensagens e seleção resolvida são passadas ao adapter somente por um futuro chamador, que deve
+  aplicar a confirmação de compartilhamento PD-10 antes de enviar conteúdo remoto. Esta decisão
+  não adiciona wiring de execução.
+- Texto e pedidos de tool são eventos de dados não confiáveis. `ToolCallRequested` não executa
+  tool nem concede autorização; tools continuam fora desta fase. Errors tipados preservam
+  rate-limit e `retry_after`, mas esta camada não repete automaticamente.
+- Preferido sobre callback síncrono para manter consumers não bloqueantes e adapters de rede
+  assíncronos sem impor runtime ao core. Reavaliar somente se o runtime/adapters aprovados exigirem
+  outra política de cancelamento.
+
+## PD-22 — Integração oficial SIWC fora do core
+
+**Data:** 13 de outubro de 2026
+
+**Status:** aprovado para o Delivery 3, com autorização explícita do operador.
+
+- O provider ChatGPT real fica em um crate de integração separado (`carapana-openai`); `carapana-core`
+  permanece sem transporte, OAuth, runtime ou dependência de API externa.
+- Usar exclusivamente o fluxo open-source oficial Sign in with ChatGPT: dynamic client registration,
+  authorization code + PKCE, callback loopback em `127.0.0.1` com `/auth/callback`, validação de
+  state/nonce e ID token por JWKS, audience/issuer/expiry, e uso somente quando o token conceder
+  `chatgpt.tokens.use.direct`. Não reaproveitar credenciais Codex, endpoint privado ou API key paga.
+- Tokens ficam fora do SQLite de sessões, em arquivos separados dentro do diretório privado do
+  usuário (`0700` no diretório, `0600` no arquivo), escritos atomicamente; não registrar nem incluir
+  credenciais em erros, logs, prompts, contexto ou commits. Esta proteção de filesystem não é
+  criptografia em repouso e deve ser informada como limitação.
+- Reautorizar uma conta reutiliza o client ID e `ext_agent_host_id` da conta, valida a identidade
+  novamente e usa `id_token_hint`/`login_hint` apenas no authorize URL; pedir consentimento novamente
+  (`prompt=consent`) exige uma escolha explícita do operador. Refresh usa o client ID emitido,
+  `resource=https://api.openai.com/v1`, mantém o grant, grava o refresh-token rotacionado e é
+  serializado por conta entre processos. Em erro terminal de refresh, limpar o refresh token inválido,
+  conservar o mapeamento da conta e exigir novo sign-in; erros transitórios preservam as credenciais.
+- Descoberta de modelos usa o catálogo da conta (`GET /v1/models`, somente itens `visibility=list`).
+  Inferência usa apenas `POST /v1/responses`, `store:false`, `stream:true`, sem redirecionamentos;
+  só `response.completed` confirma sucesso. O stream observa cancelamento e não reenvia inferência
+  automaticamente. `retry_after`, status, códigos, parâmetro, request ID e a forma do erro remoto são
+  preservados sem expor corpo bruto.
+- O primeiro smoke test real usa apenas um prompt fixo sintético, sem contexto de sessão/workspace.
+  A CLI exige `--confirm-remote` antes de enviar esse prompt. O envio de contexto real depende de
+  consentimento explícito por provider conforme PD-10. O login oficial e a autorização de escopos no
+  navegador não conectam a fila nem iniciam execução.
+- Nenhuma tool será enviada ou executada nesta fase. `ToolCallRequested` permanece saída inerte; não
+  ligar provider ao daemon, fila, tarefas, subprocessos ou modo autônomo.
+- Testes usam cliente de produção contra servidor HTTP local falso; testes normais nunca acessam
+  OpenAI nem usam tokens reais. Reavaliar armazenamento se o produto passar a exigir proteção contra
+  leitura por outros processos do mesmo usuário ou multiusuário no mesmo host.
+
+## PD-23 — Primitive de leitura limitada do workspace
+
+**Data:** 14 de outubro de 2026
+
+**Status:** aplicada à primitive local isolada; não habilita tools nem envio de conteúdo.
+
+- `carapana-storage::WorkspaceMetadata::read_file` reutiliza a identidade do workspace e a abertura
+  Unix com `openat`/`O_NOFOLLOW` já usada pelas observações de recovery, evitando uma segunda
+  implementação de resolução de caminhos. A escolha mantém validação e leitura presas à identidade
+  capturada; não significa que o crate esteja autorizado a persistir ou compartilhar o conteúdo.
+- A operação aceita somente caminho relativo dentro do workspace, arquivo regular e no máximo
+  256 KiB. Rejeita symlinks em qualquer componente, caminhos protegidos conhecidos (incluindo env,
+  credenciais/configurações, chaves privadas e estado Terraform), troca de identidade/metadados durante
+  a leitura e qualquer plataforma sem a primitiva comprovada. Arquivos são retornados como bytes ao
+  chamador local; `read_file_with_limit` permite ao chamador impor um limite menor, nunca maior que
+  256 KiB. Não há conversão, filtragem de saída ou detecção de segredos no conteúdo.
+- A lista de nomes protegidos é defesa conservadora, não classificador completo de segredos. A seleção
+  do workspace e o limite de caminho não substituem autorização por ação, revisão de conteúdo, sandbox,
+  filtragem de outputs nem consentimento de compartilhamento com provider.
+- A primitive não é ligada ao provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. Não há
+  listagem/recursão, busca, escrita, shell ou execução de processos. Esses recursos exigem slices e
+  evidências próprias; capacidade do provider continua sendo dado inerte conforme PD-20/PD-21.
+- Trade-off: manter a operação junto das primitivas de identidade/recovery evita duplicação de uma
+  fronteira sensível e permite testes diretos contra filesystem real. A API não é uma aprovação de
+  separar ou ativar o futuro executor de tools; a arquitetura poderá extrair um crate coeso quando
+  existirem contratos e capacidades além desta leitura isolada.
+
+## PD-24 — Inspeção local isolada em `carapana-tools`
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementada como API local não conectada; não ativa execução nem compartilhamento remoto.
+
+- A listagem e a busca pertencem ao novo crate `carapana-tools`; `carapana-storage` continua dono da
+  identidade persistida do workspace e da abertura/leitura segura. A extração foi feita quando a
+  capacidade deixou de ser uma única primitive. Nenhum dos crates chama provider, daemon, CLI/TUI,
+  fila ou executor.
+- Os arquivos de regras são lidos por `WorkspaceMetadata::read_file` (abertura Unix sem-follow,
+  caminho confinado e limite de bytes) e compilados em memória; o parser não reabre paths. A leitura
+  protege a configuração contra symlink/TOCTOU. O walker de diretórios, porém, não é descritor-relativo
+  e ainda exige revisão contra troca concorrente de paths antes de qualquer runtime wiring.
+- A listagem usa `ignore` com versão exata e lockfile para semântica conhecida. `.ignore` tem
+  precedência sobre `.gitignore`; `.carapanaignore` tem precedência sobre ambas. Configuração global e
+  regras ancestrais são desativadas para tornar o resultado local ao workspace. Links simbólicos e outros
+  filesystems não são percorridos; `.git`, `node_modules`, `target`, `dist`, `build`, `.cache` e
+  `vendor` são excluídos por padrão. Profundidade e quantidade de entradas/arquivos são limitadas.
+- Busca é literal e somente leitura, limitada a 512 arquivos, 8 MiB lidos e 200 linhas de resultado;
+  `read_file_with_limit` aplica o orçamento restante durante cada leitura, além do teto de 256 KiB
+  por arquivo e das proteções de `WorkspaceMetadata::read_file`. Busca sem distinção
+  de caixa ignora caixa ASCII. Snippets substituem controles de terminal e formatação bidirecional,
+  mas ainda são dados não confiáveis e podem conter segredos em arquivos com nomes não reconhecidos;
+  consumidores devem escapar caminhos antes de renderizá-los.
+- Preferido sobre manter traversal em `carapana-storage`, pois storage não deve possuir indexação ou
+  comportamento de ferramentas; também preferido sobre implementar padrões ignore manualmente, para
+  não divergir da semântica convencional. A dependência `ignore` usa a licença MIT disponível no
+  pacote dual MIT/Unlicense e é fixada no manifesto e no lockfile.
+- Listagem/busca não são approvals e não implicam envio ao modelo. Qualquer wiring futuro exige
+  contratos de autorização/compartilhamento e prova do gate de segurança de Delivery 4, incluindo
+  traversal relativo a descritores em ambientes adversariais; a API permanece isolada enquanto essa
+  prova não existir.
+
+## PD-25 — Parser Tree-sitter inicial e sob demanda
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementado no `carapana-tools`; parser local não conectado a runtime, provider ou UI.
+
+- Conforme escolha explícita do operador, a primeira seleção suporta Rust (`.rs`), TypeScript
+  (`.ts`, `.mts`, `.cts`) e TSX (`.tsx`). Arquivos JavaScript e Svelte não são inferidos como TSX nem
+  processados por fallback; gramáticas adicionais exigem uma fatia posterior.
+- O parser só executa para um caminho explícito e usa o leitor de workspace confinado/sem-follow, com
+  limite de 256 KiB, denylist e validação de UTF-8. Parser e caminhada da árvore têm limites de tempo,
+  nós e diagnósticos. O resultado contém idioma, tipo da raiz, estado de sintaxe e posições em bytes;
+  não contém source snippets, compilação, execução ou validação semântica.
+- `tree-sitter` e gramáticas Rust/TypeScript ficam em `carapana-tools`, pinados por versão exata e
+  lockfile; todas as dependências adicionadas são MIT. A escolha evita colocar parsers/gramáticas no
+  core e permite carga estritamente sob demanda.
+- Sintaxe inválida é um resultado diagnosticável, não falha de parsing; timeout, UTF-8 inválido,
+  extensão não suportada, grammar incompatível e falha de leitura são erros separados. Nenhum conteúdo
+  é enviado ao provider. Reavaliar a lista inicial quando outro formato passar a ser necessário e
+  antes de integrar o resultado a um contexto remoto.
+
+## PD-26 — Prévia de diff textual sem edição
+
+**Data:** 15 de outubro de 2026
+
+**Status:** implementada como função em memória; não lê, escreve ou aplica arquivos.
+
+- `carapana-tools` recebe dois textos já disponíveis ao chamador e produz uma prévia unified diff
+  limitada; entradas de até 256 KiB cada, orçamento de 250 ms e saída de até 1 MiB. Usa `similar`
+  pinado no manifesto/lockfile (Apache-2.0), com possível aproximação pelo prazo.
+- Controles de terminal e controles bidirecionais são substituídos para evitar spoofing de terminal.
+  A saída é somente para exibição e pode não preservar bytes ou ser aplicável como patch. Chamadores
+  devem tratar entradas/saídas como não confiáveis e aplicar as regras de segredos antes de exibir ou
+  compartilhar; nenhum texto é enviado ou persistido por esta função.
+- Separar a prévia da escrita evita que gerar um diff cause efeitos colaterais. Escrita atômica,
+  checkpoint, proteção contra mudança concorrente e approval seguem pendentes; não inferir autorização
+  de alteração a partir desta função.
+
+## PD-27 — Travessia de workspace relativa a descritores
+
+**Data:** 16 de outubro de 2026
+
+**Status:** primitive implementada isoladamente; gate geral e wiring de runtime continuam pendentes.
+
+- A listagem em `carapana-tools` não deve usar um walker que reabre caminhos ambientais. O crate
+  mantém a política de recursão, ignore, exclusões e limites; `carapana-storage` fornece somente a
+  primitive de enumeração direta, abrindo cada componente com `openat` + `O_NOFOLLOW` e enumerando
+  com `rustix::fs::Dir`/`statat(..., SYMLINK_NOFOLLOW)`.
+- Cada diretório precisa corresponder à identidade capturada quando foi descoberto. A primitive
+  aplica limite sobre todas as entradas examinadas (inclusive nomes protegidos e outros filesystems),
+  não retorna nomes protegidos, identifica symlinks sem segui-los e ignora entradas de outro filesystem.
+  Compara metadados da cadeia do workspace até o diretório antes/depois, além de reabrir o caminho
+  relativo para verificar a identidade. Mudanças/substituições observadas falham fechadas; ancestrais
+  externos ao workspace não participam da comparação para que atividade alheia (por exemplo, em `/tmp`)
+  não invalide a leitura. Leituras de arquivos continuam passando pela API segura de storage.
+- A escolha reaproveita `rustix` já usado pelo storage, sem `unsafe` e sem nova dependência. Manter
+  a semântica de ignore no crate de tools evita transferir política/indexação para storage; substituir
+  `WalkBuilder` é necessário porque ele não fornece a garantia descriptor-relative requerida.
+- A API continua read-only e isolada. A abertura relativa a descritores e a revalidação reduzem a
+  janela de substituição/escape e falham fechadas em mudanças observadas; não são lock do filesystem nem
+  prova contra toda mutação concorrente. Isso não constitui o gate completo: detecção de segredos no
+  conteúdo, autorizações, sandbox, escrita, processos e aprovação seguem independentes e bloqueiam
+  runtime wiring.
+
+## PD-28 — Snapshot e substituição atômica isolada
+
+**Data:** 16 de outubro de 2026
+
+**Status:** aplicada como primitive local isolada; não habilita edição pelo agente nem wiring de runtime.
+
+- `carapana-storage` oferece snapshot em memória de um arquivo regular, não sensível, com limite de
+  256 KiB, conteúdo e metadata capturados pelo mesmo descritor; o snapshot não é serializável nem
+  imprimível por `Debug`. A escrita recebe esse snapshot, não um path/conteúdo-base livre, vinculando a
+  proposta ao workspace, path, identidade, bytes e atributos observados.
+- A primeira operação substitui somente arquivo existente. Rejeita criação, remoção, symlinks,
+  componentes inválidos, outro filesystem, hard links, arquivos grandes, extended attributes não
+  reconhecidos ou metadata/ownership que não possa preservar. No macOS, preserva byte a byte somente
+  `com.apple.provenance`, atributo aplicado automaticamente pelo filesystem. Exige conteúdo novo de
+  até 256 KiB. Cria temporário
+  exclusivo e owner-only no mesmo diretório aberto relativamente a descritores; conteúdo e mode básico
+  são sincronizados, o snapshot é revalidado e o rename é atômico. O arquivo substituto fica owner-only
+  durante o rename e só depois recebe o mode básico anterior, para não expor o temporário com permissões
+  mais amplas. Erro de sync, ajuste de mode ou validação após rename é reportado como resultado incerto;
+  o chamador não deve repetir cegamente. Erro normal tenta remover o temporário; crash ou falha nessa
+  limpeza pode deixar um arquivo oculto owner-only, sem rotina automática de recovery nesta fatia.
+- A comparação exata de conteúdo/metadata/atributos imediatamente antes do rename detecta conflitos
+  observados, mas não é compare-and-swap do filesystem nem lock contra editores externos. Uma mutação
+  adversarial entre a última validação e o rename ainda pode vencer a corrida; se outro processo
+  remover o destino exatamente nessa janela, o rename pode recriá-lo. Escritores Carapanã e externos
+  precisam de coordenação/approval próprios antes de qualquer ativação.
+- O temporário preserva owner/group somente quando a identidade herdada ao criá-lo coincide com o
+  arquivo observado; atributos estendidos não reconhecidos e arquivos com hard links são recusados.
+  No macOS, o atributo automático de provenance é copiado sem interpretação e validado antes/depois
+  do rename. Filesystem ACLs
+  não representadas por extended attributes, flags de filesystem, durabilidade e o breve intervalo
+  owner-only após rename ainda precisam de prova por OS/filesystem. Qualquer falha antes do rename
+  falha fechada; após rename o resultado pode ser incerto.
+- O primitive permanece local, bloqueado para paths protegidos e sem integração com `carapana-tools`,
+  diff, approvals, provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. A prévia de diff
+  continua visualização em memória. Wiring exige fechar limitações de concorrência/metadata e todos os
+  gates independentes de conteúdo/segredos, autorização, sandbox e teste.
+
+## PD-29 — Prévia de diff vinculada a snapshot, sem aplicação
+
+**Data:** 18 de outubro de 2026
+
+**Status:** implementada como primitive isolada em `carapana-tools`; não habilita edição ou runtime.
+
+- A nova prévia recebe uma referência a `WorkspaceFileSnapshot` e texto proposto; não aceita um path
+  nem um texto-base livre, não reabre o workspace e não altera arquivos. A entrada-base vem somente dos
+  bytes limitados e capturados pelo snapshot.
+- O objeto de resposta retém um empréstimo do próprio snapshot e expõe o path relativo por acesso
+  controlado; ele não pode sobreviver ao snapshot ou ser associado a outro arquivo. Não implementa
+  serialização nem autoriza aplicação. A função reutiliza os limites e sanitização da prévia unified
+  diff existente e falha explicitamente se os bytes capturados não forem UTF-8 válido. Tanto o path
+  quanto o diff continuam dados não confiáveis e precisam de escaping apropriado na UI.
+- Mantemos a prévia em memória independente do `replace_file_atomically`: geração de diff não chama
+  escrita, approval, provider, `ToolCallRequested`, daemon, CLI/TUI, sessão ou fila. Ausência de
+  detecção de segredos em conteúdo continua sendo limitação; o preview é dado local não confiável e não
+  deve ser compartilhado sem os gates próprios.
+- Preferida sobre receber `before`, `after` e path soltos, pois esse contrato permitiria que o chamador
+  associasse a prévia ao arquivo errado. O empréstimo evita clonar os até 256 KiB do snapshot e torna a
+  dependência temporal explícita; edições concorrentes, autorização e aplicação permanecem fora desta
+  decisão.
+
+## PD-30 — Parser limitado de status Git, sem subprocesso
+
+**Data:** 18 de outubro de 2026
+
+**Status:** implementado como parser puro em `carapana-tools`; não executa Git nem acessa o workspace.
+
+- A integração futura usa `git status --porcelain=v2 -z --branch` como fonte de verdade, em vez de
+  reconstruir status a partir da index/worktree. Esta fatia somente interpreta bytes já fornecidos pelo
+  chamador; não inicia subprocessos, lê configuração Git, acessa credenciais/rede ou modifica arquivos.
+- A saída preserva caminhos brutos (incluindo bytes não UTF-8), status separados de index/worktree,
+  caminhos de origem/destino em rename/copy e metadados básicos de branch. Paths são dados não confiáveis:
+  não autorizam acesso, não devem ser unidos a uma raiz sem confinamento separado e precisam de escaping
+  antes de exibição. Os tipos que carregam caminhos/metadados não implementam `Debug`, evitando logs
+  acidentais de nomes e branches.
+- O parser limita o buffer a 4 MiB, 20.000 entradas e 16 KiB por caminho; registros incompletos,
+  duplicação de metadados conhecidos e records desconhecidos falham fechados. Headers desconhecidos são
+  ignorados para compatibilidade futura. O executor que vier a coletar stdout ainda deverá interromper
+  a captura no limite, pois validar o tamanho após receber um buffer não limita a memória do processo pai.
+- Preferido sobre parsing de nomes delimitados por newline/saída humana, que não preservaria paths com
+  newlines ou bytes inválidos, e sobre implementar semântica Git própria. Esta primitive não é approval,
+  detecção de branch protegida, sincronização de worktrees nem autorização de commit/push; execução de
+  Git e wiring continuam bloqueados pelos gates de processo, segredos, autorização e concorrência.
+
+## PD-31 — Parser limitado de metadados de worktrees Git
+
+**Data:** 18 de outubro de 2026
+
+**Status:** implementado como parser puro em `carapana-tools`; não executa Git nem acessa worktree paths.
+
+- A integração futura usará `git worktree list --porcelain -z`; esta fatia só interpreta bytes recebidos,
+  preservando path, HEAD, ref de branch, razões e marcadores detached/bare/locked/prunable. O parser
+  limita stdout a 4 MiB, 256 worktrees, 16 KiB por path e 4 KiB por metadado; aceita OIDs SHA-1/SHA-256,
+  ignora fields desconhecidos e falha em registros conhecidos malformados/duplicados.
+- Caminhos e razões continuam dados não confiáveis: não são canonicalizados, abertos, usados como
+  autorização ou renderizados sem escaping. `locked`/`prunable` são metadados administrativos do Git,
+  não prova de posse do diretório nem sinal de que não exista sessão concorrente. O tipo não implementa
+  `Debug`, para evitar log acidental de caminhos e razões.
+- Preferido sobre parsing de saída humana delimitada por linhas, que não preserva newlines/bytes
+  inválidos. Listar worktrees, detectar sessões Carapanã concorrentes e escolher worktree versus
+  compartilhamento são etapas separadas; qualquer execução de Git/wiring continua bloqueada pelos gates
+  de processo, autorização, segredos, sandbox e concorrência.
+
+## PD-32 — Artifact store local com quota e retenção explícitas
+
+**Data:** 21 de outubro de 2026
+
+**Status:** aprovada para implementação isolada; não habilita captura automática, tools ou runtime.
+
+- O SQLite guarda somente metadados e estado de lifecycle; bytes ficam em arquivos próprios no diretório
+  privado por usuário. IDs numéricos gerados pelo SQLite, sem informação de origem embutida, determinam
+  os nomes de arquivo; IDs são identificadores, não capability de autorização. Não persistir nome de
+  origem, path do workspace, prompt ou conteúdo nos metadados/logs.
+- Defaults ajustáveis pela policy do store: no máximo 10 GiB por usuário e 256 MiB por artifact. Esses são limites de
+  admissão iniciais baseados nos valores conceituais do plano, não uma calibração final de hardware.
+  Gravações reservam capacidade antes de consumir/gravar o payload; ao exceder limite ou quota, rejeitar
+  sem remover artifacts duráveis e sem manter bytes parcialmente aceitos.
+- Artifacts duráveis são retidos até exclusão explícita. Artifacts temporários expiram sete dias após a
+  criação. Arquivos gerenciados sem registro e gravações pendentes podem ser limpos após sete dias; a
+  limpeza é limitada por lotes e nunca toca arquivos fora do namespace privado gerenciado pelo store.
+  Locks advisory coordenam writers/leitores ativos com recuperação e exclusão. Metadados de artifact
+  durável ausente/corrompido não são removidos silenciosamente.
+- Falha na limpeza mantém estado observável e pode bloquear quota; não liberar reserva enquanto bytes
+  persistirem ou estado DB/filesystem for incerto. Após limite/quota, a operação falha explicitamente;
+  não há evicção de trabalho persistente.
+- A API é local e desconectada de `ToolCallRequested`, daemon, sessão/fila, provider e UI. Não há
+  captura/cache automática de código, prompts, tool output, segredos ou diffs. Conteúdo não deve ser
+  escrito sem os gates independentes de classificação, redaction e autorização; esta decisão não prova
+  que um payload seja livre de segredos.
+- Não adicionar compressão. A policy fica configurável para futura calibração com benchmarks e hardware
+  suportado; qualquer aumento dos tetos requer revisão explícita da policy.
+- Preferido sobre BLOBs SQLite para evitar crescimento do banco/WAL e sobre evicção LRU de todos os
+  artifacts, que poderia apagar evidências ou trabalho durável. Os arquivos externos introduzem
+  reconciliação crash-safe limitada; SQLite continua como catálogo, e estados pendentes/ausentes não são
+  tratados como sucesso.
+
+## PD-33 — Sandbox Linux inicial com Bubblewrap, fail-closed
+
+**Data:** 21 de outubro de 2026
+
+**Status:** estratégia aprovada pelo operador; implementação incremental, sem ativação de tools.
+
+- O primeiro backend Linux usa Bubblewrap e namespaces sem privilégios elevados e sem rede por padrão.
+  Bubblewrap é dependência de runtime do backend, não um substituto para aprovação, proteção de segredos,
+  supervisão/cancelamento ou validação de conteúdo. macOS permanece sem execução por este backend.
+- Começar com uma prova isolada e sintética: arquivos de fixture privados, workspace somente leitura,
+  tmpfs temporário limitado, ambiente limpo, namespaces de rede/PID/usuário e `no_new_privs` comprovados.
+  Não montar HOME, credenciais, repo real nem sockets do host. Falha/indisponibilidade/timeout nunca
+  equivalem a sandbox ativo; não usar flags `*-try`, fallback sem sandbox ou elevação para passar o teste.
+- A prova aceita somente script e parâmetros internos fixos, com saída limitada e timeout. Não é API
+  pública de comando arbitrário nem permite inferir que um workspace real esteja livre de segredos.
+  O wiring futuro exige autorização exata, seleção mínima de mounts, orçamento de processos/output,
+  cancelamento e testes adversariais separados antes de `ToolCallRequested` executar algo.
+- Preferido sobre Landlock sozinho para a primeira prova porque isolamento de filesystem não basta
+  para demonstrar isolamento de rede/processos. Seccomp e outras camadas permanecem revisão própria;
+  não declarar proteção completa contra todos os ataques a partir desta prova limitada.
+
+## PD-34 — Proposta imutável e aprovação exata de comando
+
+**Data:** 21 de outubro de 2026
+
+**Status:** contrato local do gate de aprovação; sem execução, persistência ou wiring.
+
+- `carapana-core` modela uma proposta imutável com executável absoluto, argv limitado, cwd relativo ao
+  workspace e identidades de workspace/tarefa. Não resolve executáveis, abre paths, canonicaliza ou executa.
+  Strings/paths são dados não confiáveis; não implementar Debug/serialização de payload nem inferir
+  confiança ou classificação de segredos a partir da validação estrutural.
+- A solicitação de aprovação tem identidade opaca em memória, prazo monotônico e estado único.
+  Apenas evento direto do operador pode aprovar; evento de outra solicitação/workspace/tarefa falha
+  sem consumir o pedido atual. Aprovação produz um token não clonável ligado por empréstimo à proposta
+  exata; repetição/negação não produz outro token. Invalidar o pedido revoga inclusive token já emitido.
+  Descartar o controlador do pedido também revoga tokens; o futuro chamador deve mantê-lo vivo enquanto
+  a aprovação puder ser usada. Nenhum token pode autorizar algo depois do descarte silencioso da revisão.
+- Esse contrato inicial representa somente aprovação de uso único, não permissão persistente nem
+  elevação de autonomia. Tokens nunca são salvos/recriados após restart. A UI/IPC futura precisará mapear
+  sua identidade externa a esta solicitação sem tratar dados do modelo como decisão do operador.
+- O futuro executor deve consumir o token por valor e revalidar prazo, revogação, identidades e todos os
+  gates de sandbox, mounts, conteúdo, concorrência e recursos imediatamente antes do efeito. Ter token
+  não basta para spawn. Mudança de proposta exige nova solicitação; aprovação não cria configuração,
+  acesso à rede, credenciais ou autorização para um cwd fora do workspace.
+- Preferido sobre um booleano `approved` separado de argv/path, que permitiria substituir o comando
+  depois da revisão. O contrato não altera `AuthorizationGrant` existente nem habilita `ToolCallRequested`.
+
+## PD-35 — Orçamento agregado e tails limitados de output
+
+**Data:** 21 de outubro de 2026
+
+**Status:** primitive isolada, sem captura de subprocessos nem wiring de tools.
+
+- A primitive no daemon recebe chunks já limitados do futuro leitor, preserva bytes brutos e mantém
+  tails separados para stdout/stderr. O chamador escolhe explicitamente o orçamento de cada tail e o
+  limite agregado de bytes aceitos entre os dois streams; não há defaults nem realocação automática
+  de orçamento entre streams. Output de um stream não pode expulsar o tail reservado ao outro.
+- Tetos iniciais da primitive: 16 MiB de payload retido somando os dois tails e 256 MiB de captura
+  agregada, derivados dos valores conceituais do plano, não calibrados como defaults de produto.
+  Alocação de tails é lazy e limitada; falha de reserva de memória retorna erro antes de aceitar bytes.
+  Esses limites são de payload, não uma promessa de RSS incluindo allocator/processos/leitores externos.
+- Após esgotamento, chunks posteriores não são aceitos. O resultado distingue bytes aceitos/recusados,
+  perda de histórico no ring e orçamento esgotado. O futuro chamador precisa parar a leitura e encerrar
+  o processo supervisionado; deixar de drenar um pipe não é cancelamento nem backpressure seguro por si só.
+- Não decodificar/renderizar/logar output bruto, implementar Debug/Clone/serialização do buffer, persistir
+  automaticamente em artifacts ou enviar a provider. Output ainda precisa dos gates independentes de
+  conteúdo/segredos e escaping. Tails são memória volátil, não histórico durável.
+- Preferido sobre um buffer por stream com limite agregado implícito, ou `read_to_end` antes de truncar,
+  que não limitariam a memória do leitor. Esta primitive não prova execução, supervisão ou consumo bounded
+  de bytes antes da chamada; os leitores futuros devem aplicar limites antes de alocar seus chunks.
+
+## PD-36 — Staging privado de snapshots explicitamente selecionados
+
+**Data:** 21 de outubro de 2026
+
+**Status:** estratégia de snapshots selecionados aprovada pelo operador; primitive local isolada.
+
+- O primeiro fornecimento de arquivos ao sandbox parte de uma lista explícita de paths relativos,
+  sem enumeração automática do repo. Reutilizar a leitura confinada de `WorkspaceMetadata`: recusar
+  traversal, symlinks, arquivos protegidos e arquivos acima do limite existente de 256 KiB.
+- Preparar cópias efêmeras em diretório privado novo (0700, arquivos 0600), não um bind do workspace real.
+  Não copiar permissões executáveis, HOME, credenciais, arquivos não selecionados ou configuração implícita.
+  Falha de preparação tenta descartar apenas staging criado pela operação e nunca altera a origem.
+  Crash/falha de cleanup pode deixar staging privado; recovery de órfãos e orçamento global de staging
+  ainda precisam ser integrados antes de um launcher de produção.
+- O chamador informa limites explicitamente, sem defaults; tetos iniciais da primitive são 256 arquivos,
+  16 MiB de conteúdo e paths de 4 KiB/32 componentes. Esses são limites de segurança da implementação,
+  não budgets finais calibrados de build. A leitura aplica o restante do orçamento antes de alocar bytes.
+- Guardar apenas manifest efêmero com paths, tamanho e SHA-256, sem Debug/Clone/serialização. Verificação
+  posterior relê o staging pelo mesmo confinamento e falha se conteúdo/identidade mudar. Essa verificação
+  é observacional, não lock contra um atacante do mesmo UID nem prova de imutabilidade após a checagem.
+- Staging não autoriza executar/compartilhar conteúdo nem prova ausência de segredos. O futuro chamador
+  ainda deve autenticar seleção/aprovação, classificar conteúdo, montar read-only por identidade segura e
+  impedir alterações durante o uso. Aplicação de mudanças ao workspace real exige diff/revisão e aprovação
+  separadas; não há cópia de retorno, launcher de comandos ou wiring de provider nesta primitive.
+- Preferido sobre montar o repo vivo, pois evita expor arquivos não selecionados e mudanças posteriores
+  da origem. Builds que precisem de outros arquivos devem solicitar nova seleção, sem ampliar mounts
+  automaticamente ou cair para uma cópia completa do repo.
+
+## PD-37 — Quota global compartilhada por artifacts e staging
+
+**Data:** 21 de outubro de 2026
+
+**Status:** política aprovada pelo operador; integração incremental do armazenamento, sem launcher geral.
+
+- Staging deve reservar capacidade dentro da mesma quota de 10 GiB por usuário aprovada em PD-32,
+  antes de copiar bytes. Não introduzir quota adicional nem remover artifacts duráveis para abrir espaço.
+- Reservas de staging permanecem cobradas enquanto o bundle estiver ativo ou a remoção de seus bytes
+  estiver incerta. O encerramento normal tenta remover o staging e só então libera sua reserva; erros
+  preservam accounting/recovery em vez de declarar capacidade livre.
+- Reutilizar a graça de sete dias para reservas/árvores órfãs. Locks de lease protegem bundles ativos;
+  limpar somente o namespace gerenciado de staging em lotes limitados, sem seguir symlinks. Bytes órfãos
+  sem registro também precisam contar na admissão, e scans excedendo limites devem falhar fechados.
+- O catálogo usa schema v7 para impedir que cleaners antigos, que desconhecem árvores de staging,
+  voltem a abrir o catálogo e liberem reservas antes de remover seu conteúdo. A migração exige encerrar
+  clientes antigos: `user_version` não revoga conexões já abertas. O tipo de bundle com reserva será distinto do bundle
+  sintético não contabilizado; o launcher futuro deverá exigir o tipo contabilizado e os demais gates.
+- O launcher/supervisor deve manter a lease até o processo e seus consumidores de staging terminarem.
+  Não habilitar detach/`KeepRunning` sem transferência comprovada da lease ao host que mantém o processo;
+  apagar paths não prova liberação física de arquivos ainda abertos/montados. A quota é de admissão lógica,
+  não hard quota do filesystem ou isolamento contra escrita arbitrária do mesmo UID.
+
+## PD-38 — Manifesto explícito de arquivos de runtime
+
+**Data:** 21 de outubro de 2026
+
+**Status:** estratégia aprovada pelo operador; validação isolada, sem launcher geral.
+
+- Cada entrada declara origem absoluta, destino absoluto exato, papel (executável ou suporte) e SHA-256
+  esperado. Não descobrir dependências com `ldd`, interpretar scripts, buscar em PATH, baixar arquivos
+  ou expandir diretórios. Dependência ausente exige revisar o manifesto, sem fallback para `/usr` inteiro.
+- O primeiro validador Linux abre cada componente por descritor com `NOFOLLOW`, exige diretórios e
+  arquivos root-owned sem escrita por grupo/outros, recusa arquivos especiais e setuid/setgid e verifica
+  conteúdo por stream limitado. Preserva descritores read-only, identidade e assinatura observada.
+- Destinos ficam apenas em `/runtime/`, `/usr/`, `/bin/`, `/lib/` ou `/lib64/`, sem traversal, duplicatas
+  ou conflitos arquivo/diretório. Isso não autoriza executar arquivos nem comprova ausência de segredos:
+  o manifesto precisa vir de configuração confiável/revisão do operador, nunca do repo/provider sozinho.
+- O chamador informa limites de contagem e bytes; tetos da primitive: 128 arquivos, 256 MiB por arquivo
+  e 256 MiB agregados. Não são defaults de produto. Hash esperado deve ser aprovado independentemente;
+  calcular o hash do arquivo atual automaticamente não constitui allowlist de confiança.
+- Revalidação recusa mudança de origem, metadata ou conteúdo. Descritor fixado não impede modificação
+  in-place por root nem cria uma cópia imutável. O launcher futuro deve montar arquivos mínimos por
+  identidade segura, vincular o manifesto à aprovação e manter todas as outras verificações; esta fatia
+  não oferece API de spawn/mount, cache de runtime, rede ou ativação de tools. macOS retorna unsupported.
+- Preferido sobre runtime empacotado para começar sem definir distribuição/update de imagem; rever
+  essa escolha se o conjunto explícito se tornar impraticável. O probe sintético existente continua
+  separado e não comprova isolamento de comandos gerais com este manifesto.
+
+## PD-39 — Limites de memória/PIDs por cgroup v2 previamente delegado
+
+**Data:** 21 de outubro de 2026
+
+**Status:** estratégia aprovada pelo operador; preparação isolada, sem launcher geral.
+
+- Exigir um pai cgroup v2 absoluto, explicitamente configurado e previamente delegado ao usuário sem
+  privilégios. Não procurar um pai automaticamente, usar sudo, habilitar controladores, mover processos
+  existentes ou alterar limites/configuração do pai. macOS permanece unsupported.
+- Validar cgroupfs v2, domínio normal e `memory`/`pids` já habilitados no `cgroup.subtree_control` do pai.
+  Criar somente um filho com nome gerado, por descritor, sem adotar cgroups preexistentes. Configurar
+  `memory.max`, `memory.swap.max=0`, `memory.oom.group=1`, `pids.max` e proibir subgrupos; reler controles
+  antes de retornar. Limites finitos são explícitos, sem defaults; memória usa múltiplos de 64 KiB para
+  evitar arredondamento acima do orçamento em hosts com páginas de até 64 KiB.
+- Esta primeira primitive prepara/verifica/remove apenas grupos vazios. Não expor migração por PID nem
+  tratar preparação como prova de que um processo está contido. O launcher precisa de handshake antes
+  de executar código não confiável: migração não captura descendentes já criados nem toda memória prévia.
+- Remover somente o filho criado pela operação, após revalidar identidade e ausência de processos;
+  não remover recursivamente, matar processos alheios nem declarar cleanup concluído em erro. Drop é
+  best-effort e crash pode deixar cgroup vazio: recovery e supervisão continuam gates próprios.
+- Testes comuns não alteram cgroups do host. Um teste opt-in exige pai de teste explicitamente delegado
+  e valida criação/readback/remoção de filho vazio. Sem essa configuração, não declarar enforcement de
+  memória/PIDs comprovado; saturação real e lifecycle de processos ainda precisam de prova positiva.
+  O operador informou que esse pai ainda não existe. Isso não é uma decisão de interromper o
+  desenvolvimento: ele corrigiu expressamente essa interpretação e pediu continuar o plano.
+  A prova real de recursos segue pendente, sem dispensar os gates técnicos antes de execução real.
+- Preferido sobre dependência inicial de systemd de usuário para manter a interface independente do
+  gerenciador de sessão. Rever se o provisionamento da delegação for impraticável. RLIMIT isolado não
+  substitui orçamento agregado de memória/descendentes, e este slice não limita CPU/I/O/HugeTLB por si só.
+
+### Evidência adicional de PD-39 — fixture transitório autorizado em 22 de outubro
+
+- O operador autorizou especificamente criar uma unidade transitória exclusiva de teste via
+  `systemd-run --user --wait --collect`, com nome único `carapana-cgroup-test-<id>`,
+  `Delegate=memory pids` e `DelegateSubgroup=runner`. Não se trata de autorização genérica para
+  reconfigurar o host nem de mudar o backend do produto para systemd.
+- `scripts/test-delegated-cgroup.sh` verifica estar dentro da unidade nova antes de configurar seu pai
+  de teste. O backend continua recebendo explicitamente um pai já preparado; não habilita controladores.
+- Testes reais passaram criando/configurando/removendo filhos vazios e com workloads sintéticos:
+  gate byte por stdin antes de fork/alocação, número de forks finito e confirmação de `pids.events:max`;
+  alocação finita sob 32 MiB/swap zero, confirmando `memory.events:oom_kill`. Cleanup usa descritor do
+  grupo próprio, recolhe o filho direto e remove os grupos; nenhuma unidade de teste ficou carregada.
+- A inicialização confiável de Python pode anteceder a migração no fixture; isso não prova contabilizar
+  memória anterior à admissão nem oferece uma API de migração de workloads arbitrários. O launcher
+  ainda exige handshake no guardian antes do exec e lifecycle próprio; não inferir isso desta prova.
+- A prova de memória materializa as páginas com escritas de 4 KiB: reservar comprimento de bytearray
+  sozinho pode ser somente alocação virtual e não comprova pressão física. A repetição reproduziu essa
+  lacuna antes do ajuste; depois, três campanhas consecutivas passaram os eventos reais de pids/OOM.
+
+## PD-40 — Leitura limitada e não bloqueante de stdout/stderr
+
+**Data:** 22 de outubro de 2026
+
+**Status:** implementação local dos leitores, independente de delegação cgroup; sem ativar tools.
+
+- Estender PD-35 com um leitor Unix que recebe a posse de `ChildStdout`/`ChildStderr` já criados por
+  um chamador confiável. Não iniciar processos, herdar ambiente ou abrir paths nessa API. Configurar os
+  pipes em nonblocking e ler chunks fixos de até 4 KiB, alternando streams sem fila ou threads auxiliares.
+- O orçamento agregado de captura limita também cada read antes de alocar/aceitar bytes; tails continuam
+  reservados por stream. Verificar cancelamento/deadline entre reads e retornar motivo explícito:
+  EOF dos dois pipes, orçamento esgotado, cancelamento ou timeout. EOF não significa processo finalizado.
+- O chamador/supervisor deve terminar e reaproveitar/recolher somente processos próprios ao receber
+  cancelamento/timeout/esgotamento/erro. Parar a captura não mata o produtor; a API não promete isso nem
+  fecha pipes prematuramente ao devolver tails. Não usar `KeepRunning` como fallback de erro de captura.
+- Output permanece bytes brutos privados, sem Debug/Clone/serialização/logs/artifacts ou envio automático
+  a provider. A integração com o supervisor e os gates de conteúdo/segredos continuam requisitos separados.
+- Preferido sobre uma thread por pipe com canal, que pode deixar leitores presos em descendentes que
+  mantêm descritores abertos. Polling nonblocking tem latência ociosa de até 10 ms; testar pipes reais,
+  flood, stream silencioso, EOF parcial, cancelamento e deadlines antes de integrar o host.
+
+## PD-41 — Captura de output no supervisor privado de processos
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração interna, exercitada somente por fixtures locais; não é tool/IPC de usuário.
+
+- Integrar PD-40 ao host privado de processos existente: execução capturada exige limites explícitos,
+  deadline e política Terminate. Recusar KeepRunning para não deixar produtor desacoplado de captura.
+  A nova API interna não muda os handlers do daemon/provider nem contorna sandbox/autorização.
+- Reportar tails privados e motivo de término pelo pipe privado já existente, em frame limitado.
+  O transporte interno recebe no máximo 8 KiB agregados de tails, para caber no frame de 64 KiB mesmo
+  na codificação JSON worst-case de bytes. Não serializar buffers públicos nem persistir/logar o payload.
+- EOF dos pipes exige verificar o processo, não concluir sucesso. Timeout, cancelamento, limite de output
+  e erro encerram o grupo próprio pelo host; o chamador espera o host terminar antes de retornar.
+  Resultado de captura e exit status são distintos; nunca retornar tails como prova de sucesso do comando.
+- Cancelamento/interrupção do cliente usa o pipe de controle e o guardian já existente. O host continua
+  responsável pelo grupo até SIGKILL, evitando reutilização do PGID. Isso não impede fuga de descendentes
+  que façam setsid: o futuro executor ainda precisa integrar namespace/cgroup e os demais gates.
+- Limite de captura termina o processo sem enviar/persistir o restante; não há evicção de artifacts nem
+  fallback automático para execução sem limites. Aprovação de comandos de modelo continua separada.
+
+## PD-42 — Edição vinculada a snapshot, diff e aprovação exata
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração local entre primitives já existentes; sem handlers de tools/provider.
+
+- Uma proposta imutável possui snapshot original, texto de substituição limitado, workspace/tarefa e
+  prévia de diff. Não aceitar path ou novos bytes na aplicação depois de aprovar. A prévia sanitizada é
+  visualização, não um patch: aplicar os bytes originais vinculados à proposta, sem reinterpretar o diff.
+- Reutilizar o controlador de aprovação exata de PD-34, generalizando-o para propostas tipadas e
+  preservando aliases de comandos. Identidade opaca por solicitação, expiração, negação, revogação e
+  descarte do controlador mantêm a mesma semântica; token não clonável é consumido por valor no efeito.
+- Aplicação revalida workspace/tarefa/prazo/revogação e usa a substituição atômica de PD-28, que já
+  recusa identidade/bytes/metadata alterados e paths inseguros. Erro ou commit incerto exige nova revisão,
+  sem reaproveitar automaticamente o token. Não é transação multi-arquivo nem CAS contra editor externo.
+- Tipos genéricos de aprovação são decisões, não autoridade de efeito; implementadores de propostas
+  precisam manter os campos revisados imutáveis. O aplicador aceita somente a proposta concreta de edição,
+  sem conversão de token de comando/outro tipo. A origem do evento de operador deve ser autenticada pelo
+  futuro UI/IPC e os gates de conteúdo/segredos e concorrência continuam independentes.
+- Propostas/tokens não têm Debug/Clone/serialização e não persistem após restart. A operação permanece
+  interna/local, sem envio de contexto, ativação de tools ou alteração da política de arquivos protegidos.
+
+## PD-43 — Admissão única de filho próprio e término de cgroup
+
+**Data:** 22 de outubro de 2026
+
+**Status:** API de infraestrutura e prova sintética real; integração do handshake ao guardian ainda própria.
+
+- A lease preparada aceita um `Child` próprio, não um PID arbitrário, somente uma vez. Revalida grupo
+  vazio/limites/identidade e vida do filho, publica intenção de admissão antes da escrita e confirma
+  membership em `cgroup.procs`. Filho que terminou não pode ser migrado; resultado incerto conserva
+  autoridade de cleanup exclusivamente sobre o grupo recém-criado.
+- O chamador deve manter o filho bloqueado em código confiável até confirmar a admissão. Isso é um
+  precondição do adaptador, não inferida de `Child`: não migrar comandos já rodando nem prometer capturar
+  descendentes/memória anteriores. A próxima integração deve colocar o guardian no grupo antes de exec.
+- Término usa `cgroup.kill` no descritor do grupo próprio e espera ausência de processos com prazo finito.
+  Antes de qualquer admissão, grupo inesperadamente ocupado não pode ser morto. Drop tenta terminar
+  apenas uma lease com admissão iniciada, com prazo de três segundos, e remover somente o grupo vazio.
+  Falha preserva o grupo para revisão; o supervisor ainda precisa recolher seu `Child` e reter staging
+  até o lifecycle terminar. Não matar por nome, sinalizar PIDs externos ou remover recursivamente.
+- Prova opt-in real confirma um descendente após `setsid`, sua presença antes do término e esvaziamento
+  do cgroup ao usar a API, além de recusa de segunda admissão. Usa somente scripts fixos na unidade
+  transitória de teste já autorizada; não muda política de rede/sandbox nem habilita tools.
+
+## PD-44 — Guardian admitido antes de exec e kill switch por descritor
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração interna Linux, sem handlers de tool/IPC de usuário ou launcher geral.
+
+- `run_captured_resource_scoped_process` exige lease nova, limites explícitos e Terminate. O guardian
+  envia ReadyForAdmission antes de iniciar o executável; o supervisor move seu Child próprio ao grupo
+  e só então envia Admit. O guardian confirma membership real do kernel antes de exec: uma mensagem
+  Admit sem migração não basta. Falhas nunca caem para a execução capturada sem cgroup.
+- O pai instala um arquivo write-only `cgroup.kill` fixado da lease como stderr reservado do guardian,
+  usando somente a duplicação segura de stdio de Command (sem unsafe ou flags globais de herança FD).
+  Esse fd não é log. O target recebe stderr/stdout novos em pipes e não herda o kill switch.
+  O modo privado do CLI retorna falha por exit status sem imprimir em stderr; a regressão comprovou
+  que tentar logar no controle rejeitado causava panic, agora recusado pelo teste de saída normal.
+- O guardian verifica cgroupfs do fd, nome do controle e identidade de seu diretório contra a membership
+  reportada por `/proc/self/cgroup` na montagem padrão `/sys/fs/cgroup`. Montagem/membership indisponível
+  ou incompatível falha fechada, sem descoberta/fallback. O efeito de kill usa o descritor fixado,
+  nunca uma reabertura por path fornecido no comando.
+- Ao terminar/timeout/cancelar/perder o controller, o guardian usa seu kill switch para encerrar todo o
+  cgroup, incluindo a si mesmo e descendentes após setsid. O supervisor também tenta esvaziar a lease
+  e recolhe o host antes de retornar. Cleanup incerto retorna erro específico e exige reter recursos
+  para inspeção; não equivale a sucesso. OOM pode matar guardian antes do relatório: retornar erro,
+  não reiniciar/duplicar execução nem executar fora do grupo para obter output.
+- Provas reais na unidade transitória autorizada cobrem target dentro do cgroup, stderr sem kill switch,
+  término de descendente após setsid, EOF do controller sem cleanup explícito do pai, recusa de Admit
+  falso, recusa de reuse antes de novo target e OOM sem fallback. O gate pendente antes de Admit também
+  é testado nos testes comuns, sem cgroup mutável.
+- Isso não isola filesystem/rede nem impede acesso malicioso ao cgroupfs se o target ainda enxergar o
+  host. O futuro launcher deve esconder esses controles/FDs e vincular mounts/runtime/budgets à aprovação.
+  Fixtures são scripts sintéticos confiáveis; não ativar ToolCallRequested a partir dessa integração.
+
+## PD-45 — Imagem de runtime imutável antes dos mounts
+
+**Data:** 22 de outubro de 2026
+
+**Status:** preparação interna Linux; não ativa launcher/tools.
+
+- O manifesto verificado de PD-38 fixa identidade, mas não impede escrita in-place após o hash.
+  Antes de transportar bytes para mounts, consumir esse manifesto numa imagem de arquivos `memfd`
+  selados contra escrita, crescimento, truncamento e remoção de seals. Não reabrir paths para mounts.
+- Revalidar as fontes antes da cópia, copiar em chunks limitados com orçamento explícito por arquivo
+  e agregado, comparar tamanho/identidade antes/depois e conferir SHA-256 da cópia selada. Falha não
+  retorna imagem parcial nem faz fallback para o arquivo original. Descritores mantêm CLOEXEC;
+  transporte ao guardian é etapa separada, sem alteração global de flags ou herança automática.
+- Preferido a bind de arquivos originais (janela de mutação) ou cópia em paths temporários mutáveis.
+  O custo é memória/shmem adicional de até o orçamento solicitado, sem cache persistente ou artifacts.
+  Esse orçamento não é uma reserva global de memória: o launcher ainda precisa limitar admissão e
+  contabilizar a preparação fora do cgroup do target. Não alegar que selar classifica segredos,
+  autentica aprovação, comprova executabilidade ou resolve mounts/lifecycle por si só.
+
+## PD-46 — Transporte privado de imagens seladas por SCM_RIGHTS
+
+**Data:** 22 de outubro de 2026
+
+**Status:** transporte interno Linux; integração ao protocolo do guardian ainda pendente.
+
+- Usar um datagrama em socketpair Unix privado para transportar somente os descritores da imagem,
+  na ordem do manifesto esperado. Não transportar paths de origem, ambiente ou kill switches. Não
+  criar listener/socket público. Um peer privado não autentica aprovação nem classifica conteúdo.
+- Receber com CLOEXEC atômico, orçamento explícito, prazo finito, rejeição de truncamento/quantidade
+  incorreta e validação independente dos seals, tamanho e SHA-256 contra manifesto já verificado.
+  Descritores recebidos são fechados por ownership em todo erro, sem fallback por path.
+- Preferido a desativar CLOEXEC globalmente ou reabrir `/proc/<pid>/fd` de outro processo por path.
+  Flags nonblocking são por chamada; não mudar o modo compartilhado do socket. A integração futura
+  ainda deve mapear exclusivamente os fds aprovados ao Bubblewrap e fechar o canal antes do target.
+
+## PD-47 — Helper privado com runtime selado e raiz mínima Bubblewrap
+
+**Data:** 22 de outubro de 2026
+
+**Status:** execução interna com fixtures sintéticos; sem tools, snapshots ou autorização geral.
+
+- Um modo dedicado/single-threaded do CLI recebe setup limitado a 128 KiB e a imagem selada por
+  socketpair privado mapeado em stdin. Revalida limites, destinos, executable selecionado, hashes e
+  seals. Não recebe flags livres de Bubblewrap, ambiente, paths de origem ou diretórios do host.
+- Fixar o executável root-owned do Bubblewrap por descritor e usar fexecve seguro. Só no helper,
+  imediatamente antes desse exec, permitir herança dos fds validados da imagem, individualmente.
+  Não mudar flags globais nem a tabela de descritores de um daemon compartilhado. Stdin passa a
+  `/dev/null` e o canal privado fecha antes do exec; o target não deve receber os descritores de setup.
+- Bubblewrap copia cada fd em mount readonly com modo 0555 para executáveis e 0444 para suporte,
+  mantendo destinos exatos. Sem mounts amplos de `/usr`, libs, workspace ou home; namespaces isolados,
+  capabilities removidas, userns aninhado desabilitado, ambiente fixo e raiz/workspace vazio readonly.
+  Somente `/tmp` é scratch gravável, com tamanho explícito até 64 MiB. Exigir todos os controles,
+  sem retry relaxado, downloads, PATH/ldd ou dependências descobertas automaticamente.
+- Preferido a pré-exec unsafe ou reabertura de fds por path de outro PID. Há cópia adicional interna
+  do Bubblewrap e o custo exige futura admissão global/cgroup; este helper ainda não possui o lifecycle
+  do guardian nem consome aprovação. Testá-lo com programas fixos não autoriza comandos de modelo.
+  Próximas etapas: canal do guardian, staging reservado e aprovação exata antes de qualquer wiring.
+
+## PD-48 — Imagem mínima dentro do guardian admitido
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração interna Linux, sem tools nem workspace real.
+
+- Reusar admissão/captura/cleanup de PD-44 para executar o helper de PD-47. O supervisor escolhe seu
+  próprio CLI e modo privado, sem aceitar executável externo nessa API. Só depois de confirmar a
+  admissão envia um único socket privado por SCM_RIGHTS; a imagem segue nesse socket separado.
+- Controle do guardian passa por socketpair stream privado, com os mesmos frames limitados. Ler por
+  File não bufferizado: stdin bufferizado pode consumir o byte associado ao SCM_RIGHTS sem receber os
+  direitos. O socket do helper chega com CLOEXEC e é mapeado somente como stdin do helper, nunca como
+  stdin do target final ou como fd de controle herdado por ele.
+  Duplicações locais usam `fcntl_dupfd_cloexec` atômico, não `dup` simples: a regressão reproduziu
+  herança do fd privado antes da correção. Não confiar no fechamento de fds posterior do Bubblewrap
+  para proteger os caminhos de captura comuns que não passam pelo helper.
+- Falhas no transporte, imagem, backend, OOM ou cancelamento usam cleanup do mesmo cgroup, sem repetir
+  fora dele. Manter imagem e canais vivos até a captura terminar. Não confundir isso com aprovação:
+  staging reservado, orçamento global de preparação e revisão exata/conteúdo continuam gates próprios.
+
+## PD-49 — Snapshots reservados e selados no workspace mínimo
+
+**Data:** 22 de outubro de 2026
+
+**Status:** integração interna Linux; não ativa tools ou compartilhamento de contexto.
+
+- Consumir somente `ReservedSelectedSnapshotBundle`, nunca staging não contabilizado, numa imagem
+  de snapshots selados. Revalidar inventário, leitura confinada e hash de cada arquivo antes de selar;
+  manter a lease original sob a mesma quota enquanto o launch possuir a imagem. Alterações posteriores
+  da fonte não alteram os bytes selecionados; nenhum path da fonte ou staging é enviado ao helper.
+- O helper recebe somente arquivos de dados sob `/workspace`, não executáveis, e os monta readonly
+  por descritor. Validar destinos canônicos, conflitos, quantidade/tamanho/hashes/seals antes de mounts.
+  Preservar os limites existentes: 256 arquivos, 16 MiB agregados e limite de leitura por arquivo.
+  Transportar em lotes de no máximo 128 direitos, sem aumentar o teto de arquivos de runtime de PD-38.
+- Preferido a mount de diretório de staging mutável (janela de inventário/bytes) ou reopen de paths.
+  Há shmem adicional e cópia do Bubblewrap ainda sujeitos à futura admissão global de preparação;
+  reserva de staging não é contabilização de toda memória do processo. Imagem não classifica segredos
+  nem autentica seleção/aprovação. Sem copy-back ou escrita automática na fonte/workspace real.
+
+## PD-50 — Aprovação exata da execução composta
+
+**Data:** 22 de outubro de 2026
+
+**Status:** efeito interno tipado, ainda sem handler de tools/UI/provider.
+
+- Uma proposta imutável possui workspace/tarefa, identidade física da fonte, launch completo com
+  runtime e snapshots reservados, argumentos, scratch e budgets de captura/memória/PIDs. Exigir uma
+  imagem de workspace reservada, inclusive para seleção vazia; não aceitar novos bytes/paths/limites
+  no efeito. Reusar controlador genérico de PD-34/42, sem serializar ou clonar proposta/token.
+- Consumir token concreto por valor e revalidar escopo, prazo monotônico e revogação no começo, antes
+  da admissão, antes de transmitir código e durante a captura. Conferir workspace físico, staging e
+  limites exatos da lease antes do efeito; validar o token novamente após verificações de filesystem.
+  Intervenção/expiração em execução provoca cleanup do cgroup e erro, sem fallback ou retry automático.
+- Preferido a token de comando desacoplado do runtime/staging ou flags booleanas de aprovação.
+  Os eventos de operador e o relógio são fornecidos pelo controlador confiável, nunca pelo modelo.
+  Isto não autentica eventos UI/IPC, classifica segredos, resolve concorrência/admissão global ou
+  autoriza ativar ToolCallRequested. Primitives sem aprovação seguem somente para provas internas.
+
+## PD-51 — Ledger compartilhado para admissão de preparação
+
+**Data:** 22 de outubro de 2026
+
+**Status:** infraestrutura persistente; ligação antes das alocações e recovery de consumidores pendentes.
+
+- Separar a conta de preparação/RAM da quota de artifacts/staging em disco. Reservar bytes nominais
+  e slots atomicamente no catálogo único do usuário, com política explícita, sem defaults numéricos
+  finais antes dos benchmarks. Conexões ao mesmo catálogo não podem substituir a política por outra
+  maior/menor silenciosamente. Uma reserva não é medição ou limite de RSS total da máquina.
+- A reserva é um objeto opaco, não clonável/serializável, sem API de liberação por ID. Liberação
+  explícita consome a lease e só deve ocorrer depois de fechar buffers e confirmar fim de consumidores.
+  Drop/crash não provam isso: reservas abandonadas continuam cobradas/quarentenadas, sem TTL que possa
+  liberar budget enquanto um guardian/target ainda conserva páginas. Recovery precisa de prova própria.
+- Preferido a contador isolado por processo (reinício/múltiplas conexões poderiam sobre-admitir) ou
+  reutilizar quota de disco como se fosse RAM. Schema v8 adiciona tabelas próprias sem alterar artifacts,
+  staging, sessões/eventos ou seus IDs. Limites finais e admissão por pressão real ainda são próprios.
+
+## PD-52 — Reserva antes das imagens e ownership até liberação comprovada
+
+**Data:** 22 de outubro de 2026
+
+**Status:** composição interna admitida; sem ativação de tools, defaults finais ou recovery automático.
+
+- A factory admite um orçamento nominal compartilhado antes de verificar/copiar/selar payloads. A
+  conta conservadora inclui teto do cgroup, runtime declarado, duas vezes snapshots declarados e
+  buffers limitados conhecidos. Não equivale a RSS real nem inclui toda memória externa/caches do OS.
+  Não escolher defaults de máquina; a capacidade do catálogo continua explicitamente configurada.
+- O objeto admitido possui proposta imutável e lease, nessa ordem de drop. O efeito aceita apenas
+  aprovação desse objeto, reusando as mesmas revalidações de PD-50; não expõe um token convertido ou
+  aprovação sintetizada. Preparação negada não aloca imagens/staging; falha de construção fecha seus
+  payloads antes de liberar a reserva. Nenhum efeito é autorizado só por obter capacidade.
+- Release consome o objeto, primeiro fecha payloads/staging e depois libera a lease. Só é permitido
+  no estado pronto, nunca durante execução ou após erro de processo com cleanup desconhecido. Drop
+  no estado pronto usa a mesma liberação após fechar payloads; a prova é o lifecycle pronto, não o Drop.
+  Panic/resultado incerto conservam a cobrança em quarentena; erros de autorização após cleanup
+  confirmado podem voltar a pronto. Não usar TTL ou contador de processo como prova de consumidores.
+- Preferido a reservar depois do memfd ou liberar a lease antes dos buffers. Recovery de órfãos,
+  fairness/pressão real, UI autenticada e conteúdo/segredos continuam gates separados.
+
+## PD-53 — Gate explícito de disponibilidade e pressão do host Linux
+
+**Data:** 24 de outubro de 2026
+
+**Status:** implementação interna; sem defaults finais, ativação de tools ou promessa de RSS total.
+
+- Além do ledger nominal, consultar `MemAvailable` e PSI de memória (`some/full avg10`) diretamente
+  do kernel, com leituras bounded e parser estrito. Política explícita define margem disponível e
+  tetos PSI em basis points; não aceitar amostras do modelo/UI como evidência de saúde do host.
+  Ausência, formato inválido e overflow bloqueiam, sem fallback para RAM total ou pressão zero.
+- Reservar capacidade compartilhada primeiro e verificar saúde antes de criar payloads; reamostrar
+  antes da execução aprovada. Rejeição não espera em fila nem aumenta limites. Política permanece
+  imutável com a proposta para review. Testes usam somente leituras reais/sintéticas, sem produzir OOM.
+- É gate do host, não leitura de RSS nem garantia atômica contra outras aplicações: PSI é média
+  histórica e disponibilidade pode mudar após a leitura. O cgroup do alvo continua obrigatório;
+  limites herdados do cgroup do controlador, monitoramento durante execução, fairness, recovery de
+  órfãos e benchmarks por máquina continuam pendentes. Não anunciar este sinal como proteção completa.
+- Preferido a assumir que reserva nominal implica ausência de pressão ou escolher defaults finais
+  em um Ryzen como substituto dos demais hosts. Revisitar limites só com benchmarks autorizados.
+
+## PD-54 — Considerar os limites herdados do controlador na admissão
+
+**Data:** 24 de outubro de 2026
+
+**Status:** composição interna com PD-53; sem alteração de unidades ou controles do host.
+
+- A saúde do host não revela a margem dentro de uma sessão/container limitada. Ler membership
+  cgroup v2 do próprio controlador e percorrer a hierarquia visível via descritores no mount padrão,
+  sem seguir symlinks. Verificar o filesystem cgroup2 e limitar profundidade, paths e leituras.
+- Combinar `MemAvailable` com a menor margem `memory.max/high - memory.current` entre os ancestrais;
+  usar o maior PSI `some/full avg10` observado. `max` significa sem teto naquele nível, não pressão
+  zero nem permissão para ignorar um ancestral. Confirmar membership antes/depois da leitura e falhar
+  fechado em mudança, dados inválidos, mount não suportado ou controles ausentes. Raiz que expõe
+  `memory.current` indica subárvore/namespace com ancestrais ocultos e é rejeitada, não presumida global.
+- Reutilizar a mesma política explícita/imutável e as mesmas fronteiras de PD-53. Somente leitura:
+  não habilitar controllers, mover o controlador, alterar limites ou reiniciar serviços.
+- Não é amostragem atômica nem prova de RSS individual: contadores podem mudar, e ancestrais ocultos
+  por cgroup namespace/mount não são observáveis. A configuração suportada exige hierarquia padrão
+  visível; isolamento do alvo e calibração continuam provas independentes.
+
+## PD-55 — Reamostrar saúde de memória durante a execução admitida
+
+**Data:** 25 de outubro de 2026
+
+**Status:** composição interna de PD-52/53/54; sem ativar tools ou escolher defaults de memória.
+
+- A disponibilidade pode mudar após a admissão. Reutilizar a política imutável do objeto admitido
+  no loop de supervisão, com primeira leitura imediata e cadência mínima de 100 ms pelo relógio
+  monotônico local. Esse intervalo limita leituras, não garante latência máxima sob suspensão/carga.
+- Durante a execução, verificar somente a margem remanescente e PSI (`check(0)`), não reservar
+  novamente o teto inteiro do alvo já admitido. Antes do efeito continua valendo a margem para
+  o alvo ainda não iniciado. Falha de leitura ou violação encerra o escopo, sem retry/fila/fallback.
+- O erro de memória só é devolvido depois de terminar o cgroup e reap do guardian; incerteza de
+  cleanup prevalece e mantém quarentena. Os payloads continuam cobrados até seu descarte.
+- Preferido a tratar a amostra inicial como válida durante toda a execução ou criar um monitor
+  assíncrono desvinculado do lifecycle. É amostragem periódica, não reserva atômica, limite global de
+  RSS ou proteção contra um OOM entre amostras; fairness, recovery e calibração continuam separados.
+- Prova local usa apenas um controlador-filho em subgrupo exclusivo da unidade transitória de
+  teste. Reduzir `memory.high` desse fixture após observar o alvo, sem alocar memória para produzir
+  pressão no host; nenhum controle de outra unidade pode ser alterado.
+
+## PD-56 — Isolar capacidade nominal por workspace físico
+
+**Data:** 25 de outubro de 2026
+
+**Status:** extensão interna do ledger; sem scheduler, defaults calibrados ou ativação de tools.
+
+- Permitir tetos explícitos de bytes/leases por workspace, nunca maiores que os globais. A mesma
+  transação `IMMEDIATE` verifica ambas as contas. Sessões do mesmo diretório compartilham a cota;
+  worktrees físicos distintos são contas distintas. A chave é device/inode validado, sem caminhos
+  ou ID vindo do modelo. O preparo valida a identidade antes de reservar e criar runtime/snapshots.
+- A API sem workspace só continua disponível quando limites locais e globais são iguais; não pode
+  contornar isolamento. Políticas de conexões diferentes devem coincidir exatamente.
+- Migrar SQLite v8 para v9 sem apagar reservas: linhas antigas sem identidade continuam cobradas
+  globalmente e conservadoramente em cada workspace. Nunca atribuir retrospectivamente uma lease
+  ao workspace atual, nem liberar por idade. Quarentena conserva a cota de origem.
+- Tetos locais reduzem monopolização, mas não reservam mínimo para cada workspace nem garantem
+  fairness/starvation: concorrentes ainda podem consumir o total. Sem defaults de hardware ou
+  prioridade implícita; revisitar distribuição apenas com decisão de produto e medidas.
+- Preferido a contadores só em memória (não coordenam processos) ou chave renovável de sessão
+  (permite escapar da cota). Reuso de inode pode causar cobrança conservadora até reconciliação,
+  não autoriza descarregar leases antigas. Recovery de órfãos continua independente.
+
+## PD-57 — Recovery limitado à preparação comprovadamente não exportada
+
+**Data:** 25 de outubro de 2026
+
+**Status:** composição interna; recuperação pós-exportação continua bloqueada sem prova adicional.
+
+- Registrar a posse de preparos recuperáveis com controle privado 0600, lock exclusivo do kernel e
+  identidade device/inode persistida. Payloads só podem ser construídos após confirmar o registro.
+  Antes de qualquer início de execução/exportação, persistir marca irreversível `exported=1`.
+  Falha/commit incerto impede o efeito. O lock acompanha o objeto e fecha após os payloads.
+- Recovery explícito e bounded exige registro `exported=0`, identidade exata e lock exclusivo livre;
+  não usa PID/TTL/relógio como evidência. Transação revalida a política e remove apenas essas leases.
+  Controles ausentes/substituídos/inseguros falham fechados. Locks ocupados preservam a reserva.
+- Leases antigas, raw ou já exportadas permanecem cobradas, inclusive após panic/crash. Isso não
+  prova cleanup de consumidores externos: somente o caso anterior à exportação é recuperável.
+  A API é fronteira do controlador confiável, não autorização para código arbitrário liberar IDs.
+- Preferido a liberar por ausência de PID ou timeout e a recuperar exportados com um simples lock
+  do controlador: consumidores podem sobreviver ao controlador. Não há recuperação automática na
+  abertura nem mudança de cgroups/unidades. Restore/cópia de catálogo com controles exige revisão própria.
+
+## PD-58 — Persistir a conclusão comprovada dos consumidores
+
+**Data:** 25 de outubro de 2026
+
+**Status:** composição interna; crash durante execução sem prova de cleanup continua em quarentena.
+
+- Após o supervisor devolver resultado com cleanup/reap comprovados, persistir confirmação de término
+  dos consumidores antes de voltar a Ready. Isso permite recovery explícito se o dono morrer depois
+  da execução, ainda retendo imagens. A marca de exportação não é apagada nem inferida de idade/PID.
+- Nova execução invalida essa confirmação na mesma barreira persistida anterior ao efeito. Erros
+  de processo, panic e cleanup incerto nunca confirmam término; falha de persistência conserva estado
+  incerto. Payloads permanecem cobrados enquanto o lock do dono existir.
+- Recovery de concluídos exige confirmação persistida e o mesmo lock/identidade de PD-57. É separado
+  do recovery pré-exportação. O setter no storage é fronteira do controlador confiável, como release,
+  não prova kernel independente nem API de liberação por ID. Não recupera automaticamente consumidores
+  que podem continuar vivos após perda do controlador durante uma execução.
+
+## PD-59 — Espera explícita, limitada e justa por workspace
+
+**Data:** 25 de outubro de 2026
+
+**Status:** aprovada pelo operador nesta conversa; substitui a recusa sem espera de PD-53 apenas
+quando a política explícita de fila estiver configurada. Sem ativar execução automática.
+
+- Persistir somente intenções de capacidade: identidade física do workspace, bytes nominais e
+  prazo. Limites explícitos de espera total, por workspace e duração; nenhum payload ou aprovação
+  é armazenado na fila. Ticket não autoriza comandos nem restaura aprovação após reinício.
+- FIFO dentro de cada workspace e rotação persistida entre workspaces. Novos workspaces entram
+  no fim da rotação, não na frente dos que já esperam. Ignorar temporariamente um workspace sem
+  capacidade local permite atender outro elegível, sem apagar a posição do bloqueado.
+- Claim explícito valida ticket, fonte física e orçamento recalculado; concede a lease e remove o
+  ticket na mesma transação. Configurar a fila impede contorno pela API de admissão imediata.
+  Depois disso, preparo, saúde de memória e aprovação exata continuam sendo gates independentes.
+- Cancelamento/expiração encerram somente a intenção; nunca liberam leases ativas. Recuperar a fila
+  não inicia trabalho. Políticas entre conexões devem coincidir. Sem retry automático de efeitos,
+  prioridades implícitas ou promessa de latência quando trabalhos ativos não liberam capacidade.
+
+## PD-60 — Proveniência da reserva anterior ao registro de posse
+
+**Data:** 25 de outubro de 2026
+
+**Status:** complemento interno de PD-57; sem recuperação de consumidores em execução.
+
+- Registrar na mesma transação da reserva se ela é uma intenção de preparo gerenciado. Somente
+  essas novas intenções podem ser reconciliadas quando ainda não existe registro de posse; linhas
+  antigas/raw não recebem essa classificação retrospectivamente.
+- O preparo não pode criar payloads antes de confirmar o registro de posse. Reconciliador mantém
+  transação `IMMEDIATE`: se vencer antes desse registro, remove a intenção sem payloads; a tentativa
+  concorrente de registrar posse falha por FK e não pode prosseguir para alocação. Se registro de
+  posse vencer, valem o lock e as provas de PD-57/58, nunca ausência de PID ou TTL.
+- Cobre crash na janela reserva/controle sem confundir metadata ausente de uma intenção incompleta
+  com prova para leases genéricas. Catalog restore/corrupção que perde proveniência não é suportado
+  como fonte de autorização para recovery; não inferir fases a partir de arquivos soltos.
+- Interrupção antes do registro pode deixar controles vazios sem proveniência de arquivo. Não
+  apagar entradas desconhecidas: a criação de controles limita a enumeração a 4096 entradas e
+  falha ao atingir o orçamento. Isso limita metadata acumulada, não é quota global de filesystem;
+  não contorna a recusa apagando arquivos ou aumentando limites automaticamente.
+
+## PD-61 — Toolchain efetivo e baseline sintético de admissão
+
+**Data:** 25 de outubro de 2026
+
+**Status:** medição do controle de admissão, não defaults finais de sessões/agentes.
+
+- O gate e campanhas invocam `rustup run` com o pin numérico do repositório. O operador confirmou
+  **1.99.1**, substituindo o pin antigo 1.98.1; não presumir o compilador efetivo a partir do arquivo.
+  O helper não instala software nem muda defaults; componente ausente falha explicitamente.
+- A campanha delegada limita a dois jobs a compilação Cargo dentro de sua unidade transitória,
+  evitando multiplicar compiladores no host compartilhado. Esse limite é do fixture de validação,
+  não um default final de concorrência do produto, nem um hard limit de RSS do compilador.
+- Probe release fixo, somente SQLite/leases/fila e fixtures próprias: 16 operações por fase, sem
+  inferência, contexto real, execução de tools ou alocação do orçamento nominal inteiro. Medir esse
+  componente não prova RSS de sessões, parsers, snapshots, agentes, providers ou processos externos.
+- Runner valida schema/output bounded e mata/recolhe seu filho próprio no timeout, sem alegar
+  sandbox genérico. `ru_maxrss` pode incluir memória pré-exec do wrapper: é identificado como tal.
+  Linux reporta separadamente VmHWM do próprio probe; não atribuir o wrapper ao RSS do harness.
+- Campanhas serializadas usam um warmup e três amostras em unidade transitória exclusiva limitada
+  (256 MiB, swap zero, 32 tarefas, CPU 100%, 60 s), sem reconfiguração persistente. O mesmo binário
+  é identificado por SHA-256. Resultados não autorizam comparar capacidade entre máquinas ou
+  escolher paralelismo final. Mac será validado manualmente pelo operador, sem SSH do agente.

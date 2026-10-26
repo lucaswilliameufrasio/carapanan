@@ -1,0 +1,94 @@
+[
+  {
+    "binary_sha256": "b200d55455c59ca3953e06494fa04c48f23d676902921b6fcdfca7d11267f0ab",
+    "child_max_rss_bytes": 3686400,
+    "child_system_cpu_seconds": 0.10191499999999999,
+    "child_user_cpu_seconds": 0.029966999999999997,
+    "platform": "darwin",
+    "probe": {
+      "claim_total_us": 244693,
+      "enqueue_total_us": 45009,
+      "immediate_total_us": 354869,
+      "iterations": 16,
+      "nominal_bytes_per_intent": 1048576,
+      "open_us": 24426,
+      "production_defaults_calibrated": false,
+      "remaining_reserved_bytes": 0,
+      "remaining_waiting": 0,
+      "schema_version": 1,
+      "scope": "sqlite-admission-control-plane-only"
+    },
+    "rusage_includes_preexec": true,
+    "schema_version": 1,
+    "wall_ms": 793.603
+  },
+  {
+    "binary_sha256": "b200d55455c59ca3953e06494fa04c48f23d676902921b6fcdfca7d11267f0ab",
+    "child_max_rss_bytes": 3653632,
+    "child_system_cpu_seconds": 0.09697299999999999,
+    "child_user_cpu_seconds": 0.030782,
+    "platform": "darwin",
+    "probe": {
+      "claim_total_us": 276938,
+      "enqueue_total_us": 33799,
+      "immediate_total_us": 277710,
+      "iterations": 16,
+      "nominal_bytes_per_intent": 1048576,
+      "open_us": 6568,
+      "production_defaults_calibrated": false,
+      "remaining_reserved_bytes": 0,
+      "remaining_waiting": 0,
+      "schema_version": 1,
+      "scope": "sqlite-admission-control-plane-only"
+    },
+    "rusage_includes_preexec": true,
+    "schema_version": 1,
+    "wall_ms": 632.809
+  },
+  {
+    "binary_sha256": "b200d55455c59ca3953e06494fa04c48f23d676902921b6fcdfca7d11267f0ab",
+    "child_max_rss_bytes": 3719168,
+    "child_system_cpu_seconds": 0.094321,
+    "child_user_cpu_seconds": 0.029834,
+    "platform": "darwin",
+    "probe": {
+      "claim_total_us": 268142,
+      "enqueue_total_us": 33415,
+      "immediate_total_us": 229806,
+      "iterations": 16,
+      "nominal_bytes_per_intent": 1048576,
+      "open_us": 10556,
+      "production_defaults_calibrated": false,
+      "remaining_reserved_bytes": 0,
+      "remaining_waiting": 0,
+      "schema_version": 1,
+      "scope": "sqlite-admission-control-plane-only"
+    },
+    "rusage_includes_preexec": true,
+    "schema_version": 1,
+    "wall_ms": 585.665
+  },
+  {
+    "binary_sha256": "b200d55455c59ca3953e06494fa04c48f23d676902921b6fcdfca7d11267f0ab",
+    "child_max_rss_bytes": 3653632,
+    "child_system_cpu_seconds": 0.098455,
+    "child_user_cpu_seconds": 0.028939999999999997,
+    "platform": "darwin",
+    "probe": {
+      "claim_total_us": 214372,
+      "enqueue_total_us": 16400,
+      "immediate_total_us": 254909,
+      "iterations": 16,
+      "nominal_bytes_per_intent": 1048576,
+      "open_us": 16103,
+      "production_defaults_calibrated": false,
+      "remaining_reserved_bytes": 0,
+      "remaining_waiting": 0,
+      "schema_version": 1,
+      "scope": "sqlite-admission-control-plane-only"
+    },
+    "rusage_includes_preexec": true,
+    "schema_version": 1,
+    "wall_ms": 549.263
+  }
+]

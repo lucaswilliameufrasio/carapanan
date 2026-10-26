@@ -1,11 +1,25 @@
 #![cfg(unix)]
 
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{
+    fs,
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[test]
 fn should_launch_dev_with_a_bsd_compatible_template_and_stop_web_on_exit() {
-    let directory = std::env::temp_dir().join(format!("carapana-dev-test-{}", std::process::id()));
-    fs::create_dir_all(&directory).unwrap();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!("carapana-dev-test-{}-{nonce}", std::process::id()));
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
     let script = |name: &str, content: &str| {
         let path = directory.join(name);
         fs::write(&path, content).unwrap();
@@ -25,7 +39,30 @@ fn should_launch_dev_with_a_bsd_compatible_template_and_stop_web_on_exit() {
         "cargo",
         "#!/bin/bash\nfor i in {1..100}; do [ -f \"$TEST_DIRECTORY/ready\" ] && exit \"$TEST_EXIT_CODE\"; sleep .02; done\nexit 99\n",
     );
+    // The launcher now selects the repository toolchain through rustup. This test exercises
+    // process orchestration, not a real interactive TUI; intercept that external tool boundary
+    // and verify the exact pin before forwarding to the controlled cargo fixture above.
+    script(
+        "rustup",
+        r#"#!/bin/bash
+set -e
+if [[ $# -lt 3 || $1 != run || $2 != "$TEST_EXPECTED_TOOLCHAIN" || $3 != cargo ]]; then
+    exit 91
+fi
+printf '%s' "$2" > "$TEST_DIRECTORY/toolchain"
+shift 2
+exec "$@"
+"#,
+    );
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let manifest = fs::read_to_string(root.join("rust-toolchain.toml")).unwrap();
+    let toolchain = manifest
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("channel = \"")
+                .and_then(|value| value.strip_suffix('"'))
+        })
+        .unwrap();
     for (code, host, port, expected) in [
         (0, "", "", "127.0.0.1:5173"),
         (7, "", "", "127.0.0.1:5173"),
@@ -34,6 +71,7 @@ fn should_launch_dev_with_a_bsd_compatible_template_and_stop_web_on_exit() {
     ] {
         let _ = fs::remove_file(directory.join("ready"));
         let _ = fs::remove_file(directory.join("stopped"));
+        let _ = fs::remove_file(directory.join("toolchain"));
         let output = Command::new("make")
             .arg("dev")
             .current_dir(&root)
@@ -44,6 +82,7 @@ fn should_launch_dev_with_a_bsd_compatible_template_and_stop_web_on_exit() {
             .env("TMPDIR", &directory)
             .env("TEST_DIRECTORY", &directory)
             .env("TEST_EXIT_CODE", code.to_string())
+            .env("TEST_EXPECTED_TOOLCHAIN", toolchain)
             .env("HOST", host)
             .env("PORT", port)
             .output()
@@ -66,6 +105,10 @@ fn should_launch_dev_with_a_bsd_compatible_template_and_stop_web_on_exit() {
         assert!(
             directory.join("stopped").exists(),
             "web must receive TERM on TUI success or failure"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("toolchain")).unwrap(),
+            toolchain
         );
     }
     fs::remove_dir_all(directory).unwrap();

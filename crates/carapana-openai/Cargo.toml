@@ -1,0 +1,27 @@
+[package]
+name = "carapana-openai"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Official Sign in with ChatGPT and Responses API adapter for Carapanã"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-stream = "=0.3.6"
+carapana-core = { path = "../carapana-core" }
+carapana-storage = { path = "../carapana-storage" }
+eventsource-stream = "=0.2.3"
+fs2 = "=0.4.3"
+futures-util = "=0.3.34"
+libc = "=0.2.190"
+openidconnect = { version = "=4.0.1", features = ["reqwest-blocking", "timing-resistant-secret-traits"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
+secrecy = "=0.10.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+tokio = { version = "=1.53.2", features = ["io-util", "macros", "net", "rt", "time"] }
+uuid = { version = "=1.27.0", features = ["serde", "v4"] }

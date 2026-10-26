@@ -1,7 +1,10 @@
 //! Versioned contracts. No transport, authorization or task execution.
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 3;
+pub const MAX_QUEUED_MESSAGE_BYTES: usize = 8 * 1024;
+pub const MAX_SELECTION_FIELD_BYTES: usize = 256;
+pub const MAX_WORKSPACE_PATH_BYTES: usize = 4 * 1024;
 
 fn version<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u16, D::Error> {
     let value = u16::deserialize(deserializer)?;
@@ -83,6 +86,22 @@ pub struct QueuedMessage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum MessageOrigin {
+    Cli,
+    Tui,
+}
+
+impl MessageOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Tui => "tui",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Success,
     Failure,
@@ -136,11 +155,44 @@ pub struct ContractError {
     pub message_id: Option<String>,
 }
 
-/// Read-only local daemon API for the first IPC slice.
+/// Local daemon API for session creation, queueing, inspection, and attachment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonRequest {
     ListSessions {},
+    ListAttention {},
+    CreateSession {
+        workspace_path: String,
+    },
+    EnqueueMessage {
+        session_id: String,
+        text: String,
+        selection: Selection,
+        origin: MessageOrigin,
+    },
+    HibernateSession {
+        session_id: String,
+    },
+    WakeSession {
+        session_id: String,
+    },
+    ReviewWorkspace {
+        session_id: String,
+    },
+    AcknowledgeRecoveryPath {
+        session_id: String,
+        path: String,
+    },
+    ResumeRecovered {
+        session_id: String,
+    },
+    Attach {
+        session_id: String,
+    },
+    EventsAfter {
+        after_sequence: i64,
+    },
+    Detach {},
 }
 
 /// Content-free result of listing sessions; it intentionally excludes prompts and secrets.
@@ -153,7 +205,113 @@ pub struct SessionSummary {
     pub has_active_message: bool,
     pub recovery_needs_revalidation: bool,
     pub active_work_uncertain: bool,
+    pub attached_clients: u64,
     pub updated_at_ms: i64,
+}
+
+/// Full state delivered before a client is considered attached after connect/reconnect.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSnapshot {
+    pub session_id: String,
+    pub status: SessionStatus,
+    pub queued_messages: Vec<QueuedMessage>,
+    pub active_message: Option<QueuedMessage>,
+    pub recovery_needs_revalidation: bool,
+    pub active_work_uncertain: bool,
+    pub attached_clients: u64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub event_sequence: i64,
+}
+
+/// Current attention state derived from durable session recovery state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttentionItem {
+    pub session_id: String,
+    pub reason: AttentionReason,
+    pub active_work_uncertain: bool,
+    pub updated_at_ms: i64,
+    pub event_sequence: i64,
+}
+
+/// One explicitly observed relative path and its current recovery-review status.
+/// This contract deliberately excludes file content, hashes, and raw stat metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceFileReviewItem {
+    pub path: String,
+    pub status: WorkspaceFileReviewStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceFileReviewStatus {
+    Unchanged,
+    Changed,
+    Missing,
+    Unreadable,
+    Unsafe,
+    TooLarge,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceFileReview {
+    pub files: Vec<WorkspaceFileReviewItem>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionReason {
+    RecoveryReview,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionEventRecord {
+    pub sequence: i64,
+    pub occurred_at_ms: i64,
+    pub event: DaemonSessionEvent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DaemonSessionEvent {
+    Created,
+    MessageQueued {
+        message: QueuedMessage,
+    },
+    Hibernated,
+    Woken,
+    MessageStarted {
+        message_id: String,
+    },
+    Paused,
+    Completed {
+        message_id: String,
+        outcome: Outcome,
+    },
+    RecoveredPaused {
+        active_message_id: Option<String>,
+    },
+    RecoveryPathAcknowledged {
+        path: String,
+        status: WorkspaceFileReviewStatus,
+    },
+    RecoveryResumed {
+        active_message_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionEventBatch {
+    pub events: Vec<SessionEventRecord>,
+    pub next_sequence: i64,
+    pub has_more: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,14 +326,69 @@ pub enum SessionStatus {
 #[serde(rename_all = "snake_case")]
 pub enum DaemonErrorCode {
     StorageUnavailable,
+    SessionNotFound,
+    NotAttached,
+    AlreadyAttached,
+    ConnectionRequired,
+    InvalidEventCursor,
+    WorkspaceReviewUnavailable,
+    RecoveryNotPending,
+    RecoveryPathNotAcknowledgable,
+    RecoveryAcknowledgmentRequired,
+    RecoveryAcknowledgmentStale,
+    RecoveryBlocked,
+    WorkspaceCreationRejected,
+    InvalidQueuedMessage,
+    HibernationBlocked,
+    SessionNotHibernated,
 }
 
-/// Response envelope payload. IPC errors are closed codes without SQLite details.
+/// Response envelope payload. Attachment returns the full session snapshot; IPC errors
+/// are closed codes without SQLite details.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonResponse {
-    Sessions { sessions: Vec<SessionSummary> },
-    Error { code: DaemonErrorCode },
+    Sessions {
+        sessions: Vec<SessionSummary>,
+    },
+    SessionCreated {
+        session_id: String,
+    },
+    MessageQueued {
+        session_id: String,
+        message_id: String,
+    },
+    SessionHibernated {
+        session_id: String,
+    },
+    SessionWoken {
+        session_id: String,
+    },
+    Attention {
+        items: Vec<AttentionItem>,
+    },
+    WorkspaceReview {
+        review: WorkspaceFileReview,
+    },
+    RecoveryPathAcknowledged {
+        path: String,
+        status: WorkspaceFileReviewStatus,
+    },
+    RecoveryResumed {
+        session_id: String,
+    },
+    Events {
+        batch: Box<SessionEventBatch>,
+    },
+    Attached {
+        snapshot: Box<SessionSnapshot>,
+    },
+    Detached {
+        remaining_attached_clients: u64,
+    },
+    Error {
+        code: DaemonErrorCode,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

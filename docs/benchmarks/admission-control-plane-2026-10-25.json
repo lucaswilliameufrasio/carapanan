@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "scope": "sqlite-admission-control-plane-only",
+  "source_base_commit": "af607e52179b9cc2676024dc6b38e33f916975ad",
+  "uncommitted_candidate": true,
+  "rustc": "1.99.1",
+  "build": "cargo build --offline --locked --release -p carapanan-cli --example admission_resource_probe",
+  "binary_sha256": "70b05cd45124d6b9dfa4a0a089a053565c7fb706c2bd3dd3923f527b86ddfd58",
+  "iterations_per_phase": 16,
+  "warmup_samples": 1,
+  "measured_samples": 3,
+  "unit_limits": {
+    "memory_bytes": 268435456,
+    "swap_bytes": 0,
+    "tasks": 32,
+    "cpu_quota_percent": 100,
+    "runtime_seconds": 60
+  },
+  "results": [
+    {
+      "machine_class": "Ryzen-9-7900-64GiB",
+      "kernel": "Linux 7.2.3-1-cachyos",
+      "self_rss_peak_bytes_median": 5423104,
+      "self_rss_peak_bytes_min": 5402624,
+      "self_rss_peak_bytes_max": 5447680,
+      "wall_ms_median": 592.282,
+      "immediate_total_us_median": 265985,
+      "enqueue_total_us_median": 32087,
+      "claim_total_us_median": 253967,
+      "all_samples_released_capacity": true
+    },
+    {
+      "machine_class": "i5-8265U-16GiB",
+      "kernel": "Linux 7.2.8-2-cachyos",
+      "self_rss_peak_bytes_median": 5472256,
+      "self_rss_peak_bytes_min": 5398528,
+      "self_rss_peak_bytes_max": 5496832,
+      "wall_ms_median": 227.724,
+      "immediate_total_us_median": 90137,
+      "enqueue_total_us_median": 21542,
+      "claim_total_us_median": 109101,
+      "all_samples_released_capacity": true
+    }
+  ],
+  "mac_reference": "manual validation pending",
+  "production_defaults_calibrated": false,
+  "limitations": [
+    "No inference, real workspace, tools, agent session, parser, snapshots or external process workload measured.",
+    "The nominal bytes reserved by a lease are not RSS allocations.",
+    "RSS uses the probe's Linux VmHWM, not the wrapper's pre-exec-inclusive ru_maxrss.",
+    "Timing is sensitive to host contention and filesystem fsync latency; do not rank hardware capacity from these medians.",
+    "This is a component baseline, not a full-harness capacity or concurrency calibration."
+  ]
+}

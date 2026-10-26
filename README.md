@@ -6,15 +6,18 @@ Local-first, model-agnostic coding-agent harness, com implementação principal 
 
 - [Plano de desenvolvimento](docs/development-plan.md)
 - [Decisões de produto e comportamento — revisão de 4 de outubro de 2026](docs/product-decisions.md)
+- [Progresso das tarefas em andamento](docs/progress/README.md)
 
-**Estado atual:** Delivery 0 em revisão: web/mobile e CLI/TUI com 21 cenários
-compartilhados e estado apenas em memória. Sem runtime, daemon, banco, conexão com
-providers/MCP ou execução de tarefas. Delivery 1 depende de aprovação explícita.
+**Estado atual:** Delivery 0 (protótipo com fixtures) foi aprovado; Delivery 2 está
+em andamento. A CLI/TUI real Unix consulta o daemon; a CLI também cria sessões pausadas e
+persiste mensagens inertes na fila. Recovery só pode ser retomado com revalidação e
+confirmação explícita. O protótipo web/mobile continua isolado, com estado simulado: ainda
+não se conecta ao daemon. Não há provider real nem execução de tarefas/tools.
 
 ## Experimentar
 
 Para desenvolver este protótipo: Node compatível com Vite 8, pnpm **12.9.1** e
-Rust **1.98.1** (versões em `mise.toml`). Isso não define dependências do usuário
+Rust **1.99.1** (JS em `mise.toml`, Rust em `rust-toolchain.toml`). Isso não define dependências do usuário
 final: o produto distribuído deverá funcionar sem instalar Node/Rust.
 
 ```sh
@@ -143,6 +146,99 @@ cargo run --manifest-path prototypes/terminal/Cargo.toml -- run --scenario appro
 Códigos ilustrativos: `0` conclusão, `2` pausa/erro, `3` validação incompleta,
 `4` aprovação necessária. `doctor`, `info`, `config` e `sessions` também são mocks.
 
+### CLI/TUI real do daemon (Delivery 2, Unix)
+
+O binário `carapanan` é separado do protótipo `carapana-prototype`. Inicie o daemon
+explicitamente em um terminal:
+
+```sh
+cargo run -p carapanan-cli -- daemon
+```
+
+Em outro terminal, use o daemon já iniciado. Os comandos do cliente não iniciam o daemon
+automaticamente:
+
+```sh
+cargo run -p carapanan-cli -- create --workspace .
+cargo run -p carapanan-cli -- queue <session-id> < /caminho/privado/da-entrada.json
+cargo run -p carapanan-cli -- hibernate <session-id>
+cargo run -p carapanan-cli -- wake <session-id>
+cargo run -p carapanan-cli -- sessions --json
+cargo run -p carapanan-cli -- attention
+cargo run -p carapanan-cli -- show <session-id> --json
+cargo run -p carapanan-cli -- show <session-id> --events-after <cursor> --json
+cargo run -p carapanan-cli -- review-workspace <session-id> --json
+cargo run -p carapanan-cli -- acknowledge-recovery-path <session-id> <path> --confirm
+cargo run -p carapanan-cli -- resume-recovered <session-id>
+cargo run -p carapanan-cli -- resume-recovered <session-id> --confirm
+cargo run -p carapanan-cli -- tui
+```
+
+O smoke test do provider ChatGPT está disponível somente na CLI; UI web e TUI ainda não iniciam
+autenticação nem inferência. `sign-in` abre o fluxo oficial, `models` lista o catálogo remoto e
+`smoke-test` envia somente um prompt sintético fixo, sem contexto de sessão/workspace ou tools:
+
+```sh
+cargo run -p carapanan-cli -- chatgpt sign-in
+cargo run -p carapanan-cli -- chatgpt accounts
+cargo run -p carapanan-cli -- chatgpt models --client-id <ID>
+cargo run -p carapanan-cli -- chatgpt smoke-test --client-id <ID> --model <MODELO> --confirm-remote
+```
+
+`create` exige que o operador escolha a raiz. A raiz absoluta é enviada somente como input
+ao socket Unix privado; não aparece na resposta nem nos logs. Para enfileirar uma mensagem,
+`queue <session-id>` lê um objeto JSON de stdin, sem aceitar a mensagem em argv:
+
+```json
+{
+  "text": "mensagem do operador",
+  "selection": {
+    "profile": "perfil escolhido",
+    "work": "plan",
+    "autonomy": "ask",
+    "provider": "provider escolhido",
+    "model": "modelo escolhido",
+    "variant": "variante escolhida"
+  }
+}
+```
+
+Todos os campos da seleção são explícitos; ela é apenas dado persistido, não autorização
+nem prova de que o provider está disponível. Sessões novas ficam pausadas, e mensagens
+enfileiradas não iniciam processamento. `show --json` revela o texto da fila quando pedido
+explicitamente. O texto fica persistido localmente; esta fase não detecta segredos nem o
+envia a um provider, então não cole credenciais. O limite por mensagem é 8 KiB para permanecer
+dentro do limite de frame IPC mesmo quando caracteres de controle precisam ser escapados no JSON.
+
+`hibernate` só aceita sessão pausada, sem mensagem ativa nem recovery pendente. A ação é
+explícita e registra somente o estado; não libera working set/cache/processos. `wake` sempre
+volta para `paused`, preservando a fila sem iniciar trabalho.
+
+A TUI inspeciona sessões; no detalhe, `h` hiberna uma sessão pausada ociosa e `w` acorda
+uma hibernada para `paused`, sem iniciar a fila nem alterar processos/recursos. No overview,
+`c` abre a criação de sessão com o caminho mascarado; no detalhe, `m` abre um composer que
+coleta texto e todos os campos de seleção explicitamente. `Ctrl+J` insere nova linha; uma
+confirmação enfileira sem iniciar trabalho. Os campos provider/model são somente metadata.
+Para recovery, `v` revalida os
+paths observados; `[`/`]` seleciona um path; `a` abre confirmação para reconhecer
+`changed`, `missing` ou `too_large`; `R` mostra uma revisão fresca e abre a confirmação
+final de retomada. `y` confirma e `n`/Esc cancela. `e` consulta eventos, `n` busca a
+próxima página limitada, `r` atualiza detalhes, Esc volta e `q` sai. O relatório expõe
+somente paths relativos + status; não inclui conteúdo, digest ou metadata bruta. Status
+`unsafe`, `unreadable`, `unavailable` ou identidade de raiz alterada bloqueiam retomada.
+Retomar preserva o trabalho interrompido, mas não inicia provider ou tools. SIGINT/SIGTERM
+encerram o daemon. A interface web/mobile acima permanece um protótipo com fixtures e não
+acessa esses dados reais.
+
+A fundação agora inclui uma primitive interna de supervisão Unix: executável absoluto, argv sem
+shell, ambiente/stdio isolados, process group próprio e guardian que encerra o grupo por TERM
+(800 ms) e KILL; EOF do daemon também inicia cleanup. `KeepRunning` é um detach explícito.
+Essa primitive não está conectada à fila, a pedidos IPC, nem a comandos CLI/TUI; ainda não há
+execução de provider, tools ou tarefas. Descendentes que se desanexam do process group e falha
+forçada do próprio guardian permanecem fora da garantia; detalhes em PD-19.
+
+O protocolo IPC atual é v3; mantenha CLI e daemon na mesma versão.
+
 Logs locais JSON são opcionais e ficam desligados por padrão. Para habilitá-los,
 defina `CARAPANA_LOG_DIR=/caminho/privado`; os arquivos rodam diariamente e são
 limitados aos sete mais recentes. `RUST_LOG=carapana=debug` ajusta o filtro.
@@ -200,6 +296,83 @@ capturadas em PTY e inspecionadas visualmente, incluindo sessão vazia, aprovaç
 fila e resultado. Capturas reconstruídas de células de terminal não equivalem a
 screenshot nativo do Mac nem a aprovação humana de UX.
 
+### Diagnóstico sintético de sandbox Linux
+
+```sh
+cargo run -p carapanan-cli -- sandbox-probe
+# Gate local que exige enforcement real, não somente falha fechada:
+CARAPANA_REQUIRE_BUBBLEWRAP=1 cargo test -p carapana-sandbox -p carapanan-cli --locked
+```
+
+Requer `/usr/bin/bwrap` não setuid, root-owned e não gravável por grupo/outros,
+`/usr/bin/python3` e suporte efetivo a namespaces não privilegiados. Não instala nem
+reconfigura o host. O diagnóstico usa somente um workspace temporário sintético
+read-only, tmpfs de 1 MiB e listener loopback local para testar o isolamento de rede;
+não envia tráfego remoto, monta HOME/repo real, lê credenciais ou acessa o daemon.
+Verifica namespaces de usuário/PID/rede, `no_new_privs`, capacidades e proibição de
+escrita fora do scratch. Stdout/stderr têm limite de 4 KiB cada e deadline de cinco
+segundos. Conteúdo de falhas não é repassado ao terminal.
+
+Falha/indisponibilidade retorna erro, sem elevação nem fallback sem sandbox. macOS
+retorna unsupported. Testes comuns aceitam a indisponibilidade segura do backend;
+não significam enforcement confirmado nesse runner. O gate opt-in acima exige a
+prova positiva. Sucesso comprova somente esse fixture: **não habilita tools/comandos
+do usuário**, não substitui gates de segredos/aprovação/confinamento e não demonstra
+um executor de produção ou sandbox completo (seccomp, quotas gerais e cancelamento
+de comandos arbitrários ainda não estão implementados).
+
+### Gate opt-in de preparação de cgroup v2
+
+O backend em desenvolvimento exige um diretório **de teste**, previamente delegado
+ao usuário, em cgroupfs v2. O pai precisa ser um domínio normal e já ter `memory`
+e `pids` habilitados no `cgroup.subtree_control`. A aplicação não instala, delega,
+eleva privilégios, habilita controladores ou move processos automaticamente.
+
+Após o operador definir `CARAPANA_TEST_CGROUP_PARENT` para esse pai explícito:
+
+```sh
+CARAPANA_REQUIRE_CGROUP=1 cargo test -p carapana-sandbox \
+  should_prepare_a_real_empty_scope_only_when_a_test_parent_is_explicitly_supplied --locked
+```
+
+O teste cria somente um filho vazio de nome gerado, aplica/revalida limites e remove
+somente esse filho. Não o execute contra diretórios de outras tarefas. Sem a variável
+do pai, o gate obrigatório falha; testes comuns não mutam cgroups e não comprovam
+preparação real nem enforcement. Preparar um grupo vazio também não comprova limites
+sobre processos: o launcher continua bloqueado até handshake de admissão, testes de
+saturação e supervisão/cancelamento. macOS retorna unsupported.
+
+Para executar a prova isolada quando não há pai de teste permanente, o operador pode
+optar explicitamente por `TMPDIR=/var/tmp bash scripts/test-delegated-cgroup.sh`.
+O fixture exige Linux não-root e systemd de usuário com `DelegateSubgroup`: cria
+uma unidade transitória própria com `Delegate=memory pids`, coloca o runner em
+subgrupo, confirma a identidade da unidade e habilita controladores somente nela.
+Não usa sudo nem modifica outras unidades/configurações persistentes. Ao terminar,
+o manager e o trap encerram/coletam somente a unidade de nome único dessa execução.
+Isso é ferramenta opt-in de teste, não dependência ou descoberta automática do produto.
+
+Além da criação/readback/remoção, a suíte opt-in agora comprova limites de PIDs e
+memória com scripts sintéticos finitos, bloqueados por stdin até admissão no grupo.
+O teste exige evento `pids.events:max` e OOM kill no cgroup; o orçamento máximo da
+tentativa de alocação sintética é 128 MiB, com cgroup de 32 MiB e swap desativado.
+Não há fork ilimitado nem execução de código do workspace. Essa prova não substitui
+o handshake/lifecycle de um launcher de produção nem comprova limite de CPU/I/O.
+
+A lease de cgroup agora permite uma admissão de `Child` próprio, sob precondição de
+gate confiável antes de exec/fork. Não aceita PID arbitrário nem reaproveita a lease.
+Término usa `cgroup.kill` por descritor e espera o grupo esvaziar com prazo limitado,
+inclusive para descendentes que fizeram `setsid`. O supervisor continua responsável
+por recolher seu filho e manter staging enquanto houver consumidores. Drop só tenta
+matar grupos com admissão iniciada por essa lease; nunca adota um grupo alheio.
+
+O harness opt-in roda também os testes Linux de `captured_cgroup`: o guardian espera
+admissão antes do exec, confirma membership real e usa um kill switch por descritor
+para cleanup mesmo com perda do controller/descendente após `setsid`. Stderr do
+guardian é reservado ao controle; o target recebe um pipe separado. Admit sem
+migração, reuse e OOM não podem iniciar fallback fora do grupo. Isso não constitui
+isolamento de filesystem/rede: o launcher ainda deve esconder cgroupfs e vincular
+runtime/mounts/limites à aprovação, antes de executar conteúdo não confiável.
+
 ### Revisão do Delivery 0
 
 **Conjunto aprovado pelo responsável pelo produto em 6 de outubro de 2026.**
@@ -237,6 +410,20 @@ just verify
 `make verify-web` no Linux (incluindo snapshots) e `make verify-rust` no Linux
 e macOS (incluindo PTY). Toolchains vêm de `mise.toml` e `rust-toolchain.toml`;
 instalação JS e verificações Rust usam os lockfiles sem resolução nova.
+
+O gate Rust e a campanha delegada usam `scripts/rust-toolchain-command.sh`, que executa
+`rustup run` com a versão numérica de `rust-toolchain.toml`, sem instalar toolchains
+ou alterar defaults globais. Isso evita que um shim mise ou `RUSTUP_TOOLCHAIN` global
+substitua silenciosamente a versão verificada. Toolchain/componentes ausentes falham
+explicitamente; instale os requisitos separadamente antes do gate.
+
+Os E2E iniciam servidores próprios em loopback nas portas 4173 (preview) e 4174
+(dev), sem reutilizar processos existentes ou escolher outra porta silenciosamente.
+Para rodar junto de outros projetos, configure duas portas livres e distintas:
+
+```sh
+CARAPANA_E2E_PREVIEW_PORT=34173 CARAPANA_E2E_DEV_PORT=34174 mise exec -- make verify
+```
 
 As referências visuais `*-linux.png` preservam as capturas locais; a CI usa
 `CARAPANA_SNAPSHOT_ENV=ubuntu` e as referências `*-ubuntu.png`, capturadas em
