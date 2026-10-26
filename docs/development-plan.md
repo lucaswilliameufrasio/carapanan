@@ -3716,6 +3716,10 @@ API paga não vira requisito do produto.
 
 # 158. Delivery 4 — Core Coding Tools
 
+O estado operacional das tarefas abertas fica em [docs/progress](progress/README.md), conforme
+a [ADR-011](adr/ADR-011-task-progress-lifecycle.md). Esta seção preserva o histórico e as evidências
+duráveis; um registro de tarefa só é removido depois de concluir seu escopo e consolidar a documentação.
+
 Implementar:
 
 - filesystem;
@@ -4450,6 +4454,19 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   O lote funcional está publicado; Mac de referência, workloads completos para defaults finais,
   recovery de crash durante execução sem prova e gates de conteúdo/segredos/UI continuam abertos.
 
+### Registro de continuidade — 26 de outubro de 2026
+
+- CI `40175516818` de `41201f2` também passou nos três jobs. O lote de admissão está publicado;
+  isso não encerra o Delivery 4 nem o plano completo.
+- Por solicitação do operador, criado `AGENTS.md` com registro obrigatório de tarefas executáveis,
+  retomada por evidência, atualização por marcos e consolidação permanente antes de remover o
+  arquivo temporário. Criado o diretório `docs/progress` e um snapshot do plano ainda parcial.
+- A decisão de ciclo de vida está na ADR-011. ADRs 001–010 mantêm os tópicos já previstos no roadmap;
+  a regra não instala hooks, não altera ai-memory e não concede permissão automática de publicação.
+- Validação documental: Biome/Prettier (`pnpm format:check`), `git diff --check` e conferência de
+  37 destinos de links locais passaram. Nenhum código de aplicação foi alterado; o gate integral
+  não foi repetido para este lote documental. O snapshot permanece aberto porque o plano é parcial.
+
 ---
 
 # 159. Delivery 5 — Context Engine
@@ -4808,6 +4825,9 @@ ADR-010 MCP lifecycle
 ```
 
 Decisão aprovada para SQLite + artifacts: [ADR-003](adr/ADR-003-sqlite-and-artifacts.md), detalhada em PD-32.
+
+Decisão de acompanhamento de tarefas: [ADR-011](adr/ADR-011-task-progress-lifecycle.md), aprovada
+em 26/10/2026. Registros ativos são temporários; documentação e justificativas permanecem após a conclusão.
 
 ---
 

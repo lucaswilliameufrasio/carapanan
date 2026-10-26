@@ -6,6 +6,7 @@ Local-first, model-agnostic coding-agent harness, com implementação principal 
 
 - [Plano de desenvolvimento](docs/development-plan.md)
 - [Decisões de produto e comportamento — revisão de 4 de outubro de 2026](docs/product-decisions.md)
+- [Progresso das tarefas em andamento](docs/progress/README.md)
 
 **Estado atual:** Delivery 0 (protótipo com fixtures) foi aprovado; Delivery 2 está
 em andamento. A CLI/TUI real Unix consulta o daemon; a CLI também cria sessões pausadas e
