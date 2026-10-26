@@ -55,7 +55,7 @@ fn settings(total: u64) -> ProcessCaptureSettings {
     ProcessCaptureSettings::new(2048, 256, total, Duration::from_secs(5)).unwrap()
 }
 fn supervisor() -> ProcessSupervisor {
-    ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana")).unwrap()
+    ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan")).unwrap()
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn should_kill_the_resource_scope_on_controller_loss_even_with_a_setsid_descenda
     let mut group = parent
         .prepare(CgroupLimits::new(64 * 1024 * 1024, 8).unwrap())
         .unwrap();
-    let mut host = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let mut host = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .arg("__carapana_internal_process_host_v1")
         .env_clear()
         .process_group(0)
@@ -257,7 +257,7 @@ fn should_reject_an_admit_message_without_actual_kernel_membership() {
     let group = parent
         .prepare(CgroupLimits::new(64 * 1024 * 1024, 8).unwrap())
         .unwrap();
-    let mut host = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let mut host = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .arg("__carapana_internal_process_host_v1")
         .env_clear()
         .process_group(0)

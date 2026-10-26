@@ -1500,7 +1500,7 @@ mod tests {
                 std::env::temp_dir()
             };
             let path = fs::canonicalize(temporary_root).unwrap().join(format!(
-                "carapana-cli-tui-{}-{nonce}-{id}",
+                "carapanan-cli-tui-{}-{nonce}-{id}",
                 std::process::id()
             ));
             fs::create_dir(&path).unwrap();

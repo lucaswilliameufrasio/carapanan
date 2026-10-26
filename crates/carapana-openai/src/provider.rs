@@ -263,8 +263,22 @@ impl ChatGptProvider {
                 .and_then(|value| value.split(';').next())
                 .map(str::trim)
                 .map(str::to_ascii_lowercase);
-            if content_type.as_deref() != Some("text/event-stream") {
-                yield Err(ProviderError::InvalidResponse(remote));
+            if matches!(content_type.as_deref(), Some(value) if value != "text/event-stream") {
+                let content_type_for_log = content_type
+                    .as_deref()
+                    .filter(|value| {
+                        value.len() <= 80
+                            && value.bytes().all(|byte| byte.is_ascii_graphic())
+                    })
+                    .unwrap_or("<missing-or-invalid>");
+                eprintln!(
+                    "ChatGPT Responses API returned HTTP 200 with unexpected Content-Type: {content_type_for_log}"
+                );
+                let code = unexpected_content_type_code(content_type.as_deref());
+                yield Err(invalid_stream_response(
+                    remote,
+                    &code,
+                ));
                 return;
             }
 
@@ -312,7 +326,10 @@ impl ChatGptProvider {
                     Err(eventsource_stream::EventStreamError::Transport(error))
                         if error.kind() == std::io::ErrorKind::InvalidData =>
                     {
-                        yield Err(ProviderError::InvalidResponse(remote.clone()));
+                        yield Err(invalid_stream_response(
+                            remote.clone(),
+                            "client_invalid_event_stream",
+                        ));
                         return;
                     }
                     Err(eventsource_stream::EventStreamError::Transport(_)) => {
@@ -320,14 +337,20 @@ impl ChatGptProvider {
                         return;
                     }
                     Err(_) => {
-                        yield Err(ProviderError::InvalidResponse(remote.clone()));
+                        yield Err(invalid_stream_response(
+                            remote.clone(),
+                            "client_malformed_event_stream",
+                        ));
                         return;
                     }
                 };
                 let payload = match serde_json::from_str::<Value>(&event.data) {
                     Ok(payload) => payload,
                     Err(_) => {
-                        yield Err(ProviderError::InvalidResponse(remote.clone()));
+                        yield Err(invalid_stream_response(
+                            remote.clone(),
+                            "client_invalid_event_json",
+                        ));
                         return;
                     }
                 };
@@ -338,7 +361,10 @@ impl ChatGptProvider {
                 match event_type {
                     "response.output_text.delta" => {
                         let Some(delta) = payload.get("delta").and_then(Value::as_str) else {
-                            yield Err(ProviderError::InvalidResponse(remote.clone()));
+                            yield Err(invalid_stream_response(
+                                remote.clone(),
+                                "client_invalid_text_delta",
+                            ));
                             return;
                         };
                         output_bytes = output_bytes.saturating_add(delta.len());
@@ -358,7 +384,10 @@ impl ChatGptProvider {
                             Ok(Some(event)) => yield Ok(event),
                             Ok(None) => {}
                             Err(()) => {
-                                yield Err(ProviderError::InvalidResponse(remote.clone()));
+                                yield Err(invalid_stream_response(
+                                    remote.clone(),
+                                    "client_invalid_tool_event",
+                                ));
                                 return;
                             }
                         }
@@ -533,6 +562,38 @@ fn remote_error_from_headers(
 fn remote_with_code(mut remote: ProviderRemoteError, code: Option<String>) -> ProviderRemoteError {
     remote.code = code;
     remote
+}
+
+fn invalid_stream_response(remote: ProviderRemoteError, code: &str) -> ProviderError {
+    ProviderError::InvalidResponse(remote_with_code(remote, Some(code.to_owned())))
+}
+
+fn unexpected_content_type_code(content_type: Option<&str>) -> String {
+    let Some(content_type) = content_type else {
+        return "client_missing_content_type".to_owned();
+    };
+    if content_type.len() > 80
+        || !content_type.is_ascii()
+        || content_type.matches('/').count() != 1
+        || content_type.starts_with('/')
+        || content_type.ends_with('/')
+        || !content_type.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'+' | b'_')
+        })
+    {
+        return "client_invalid_content_type_header".to_owned();
+    }
+    let safe_media_type = content_type
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                char::from(byte)
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("client_unexpected_content_type_{safe_media_type}")
 }
 
 fn remote_with_payload(mut remote: ProviderRemoteError, payload: &Value) -> ProviderRemoteError {
@@ -913,10 +974,72 @@ mod tests {
         let adapter = provider(&base_url);
         let mut events = adapter.stream(request(), CancellationToken::new());
 
-        assert!(matches!(
+        assert_eq!(
             events.next().await,
-            Some(Err(ProviderError::InvalidResponse(_)))
-        ));
+            Some(Err(ProviderError::InvalidResponse(ProviderRemoteError {
+                status: Some(200),
+                code: Some("client_unexpected_content_type_application_json".to_owned()),
+                ..ProviderRemoteError::local()
+            })))
+        );
+        let _ = server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_successful_event_reports_a_safe_local_diagnostic_code() {
+        let (base_url, server) = spawn_server(
+            "200 OK",
+            "Content-Type: text/event-stream\r\n",
+            "data: not-json\n\n",
+        )
+        .await;
+        let adapter = provider(&base_url);
+        let mut events = adapter.stream(request(), CancellationToken::new());
+
+        assert_eq!(
+            events.next().await,
+            Some(Err(ProviderError::InvalidResponse(ProviderRemoteError {
+                status: Some(200),
+                code: Some("client_invalid_event_json".to_owned()),
+                ..ProviderRemoteError::local()
+            })))
+        );
+        let _ = server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unexpected_media_type_reports_only_its_sanitized_type() {
+        let (base_url, server) =
+            spawn_server("200 OK", "Content-Type: application/x-ndjson\r\n", "{}").await;
+        let adapter = provider(&base_url);
+        let mut events = adapter.stream(request(), CancellationToken::new());
+
+        assert_eq!(
+            events.next().await,
+            Some(Err(ProviderError::InvalidResponse(ProviderRemoteError {
+                status: Some(200),
+                code: Some("client_unexpected_content_type_application_x_ndjson".to_owned()),
+                ..ProviderRemoteError::local()
+            })))
+        );
+        let _ = server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_content_type_accepts_only_a_complete_valid_event_stream() {
+        let body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        );
+        let (base_url, server) = spawn_server("200 OK", "", body).await;
+        let adapter = provider(&base_url);
+        let mut events = adapter.stream(request(), CancellationToken::new());
+
+        assert_eq!(
+            events.next().await.unwrap().unwrap(),
+            ProviderEvent::TextDelta("hello".to_owned())
+        );
+        assert!(events.next().await.is_none());
         let _ = server.await.unwrap();
     }
 
@@ -924,7 +1047,7 @@ mod tests {
     async fn stream_eof_before_response_completed_is_not_reported_as_success() {
         let (base_url, server) = spawn_server(
             "200 OK",
-            "Content-Type: text/event-stream\r\n",
+            "",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
         )
         .await;

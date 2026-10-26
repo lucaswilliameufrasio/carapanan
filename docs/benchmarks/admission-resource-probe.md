@@ -11,7 +11,7 @@ sessões/agentes a partir deste resultado. Referências: PD-61 e
 Com os requisitos já instalados, na raiz do checkout:
 
 ```sh
-bash scripts/rust-toolchain-command.sh cargo build --offline --locked --release -p carapana-cli --example admission_resource_probe
+bash scripts/rust-toolchain-command.sh cargo build --offline --locked --release -p carapanan-cli --example admission_resource_probe
 bash scripts/run-admission-resource-probe.sh
 bash scripts/rust-toolchain-command.sh rustc --version
 uname -sm
@@ -27,9 +27,13 @@ CPU 100% e 60 s, `Delegate=memory pids` e `DelegateSubgroup=runner`. A unidade �
 não há sudo, instalação, configuração persistente ou alteração de outras unidades. O wrapper de
 medição não é um sandbox genérico: execute somente o binário conhecido que acabou de compilar.
 
-## Mac M3/16 GB — validação manual do operador
+## Mac M3/16 GB — validação local
 
-Use os mesmos dois comandos. O agente não fará SSH no Mac. No macOS não há cgroup: o script
+O resultado manual no MacBook Air M3/16 GB está em
+[`mac-resource-calibration-2026-10-26.md`](mac-resource-calibration-2026-10-26.md), e as quatro
+linhas JSON integrais do probe estão em
+[`admission-control-plane-2026-10-26-mac.json`](admission-control-plane-2026-10-26-mac.json).
+Para reproduzir, use os mesmos dois comandos acima. No macOS não há cgroup: o script
 executa diretamente o probe pequeno e fixo, com timeout do runner, sem alegar hard limit de RAM.
 Envie as quatro linhas JSON e a versão de `rustc` usada. Não envie environment, credenciais,
 comandos de tarefas ou conteúdo de workspace. O binário nativo terá outro SHA-256/arquitetura.

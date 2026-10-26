@@ -121,7 +121,7 @@ fn run(program: &str, arguments: &[&str]) -> (i32, Vec<u8>, Vec<u8>) {
 fn execute_launch(launch: &SandboxImageLaunch<'_>) -> (i32, Vec<u8>, Vec<u8>) {
     let (sender, receiver) = UnixDatagram::pair().unwrap();
     let mut helper = Helper(
-        Command::new(env!("CARGO_BIN_EXE_carapana"))
+        Command::new(env!("CARGO_BIN_EXE_carapanan"))
             .arg("__carapana_internal_image_launcher_v1")
             .env_clear()
             .env("CARAPANA_SYNTHETIC_OUTSIDE", "not-forwarded")
@@ -261,7 +261,7 @@ fn should_drop_capabilities_enable_no_new_privileges_and_close_runtime_fds() {
 fn should_reject_malformed_setup_without_starting_a_target_or_logging_payloads() {
     let (sender, receiver) = UnixDatagram::pair().unwrap();
     let mut helper = Helper(
-        Command::new(env!("CARGO_BIN_EXE_carapana"))
+        Command::new(env!("CARGO_BIN_EXE_carapanan"))
             .arg("__carapana_internal_image_launcher_v1")
             .env_clear()
             .stdin(Stdio::from(OwnedFd::from(receiver)))
@@ -331,7 +331,7 @@ fn should_run_the_minimal_image_under_the_admitted_guardian_and_release_the_scop
     )
     .unwrap();
     let mut supervisor =
-        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana")).unwrap();
+        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan")).unwrap();
     let output = supervisor
         .run_captured_image_process(
             "synthetic-image-session",
@@ -385,7 +385,7 @@ fn should_cancel_the_sandbox_image_and_collect_bubblewrap_and_its_target() {
     )
     .unwrap();
     let mut supervisor =
-        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana")).unwrap();
+        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan")).unwrap();
     let start = Instant::now();
     let mut observed_target = false;
     let output = supervisor
@@ -595,7 +595,7 @@ fn should_transfer_the_maximum_selection_in_bounded_batches_under_the_guardian()
             carapana_sandbox::delegated_cgroup::CgroupLimits::new(128 * 1024 * 1024, 32).unwrap(),
         )
         .unwrap();
-    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
         .unwrap()
         .run_captured_image_process(
             "synthetic-selected-session",
@@ -755,7 +755,7 @@ fn should_enforce_the_exact_approved_image_snapshot_and_output_budget() {
     let workspace = WorkspaceId::new("review-workspace").unwrap();
     let task = TaskId::new("review-task").unwrap();
     let mut group = parent.prepare(proposal.limits().resources()).unwrap();
-    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
         .unwrap()
         .run_approved_image_process(
             token,
@@ -845,7 +845,7 @@ fn should_reject_stale_scope_staging_and_limits_without_admitting_a_guardian() {
             proposal.limits().resources()
         };
         let mut group = parent.prepare(limits).unwrap();
-        let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
             .unwrap()
             .run_approved_image_process(
                 token,
@@ -928,7 +928,7 @@ fn should_revoke_an_approved_image_after_observing_the_target_running() {
     let source = fixture.metadata();
     let start = Instant::now();
     let mut observed = false;
-    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
         .unwrap()
         .run_approved_image_process(
             token,
@@ -980,7 +980,7 @@ fn should_recheck_approval_expiry_after_ready_but_before_admission() {
     let source = fixture.metadata();
     let now = std::cell::Cell::new(12);
     let checks = std::cell::Cell::new(0);
-    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
         .unwrap()
         .run_approved_image_process(
             token,
@@ -1526,7 +1526,7 @@ fn should_keep_admission_through_review_execution_and_payload_release() {
         .approve_by_operator(&request.id(), prepared.workspace(), prepared.task(), 11)
         .unwrap();
     let mut group = parent.prepare(prepared.limits().resources()).unwrap();
-    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+    let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
         .unwrap()
         .run_admitted_image_process(
             token,
@@ -1678,7 +1678,7 @@ fn should_release_admission_after_revocation_collects_a_running_image() {
     let mut group = parent.prepare(prepared.limits().resources()).unwrap();
     let start = Instant::now();
     let mut observed = false;
-    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
         .unwrap()
         .run_admitted_image_process(
             token,
@@ -1748,7 +1748,7 @@ fn should_quarantine_admission_after_a_controller_panic_before_effect() {
         .unwrap();
     let mut group = parent.prepare(prepared.limits().resources()).unwrap();
     let mut supervisor =
-        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana")).unwrap();
+        carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan")).unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         supervisor.run_admitted_image_process(
             token,
@@ -1878,7 +1878,7 @@ fn should_recover_images_after_proven_scope_cleanup_and_later_owner_loss() {
             .approve_by_operator(&request.id(), prepared.workspace(), prepared.task(), 11)
             .unwrap();
         let mut group = parent.prepare(prepared.limits().resources()).unwrap();
-        let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+        let output = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
             .unwrap()
             .run_admitted_image_process(
                 token,
@@ -2099,7 +2099,7 @@ fn running_memory_headroom_child() {
     let mut group = parent.prepare(prepared.limits().resources()).unwrap();
     let started = Instant::now();
     let mut observed = false;
-    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana"))
+    let result = carapana_daemon::ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan"))
         .unwrap()
         .run_admitted_image_process(
             token,

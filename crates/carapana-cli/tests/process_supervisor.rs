@@ -68,7 +68,7 @@ impl Drop for PrivateDir {
 }
 
 fn carapana_binary() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_carapana"))
+    PathBuf::from(env!("CARGO_BIN_EXE_carapanan"))
 }
 
 fn seed_session(database_path: &Path) {

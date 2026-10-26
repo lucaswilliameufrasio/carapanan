@@ -473,6 +473,8 @@ desativados.
   encerra o grupo anterior antes de tentar iniciar a nova especificação no mesmo owner session.
 - A façade do `DaemonService` exige que a sessão proprietária exista no SQLite e que stop/restart
   usem a mesma sessão registrada no processo. Esses métodos seguem indisponíveis no IPC.
+- O handshake do guardian permanece bounded a 15 s para acomodar inicialização concorrente de
+  executáveis nativos no macOS; o valor é timeout de startup, não duração máxima do trabalho.
 - Executar um binário absoluto já existente com argv separado, sem shell, sem herdar ambiente e
   com stdin/stdout/stderr em `/dev/null`. Limitar quantidade/tamanho de args, caminho e processos
   gerenciados; não registrar executable, args, cwd ou payload de controle.
@@ -704,8 +706,10 @@ desativados.
   imprimível por `Debug`. A escrita recebe esse snapshot, não um path/conteúdo-base livre, vinculando a
   proposta ao workspace, path, identidade, bytes e atributos observados.
 - A primeira operação substitui somente arquivo existente. Rejeita criação, remoção, symlinks,
-  componentes inválidos, outro filesystem, hard links, arquivos grandes, qualquer extended attribute
-  ou metadata/ownership que não possa preservar. Exige conteúdo novo de até 256 KiB. Cria temporário
+  componentes inválidos, outro filesystem, hard links, arquivos grandes, extended attributes não
+  reconhecidos ou metadata/ownership que não possa preservar. No macOS, preserva byte a byte somente
+  `com.apple.provenance`, atributo aplicado automaticamente pelo filesystem. Exige conteúdo novo de
+  até 256 KiB. Cria temporário
   exclusivo e owner-only no mesmo diretório aberto relativamente a descritores; conteúdo e mode básico
   são sincronizados, o snapshot é revalidado e o rename é atômico. O arquivo substituto fica owner-only
   durante o rename e só depois recebe o mode básico anterior, para não expor o temporário com permissões
@@ -718,7 +722,9 @@ desativados.
   remover o destino exatamente nessa janela, o rename pode recriá-lo. Escritores Carapanã e externos
   precisam de coordenação/approval próprios antes de qualquer ativação.
 - O temporário preserva owner/group somente quando a identidade herdada ao criá-lo coincide com o
-  arquivo observado; atributos estendidos e arquivos com hard links são recusados. Filesystem ACLs
+  arquivo observado; atributos estendidos não reconhecidos e arquivos com hard links são recusados.
+  No macOS, o atributo automático de provenance é copiado sem interpretação e validado antes/depois
+  do rename. Filesystem ACLs
   não representadas por extended attributes, flags de filesystem, durabilidade e o breve intervalo
   owner-only após rename ainda precisam de prova por OS/filesystem. Qualquer falha antes do rename
   falha fechada; após rename o resultado pode ser incerto.

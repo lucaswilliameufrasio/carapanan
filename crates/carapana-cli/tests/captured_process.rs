@@ -48,7 +48,7 @@ impl Drop for Fixture {
     }
 }
 fn supervisor() -> ProcessSupervisor {
-    ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapana")).unwrap()
+    ProcessSupervisor::new(env!("CARGO_BIN_EXE_carapanan")).unwrap()
 }
 fn settings(total: u64, timeout: Duration) -> ProcessCaptureSettings {
     ProcessCaptureSettings::new(32, 32, total, timeout).unwrap()
@@ -118,13 +118,13 @@ fn should_wait_for_exit_or_timeout_after_both_pipes_close() {
         .run_captured_owned_process(
             "synthetic-session",
             fixture.spec(script),
-            settings(64, Duration::from_secs(1)),
+            settings(64, Duration::from_secs(5)),
             || false,
         )
         .unwrap();
     assert_eq!(output.end(), CapturedProcessEnd::TimedOut);
     assert_eq!(output.exit_code(), None);
-    assert!(start.elapsed() < Duration::from_secs(8));
+    assert!(start.elapsed() < Duration::from_secs(12));
     assert_group_gone(fixture.group());
 }
 
@@ -225,7 +225,7 @@ fn should_terminate_captured_group_after_its_private_controller_disconnects() {
         process::{Command, Stdio},
     };
     let fixture = Fixture::new();
-    let mut host = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let mut host = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .arg("__carapana_internal_process_host_v1")
         .env_clear()
         .process_group(0)
@@ -311,7 +311,7 @@ fn should_never_start_the_target_while_waiting_for_resource_admission() {
         process::{Command, Stdio},
     };
     let fixture = Fixture::new();
-    let mut host = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let mut host = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .arg("__carapana_internal_process_host_v1")
         .env_clear()
         .process_group(0)

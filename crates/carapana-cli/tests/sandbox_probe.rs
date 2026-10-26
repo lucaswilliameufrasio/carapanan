@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn should_run_a_synthetic_sandbox_probe_without_credentials_or_a_daemon() {
-    let output = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let output = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .arg("sandbox-probe")
         .env_clear()
         .env("TMPDIR", std::env::temp_dir())
@@ -30,10 +30,10 @@ fn should_run_a_synthetic_sandbox_probe_without_credentials_or_a_daemon() {
         assert!(stdout.is_empty());
         assert!(matches!(
             stderr.trim(),
-            "carapana: sandbox probe is supported only on Linux"
-                | "carapana: Bubblewrap is unavailable"
-                | "carapana: sandbox enforcement was not verified"
-                | "carapana: Bubblewrap executable is not a private-safe system executable"
+            "carapanan: sandbox probe is supported only on Linux"
+                | "carapanan: Bubblewrap is unavailable"
+                | "carapanan: sandbox enforcement was not verified"
+                | "carapanan: Bubblewrap executable is not a private-safe system executable"
         ));
     }
     #[cfg(target_os = "linux")]
@@ -47,7 +47,7 @@ fn should_run_a_synthetic_sandbox_probe_without_credentials_or_a_daemon() {
 
 #[test]
 fn should_not_accept_commands_or_workspace_paths_in_the_sandbox_probe() {
-    let output = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let output = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .args(["sandbox-probe", "--", "/bin/true"])
         .env_clear()
         .output()

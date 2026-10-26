@@ -3,7 +3,7 @@
 - **ID:** implementation-plan.
 - **Responsável:** agente que retomar esta tarefa neste checkout; operador para validação manual
   do Mac. ID de sessão do agente não foi persistido neste arquivo.
-- **Atualizado:** 2026-10-26, revisão 4.
+- **Atualizado:** 2026-10-26, revisão 7.
 - **Estado:** parcial; não está concluído nem inteiramente bloqueado.
 - **Checkout de referência:** `feat/delivery-2-local-ipc`, base de código `2bd07f6`.
   O commit documental foi publicado em `origin`; o gate local de formatação e referências passou.
@@ -49,7 +49,7 @@ roadmap. Não há percentual de conclusão validado.
       edição/execução preservando alterações anteriores. Ainda não existe agente de coding fim a fim.
 - [ ] Resolver recovery de crash durante execução quando não há prova persistida de término;
       não liberar por PID/TTL nem tratar morte do controlador como prova de cleanup.
-- [ ] Receber a medição manual do Mac M3/16 GB.
+- [x] Medição local no Mac M3/16 GB da admissão e dos workloads disponíveis de daemon/sessões/fila. Defaults finais continuam pendentes por falta de runtime de agente, tools e provider. Resultado/limites em [relatório de calibração](../benchmarks/macos-resource-calibration-2026-10-26.md); dados integrais em [probe](../benchmarks/admission-control-plane-2026-10-26-mac.json) e [workloads](../benchmarks/macos-session-workload-2026-10-26.json).
 - [ ] Medir workloads completos do harness para defaults finais de RAM, disco e concorrência;
       o baseline de admissão sozinho não permite essa calibração.
 - [ ] Fechar o gate manual na conta ChatGPT autorizada e conectar o adapter à jornada de sessões,
@@ -88,11 +88,24 @@ do harness. Não escolher defaults finais nem ranquear capacidade dos hosts com 
   verifica arquivos/diretórios de destino, não valida automaticamente fragmentos de títulos.
 - `make verify` não foi repetido nesta solicitação exclusivamente documental. Os testes de runtime
   acima são evidências históricas da base `41201f2`, não uma nova execução. Sem commit/push deste lote.
+- Tentativa de validação Mac em `a9152ab`: host de referência confirmado; build offline do probe
+  falhou na resolução local de `rusqlite` antes da compilação. Nenhuma medição executada. O checkout
+  também não fornece workload end-to-end representativo para macOS; os testes de cgroup/launcher
+  mencionados são específicos de Linux. Não inferir defaults de recursos desses resultados.
+- Em seguida, com autorização do operador para baixar crates, probe e CLI release foram construídos.
+  Campanha Mac local executou o probe de admissão e workloads de daemon/IPC/fila, documentados em
+  `docs/benchmarks/macos-resource-calibration-2026-10-26.md`. São evidências do controle local de
+  sessões/fila, não do runtime completo nem de capacidade máxima; defaults finais seguem pendentes.
+  A primitive macOS agora preserva o `com.apple.provenance` automático e mantém recusados outros
+  xattrs; o handshake do guardian tem limite bounded de 15 s. Foram adicionados Darwin goldens após
+  revisão visual e timeout de 60 s para o caso de responsividade. `make verify` completo passou no
+  Mac em 26/10, com 66 E2E, 27 Vitest, 11 Python, testes Rust/doctests, Clippy, fmt e build.
 
 ## Bloqueios e próxima ação
 
-- **Operador:** executar a campanha manual do Mac conforme o guia e fornecer resultados. O macOS
-  do CI não substitui a máquina de referência; essa pendência não bloqueia implementação independente.
+- **Operador/produto:** para calibrar o harness completo, definir workloads end-to-end que exercitem
+  runtime, tools, provider e limites reais de recursos quando essas jornadas estiverem conectadas.
+  A campanha Mac atual cobre somente sessões/fila; o macOS do CI não substitui workloads do produto.
 - **Agente:** próxima fatia de implementação é proteção de conteúdo/outputs e origem autenticada
   dos approvals, antes de conectar a primeira jornada operacional CLI/TUI.
 - **Entrega documental:** política/ADR e documentos validados localmente e publicados em

@@ -1,0 +1,140 @@
+{
+  "cli_binary_sha256": "f159fc031dfd9551df4e57dcd809c465d29f2b5bf0227aefd8cf22c7d8a966ba",
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "results": [
+    {
+      "daemon_plus_cli_rss_baseline_kib_sampled": 9200,
+      "daemon_plus_cli_rss_peak_kib_sampled": 16672,
+      "daemon_rss_peak_kib_sampled": 10048,
+      "enqueue_latency_ms_p50": 12.803,
+      "enqueue_latency_ms_p95": 23.894,
+      "queue_requests": 32,
+      "repetition": 1,
+      "rss_sampling_interval_ms": 100,
+      "scope": "local-daemon-session-and-durable-queue-only",
+      "storage_bytes_after_shutdown": 196608,
+      "storage_bytes_before_shutdown": 1186376,
+      "synthetic_payload_bytes": 32768,
+      "wall_seconds": 0.435,
+      "workload": {
+        "message_bytes": 1024,
+        "messages_per_session": 8,
+        "name": "typical-queued-work",
+        "producer_concurrency": 1,
+        "sessions": 4
+      }
+    },
+    {
+      "daemon_plus_cli_rss_baseline_kib_sampled": 9184,
+      "daemon_plus_cli_rss_peak_kib_sampled": 16208,
+      "daemon_rss_peak_kib_sampled": 10000,
+      "enqueue_latency_ms_p50": 12.831,
+      "enqueue_latency_ms_p95": 24.599,
+      "queue_requests": 32,
+      "repetition": 2,
+      "rss_sampling_interval_ms": 100,
+      "scope": "local-daemon-session-and-durable-queue-only",
+      "storage_bytes_after_shutdown": 196608,
+      "storage_bytes_before_shutdown": 1186376,
+      "synthetic_payload_bytes": 32768,
+      "wall_seconds": 0.4302,
+      "workload": {
+        "message_bytes": 1024,
+        "messages_per_session": 8,
+        "name": "typical-queued-work",
+        "producer_concurrency": 1,
+        "sessions": 4
+      }
+    },
+    {
+      "daemon_plus_cli_rss_baseline_kib_sampled": 9120,
+      "daemon_plus_cli_rss_peak_kib_sampled": 16176,
+      "daemon_rss_peak_kib_sampled": 9936,
+      "enqueue_latency_ms_p50": 12.828,
+      "enqueue_latency_ms_p95": 13.457,
+      "queue_requests": 32,
+      "repetition": 3,
+      "rss_sampling_interval_ms": 100,
+      "scope": "local-daemon-session-and-durable-queue-only",
+      "storage_bytes_after_shutdown": 196608,
+      "storage_bytes_before_shutdown": 1186376,
+      "synthetic_payload_bytes": 32768,
+      "wall_seconds": 0.4233,
+      "workload": {
+        "message_bytes": 1024,
+        "messages_per_session": 8,
+        "name": "typical-queued-work",
+        "producer_concurrency": 1,
+        "sessions": 4
+      }
+    },
+    {
+      "daemon_plus_cli_rss_baseline_kib_sampled": 9296,
+      "daemon_plus_cli_rss_peak_kib_sampled": 37632,
+      "daemon_rss_peak_kib_sampled": 11120,
+      "enqueue_latency_ms_p50": 15.245,
+      "enqueue_latency_ms_p95": 30.591,
+      "queue_requests": 32,
+      "repetition": 1,
+      "rss_sampling_interval_ms": 100,
+      "scope": "local-daemon-session-and-durable-queue-only",
+      "storage_bytes_after_shutdown": 679936,
+      "storage_bytes_before_shutdown": 2092776,
+      "synthetic_payload_bytes": 262144,
+      "wall_seconds": 0.1499,
+      "workload": {
+        "message_bytes": 8192,
+        "messages_per_session": 4,
+        "name": "bounded-queue-burst",
+        "producer_concurrency": 4,
+        "sessions": 8
+      }
+    },
+    {
+      "daemon_plus_cli_rss_baseline_kib_sampled": 9296,
+      "daemon_plus_cli_rss_peak_kib_sampled": 11184,
+      "daemon_rss_peak_kib_sampled": 11216,
+      "enqueue_latency_ms_p50": 14.029,
+      "enqueue_latency_ms_p95": 26.554,
+      "queue_requests": 32,
+      "repetition": 2,
+      "rss_sampling_interval_ms": 100,
+      "scope": "local-daemon-session-and-durable-queue-only",
+      "storage_bytes_after_shutdown": 679936,
+      "storage_bytes_before_shutdown": 2092776,
+      "synthetic_payload_bytes": 262144,
+      "wall_seconds": 0.1293,
+      "workload": {
+        "message_bytes": 8192,
+        "messages_per_session": 4,
+        "name": "bounded-queue-burst",
+        "producer_concurrency": 4,
+        "sessions": 8
+      }
+    },
+    {
+      "daemon_plus_cli_rss_baseline_kib_sampled": 9280,
+      "daemon_plus_cli_rss_peak_kib_sampled": 21696,
+      "daemon_rss_peak_kib_sampled": 11248,
+      "enqueue_latency_ms_p50": 42.563,
+      "enqueue_latency_ms_p95": 561.917,
+      "queue_requests": 32,
+      "repetition": 3,
+      "rss_sampling_interval_ms": 100,
+      "scope": "local-daemon-session-and-durable-queue-only",
+      "storage_bytes_after_shutdown": 679936,
+      "storage_bytes_before_shutdown": 2092776,
+      "synthetic_payload_bytes": 262144,
+      "wall_seconds": 1.0883,
+      "workload": {
+        "message_bytes": 8192,
+        "messages_per_session": 4,
+        "name": "bounded-queue-burst",
+        "producer_concurrency": 4,
+        "sessions": 8
+      }
+    }
+  ],
+  "rustc_version": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "schema_version": 1
+}

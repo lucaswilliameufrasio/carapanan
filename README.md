@@ -148,30 +148,41 @@ Códigos ilustrativos: `0` conclusão, `2` pausa/erro, `3` validação incomplet
 
 ### CLI/TUI real do daemon (Delivery 2, Unix)
 
-O binário `carapana` é separado do protótipo `carapana-prototype`. Inicie o daemon
+O binário `carapanan` é separado do protótipo `carapana-prototype`. Inicie o daemon
 explicitamente em um terminal:
 
 ```sh
-cargo run -p carapana-cli -- daemon
+cargo run -p carapanan-cli -- daemon
 ```
 
 Em outro terminal, use o daemon já iniciado. Os comandos do cliente não iniciam o daemon
 automaticamente:
 
 ```sh
-cargo run -p carapana-cli -- create --workspace .
-cargo run -p carapana-cli -- queue <session-id> < /caminho/privado/da-entrada.json
-cargo run -p carapana-cli -- hibernate <session-id>
-cargo run -p carapana-cli -- wake <session-id>
-cargo run -p carapana-cli -- sessions --json
-cargo run -p carapana-cli -- attention
-cargo run -p carapana-cli -- show <session-id> --json
-cargo run -p carapana-cli -- show <session-id> --events-after <cursor> --json
-cargo run -p carapana-cli -- review-workspace <session-id> --json
-cargo run -p carapana-cli -- acknowledge-recovery-path <session-id> <path> --confirm
-cargo run -p carapana-cli -- resume-recovered <session-id>
-cargo run -p carapana-cli -- resume-recovered <session-id> --confirm
-cargo run -p carapana-cli -- tui
+cargo run -p carapanan-cli -- create --workspace .
+cargo run -p carapanan-cli -- queue <session-id> < /caminho/privado/da-entrada.json
+cargo run -p carapanan-cli -- hibernate <session-id>
+cargo run -p carapanan-cli -- wake <session-id>
+cargo run -p carapanan-cli -- sessions --json
+cargo run -p carapanan-cli -- attention
+cargo run -p carapanan-cli -- show <session-id> --json
+cargo run -p carapanan-cli -- show <session-id> --events-after <cursor> --json
+cargo run -p carapanan-cli -- review-workspace <session-id> --json
+cargo run -p carapanan-cli -- acknowledge-recovery-path <session-id> <path> --confirm
+cargo run -p carapanan-cli -- resume-recovered <session-id>
+cargo run -p carapanan-cli -- resume-recovered <session-id> --confirm
+cargo run -p carapanan-cli -- tui
+```
+
+O smoke test do provider ChatGPT está disponível somente na CLI; UI web e TUI ainda não iniciam
+autenticação nem inferência. `sign-in` abre o fluxo oficial, `models` lista o catálogo remoto e
+`smoke-test` envia somente um prompt sintético fixo, sem contexto de sessão/workspace ou tools:
+
+```sh
+cargo run -p carapanan-cli -- chatgpt sign-in
+cargo run -p carapanan-cli -- chatgpt accounts
+cargo run -p carapanan-cli -- chatgpt models --client-id <ID>
+cargo run -p carapanan-cli -- chatgpt smoke-test --client-id <ID> --model <MODELO> --confirm-remote
 ```
 
 `create` exige que o operador escolha a raiz. A raiz absoluta é enviada somente como input
@@ -288,9 +299,9 @@ screenshot nativo do Mac nem a aprovação humana de UX.
 ### Diagnóstico sintético de sandbox Linux
 
 ```sh
-cargo run -p carapana-cli -- sandbox-probe
+cargo run -p carapanan-cli -- sandbox-probe
 # Gate local que exige enforcement real, não somente falha fechada:
-CARAPANA_REQUIRE_BUBBLEWRAP=1 cargo test -p carapana-sandbox -p carapana-cli --locked
+CARAPANA_REQUIRE_BUBBLEWRAP=1 cargo test -p carapana-sandbox -p carapanan-cli --locked
 ```
 
 Requer `/usr/bin/bwrap` não setuid, root-owned e não gravável por grupo/outros,

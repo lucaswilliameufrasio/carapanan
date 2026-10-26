@@ -1,5 +1,5 @@
 [package]
-name = "carapana-cli"
+name = "carapanan-cli"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -10,7 +10,7 @@ description = "Local CLI for persisted Carapanã sessions and gated recovery"
 workspace = true
 
 [[bin]]
-name = "carapana"
+name = "carapanan"
 path = "src/main.rs"
 
 [dependencies]

@@ -80,7 +80,7 @@ fn should_initialize_and_restore_a_real_tui_terminal() {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/tui_pty_smoke.py"
         ))
-        .arg(env!("CARGO_BIN_EXE_carapana"))
+        .arg(env!("CARGO_BIN_EXE_carapanan"))
         .arg(&database_path)
         .output()
         .expect("Python 3 is required for the Unix PTY integration test");

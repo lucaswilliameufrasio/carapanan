@@ -28,7 +28,7 @@ use carapana_protocol::{
 use carapana_storage::user_database_path;
 
 #[derive(Parser)]
-#[command(name = "carapana", about = "Local Carapanã session client")]
+#[command(name = "carapanan", about = "Local Carapanã session client")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -513,7 +513,7 @@ fn run_chatgpt(command: ChatGptCommands, output: &mut impl Write) -> Result<(), 
             if !summary.plan_usage_enabled {
                 writeln!(
                     output,
-                    "No inference will run until plan usage is authorized. To request consent again, use `carapana chatgpt sign-in --client-id {} --enable-plan-usage`.",
+                    "No inference will run until plan usage is authorized. To request consent again, use `carapanan chatgpt sign-in --client-id {} --enable-plan-usage`.",
                     summary.client_id
                 )?;
             }
@@ -543,7 +543,7 @@ fn run_chatgpt(command: ChatGptCommands, output: &mut impl Write) -> Result<(), 
             } else if summaries.is_empty() {
                 writeln!(
                     output,
-                    "No saved ChatGPT accounts. Run `carapana chatgpt sign-in`."
+                    "No saved ChatGPT accounts. Run `carapanan chatgpt sign-in`."
                 )?;
             } else {
                 for summary in summaries {
@@ -810,7 +810,7 @@ fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("carapana: {error}");
+            eprintln!("carapanan: {error}");
             ExitCode::FAILURE
         }
     }
@@ -855,7 +855,7 @@ mod tests {
             };
             let path = fs::canonicalize(temporary_root)
                 .unwrap()
-                .join(format!("carapana-cli-{}-{nonce}-{id}", std::process::id()));
+                .join(format!("carapanan-cli-{}-{nonce}-{id}", std::process::id()));
             fs::create_dir(&path).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
             Self(path)

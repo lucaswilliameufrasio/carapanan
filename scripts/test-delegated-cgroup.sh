@@ -31,8 +31,8 @@ if [[ ${1:-} == --inside ]]; then
     export CARAPANA_REQUIRE_CGROUP=1
     cd -- "$project_root"
     mise exec -- bash scripts/rust-toolchain-command.sh cargo test -p carapana-sandbox delegated_cgroup:: --locked -- --nocapture
-    mise exec -- bash scripts/rust-toolchain-command.sh cargo test -p carapana-cli --test captured_cgroup --locked -- --nocapture
-    exec mise exec -- bash scripts/rust-toolchain-command.sh cargo test -p carapana-cli --test image_launcher --locked -- --nocapture
+    mise exec -- bash scripts/rust-toolchain-command.sh cargo test -p carapanan-cli --test captured_cgroup --locked -- --nocapture
+    exec mise exec -- bash scripts/rust-toolchain-command.sh cargo test -p carapanan-cli --test image_launcher --locked -- --nocapture
 fi
 
 if (( $# != 0 )); then

@@ -1,6 +1,6 @@
 //! Unix process ownership primitives for the local daemon.
 //!
-//! The process host is an internal mode of the `carapana` executable. It owns one
+//! The process host is an internal mode of the `carapanan` executable. It owns one
 //! child process group and watches a private stdin pipe, so an unexpected daemon
 //! exit closes the pipe and asks the host to terminate only that group.
 
@@ -51,7 +51,7 @@ const MAX_PROCESS_COUNT: usize = 32;
 const MAX_ARGUMENT_COUNT: usize = 128;
 const MAX_ARGUMENT_BYTES: usize = 32 * 1024;
 const MAX_PATH_BYTES: usize = 4 * 1024;
-const HOST_START_TIMEOUT: Duration = Duration::from_secs(5);
+const HOST_START_TIMEOUT: Duration = Duration::from_secs(15);
 const HOST_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 const PROCESS_TERMINATION_GRACE: Duration = Duration::from_millis(800);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -638,7 +638,7 @@ fn validate_executable(path: &Path) -> Result<(), ProcessError> {
     Ok(())
 }
 
-/// Entry point for the private helper mode in the `carapana` executable.
+/// Entry point for the private helper mode in the `carapanan` executable.
 /// It accepts one bounded launch frame, then one stop/preserve frame.
 pub fn run_process_host() -> Result<(), ProcessError> {
     let terminate_on_signal = Arc::new(AtomicBool::new(false));

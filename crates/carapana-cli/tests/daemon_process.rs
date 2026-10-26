@@ -75,7 +75,7 @@ fn start_daemon(directory: &PrivateDir) -> (std::process::Child, PathBuf) {
     let home = directory.0.join("home");
     let data_home = directory.0.join("xdg");
     fs::create_dir_all(&home).unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let child = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .arg("daemon")
         .env("HOME", home)
         .env("XDG_DATA_HOME", &data_home)
@@ -158,7 +158,7 @@ fn assert_cli_reads_and_stops_daemon(signal: &str) {
     let mut daemon = DaemonGuard(daemon);
     wait_for_socket(&mut daemon, &socket);
 
-    let binary = env!("CARGO_BIN_EXE_carapana");
+    let binary = env!("CARGO_BIN_EXE_carapanan");
     for command in ["sessions", "attention"] {
         let output = Command::new(binary)
             .args([command, "--json"])
@@ -168,7 +168,7 @@ fn assert_cli_reads_and_stops_daemon(signal: &str) {
             .unwrap();
         assert!(
             output.status.success(),
-            "carapana {command} failed: {}",
+            "carapanan {command} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "[]");
@@ -226,7 +226,7 @@ fn seed_interrupted_and_paused_sessions(directory: &PrivateDir) {
 }
 
 fn run_cli(directory: &PrivateDir, arguments: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_carapana"))
+    Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .args(arguments)
         .env("HOME", directory.0.join("home"))
         .env("XDG_DATA_HOME", directory.0.join("xdg"))
@@ -249,7 +249,7 @@ fn run_cli_with_stdin(
     arguments: &[&str],
     input: &[u8],
 ) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .args(arguments)
         .env("HOME", directory.0.join("home"))
         .env("XDG_DATA_HOME", directory.0.join("xdg"))
@@ -272,7 +272,7 @@ fn should_create_a_paused_session_and_queue_stdin_without_starting_or_echoing_wo
     wait_for_socket(&mut daemon, &socket);
 
     let workspace_string = workspace.to_str().unwrap();
-    let created = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let created = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .args(["create", "--workspace", "."])
         .current_dir(&workspace)
         .env("HOME", directory.0.join("home"))
@@ -395,7 +395,7 @@ fn should_create_a_paused_session_and_queue_stdin_without_starting_or_echoing_wo
     assert_eq!(woken_state["events"]["events"][3]["event"]["type"], "woken");
 
     let invalid_workspace = directory.0.join("workspace-that-does-not-exist");
-    let rejected = Command::new(env!("CARGO_BIN_EXE_carapana"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_carapanan"))
         .args(["create", "--workspace"])
         .arg(&invalid_workspace)
         .env("HOME", directory.0.join("home"))

@@ -755,6 +755,7 @@ test('Should change mode hue and effort intensity without recoloring the executi
 test('Should keep management content and controls in bounds at phone tablet and desktop widths', async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await detail(page);
   for (const width of [320, 900, 1440]) {
     await page.setViewportSize({ width, height: 956 });

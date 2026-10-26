@@ -15,7 +15,7 @@ verify-web:
 # cargo test includes the real Unix PTY integration (Python 3 required).
 verify-rust:
 	bash scripts/rust-toolchain-command.sh cargo fmt --all -- --check
-	python3 -m unittest discover -s scripts/tests -p 'test_admission_probe.py'
+	python3 -m unittest discover -s scripts/tests
 	bash scripts/rust-toolchain-command.sh cargo clippy --workspace --all-targets --locked -- -D warnings
 	bash scripts/rust-toolchain-command.sh cargo test --workspace --locked
 	bash scripts/rust-toolchain-command.sh cargo build --workspace --locked

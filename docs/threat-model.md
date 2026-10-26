@@ -62,7 +62,7 @@ Somente etapas implementadas e testadas podem ser ligadas. Um probe positivo nã
 
 ```sh
 TMPDIR=/var/tmp CARAPANA_REQUIRE_BUBBLEWRAP=1 mise exec -- make verify
-cargo run -p carapana-cli -- sandbox-probe
+cargo run -p carapanan-cli -- sandbox-probe
 ```
 
 A variável `CARAPANA_REQUIRE_BUBBLEWRAP` faz os testes falharem se não houver enforcement real no Linux.

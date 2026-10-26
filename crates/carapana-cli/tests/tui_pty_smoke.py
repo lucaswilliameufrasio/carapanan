@@ -1,4 +1,4 @@
-"""Exercise carapana tui in a real controlling terminal using only stdlib."""
+"""Exercise carapanan tui in a real controlling terminal using only stdlib."""
 
 import fcntl
 import json

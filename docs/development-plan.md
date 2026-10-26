@@ -6,7 +6,7 @@
 **Baseline:** outubro de 2026  
 **Revisão de produto:** 4 de outubro de 2026\
 **Nome do produto:** Carapanã  
-**Binário:** `carapana`  
+**Binário da CLI:** `carapanan` (pacote Cargo `carapanan-cli`)
 **Categoria:** local-first, model-agnostic coding agent harness  
 **Implementação principal:** Rust  
 **Objetivo inicial:** obter uma experiência de uso comparável ou superior ao Claude Code utilizando prioritariamente o plano do ChatGPT, sem ficar preso a um único provider, dispositivo ou interface.
@@ -4301,7 +4301,7 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
   cgroup. Gate comum integral passou com 27 Vitest, 66 E2E e todas as suites Rust/doctests/builds.
 - Em seguida, após recuperação do gerenciador, `TMPDIR=/var/tmp bash scripts/test-delegated-cgroup.sh`
   passou na unidade transitória delegada: `carapana-sandbox delegated_cgroup` (9/9),
-  `carapana-cli --test captured_cgroup` (6/6) e `carapana-cli --test image_launcher` (22/22), incluindo
+  `carapanan-cli --test captured_cgroup` (6/6) e `carapanan-cli --test image_launcher` (22/22), incluindo
   limites reais de memória/PIDs, cleanup e lifecycle. A mensagem de panic em um teste é injetada
   deliberadamente e o próprio teste passou. Não houve alteração persistente do host.
 - PD-53/54 foram publicadas em `01467e0`; CI `40114438822` passou Web/Linux e Rust/Ubuntu/macOS.
@@ -4466,6 +4466,18 @@ aprovação do Delivery 0; não antecipar runtime para produzir protótipos.
 - Validação documental: Biome/Prettier (`pnpm format:check`), `git diff --check` e conferência de
   37 destinos de links locais passaram. Nenhum código de aplicação foi alterado; o gate integral
   não foi repetido para este lote documental. O snapshot permanece aberto porque o plano é parcial.
+- Campanha manual no MacBook Air M3/16 GB, macOS 26.6.2, com workloads locais de daemon/sessões/fila
+  está em [relatório de calibração](benchmarks/macos-resource-calibration-2026-10-26.md); os
+  dados completos e limites estão nos JSON vinculados ali. A campanha não exercita provider/tools e
+  não fixa defaults finais.
+- O gate integral Mac passou após acomodar `com.apple.provenance` automático mantendo-o byte a byte,
+  elevar o limite bounded do handshake do guardian, dar timeout adequado ao caso de responsividade e
+  adicionar 32 baselines Darwin revisados. Execução integral em 26/10: Web (66 E2E, 27 Vitest), 11
+  testes Python e gates Rust/Clippy/build passaram. Nenhum commit/push foi feito; o plano geral segue
+  parcial e os gates completos do runtime continuam abertos.
+- Após correção do operador sobre a grafia sem acento, o pacote Cargo da CLI e o executável foram
+  renomeados de `carapana-cli`/`carapana` para `carapanan-cli`/`carapanan`. O pacote e binário do
+  protótipo continuam separados; `make verify` passou após atualizar invocações e referências.
 
 ---
 
@@ -4939,7 +4951,7 @@ O Carapanã não precisa inicialmente vencer Claude Code em número de features.
 
 Ele precisa atingir esta situação:
 
-> Abrir `carapana` passa a ser preferível a abrir outro harness para o uso diário.
+> Abrir `carapanan` passa a ser preferível a abrir outro harness para o uso diário.
 
 Especialmente:
 

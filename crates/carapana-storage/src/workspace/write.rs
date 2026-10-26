@@ -277,7 +277,7 @@ fn replace_file_atomically_unix(
     use std::os::unix::fs::MetadataExt;
 
     let relative_path = &snapshot.relative_path;
-    if !snapshot.extended_attributes.is_empty() {
+    if !extended_attributes_are_preservable(&snapshot.extended_attributes) {
         return Err(WorkspaceFileWriteError::MetadataNotPreservable(
             relative_path.to_owned(),
         ));
@@ -325,6 +325,8 @@ fn replace_file_atomically_unix(
     temporary_file
         .write_all(replacement)
         .map_err(WorkspaceFileWriteError::Io)?;
+    preserve_platform_extended_attributes(&temporary_file, &snapshot.extended_attributes)
+        .map_err(WorkspaceFileWriteError::Io)?;
 
     let temporary_metadata = temporary_file
         .metadata()
@@ -332,9 +334,9 @@ fn replace_file_atomically_unix(
     if temporary_metadata.uid() != snapshot.signature.owner_uid
         || temporary_metadata.gid() != snapshot.signature.group_gid
         || temporary_metadata.mode() & 0o777 != 0o600
-        || !read_extended_attributes(&temporary_file)
+        || read_extended_attributes(&temporary_file)
             .map_err(|error| map_extended_attribute_write_error(error, relative_path))?
-            .is_empty()
+            != snapshot.extended_attributes
     {
         return Err(WorkspaceFileWriteError::MetadataNotPreservable(
             relative_path.to_owned(),
@@ -378,6 +380,52 @@ fn replace_file_atomically_unix(
     }
 
     Ok(())
+}
+
+fn extended_attributes_are_preservable(attributes: &[ExtendedAttribute]) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        attributes.is_empty()
+            || (attributes.len() == 1 && attributes[0].name.as_slice() == b"com.apple.provenance")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        attributes.is_empty()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn preserve_platform_extended_attributes(
+    file: &std::fs::File,
+    attributes: &[ExtendedAttribute],
+) -> Result<(), io::Error> {
+    use rustix::{fd::AsFd, fs::fsetxattr};
+    use std::os::unix::ffi::OsStrExt;
+
+    for attribute in attributes {
+        fsetxattr(
+            file.as_fd(),
+            std::ffi::OsStr::from_bytes(&attribute.name),
+            &attribute.value,
+            rustix::fs::XattrFlags::empty(),
+        )
+        .map_err(io::Error::from)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn preserve_platform_extended_attributes(
+    _file: &std::fs::File,
+    attributes: &[ExtendedAttribute],
+) -> Result<(), io::Error> {
+    if attributes.is_empty() {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "unexpected extended attributes on workspace replacement",
+    ))
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -917,6 +965,10 @@ mod tests {
         assert_eq!(fs::read(&file_path).unwrap(), b"fn new() {}\n");
         assert_eq!(fs::metadata(&file_path).unwrap().mode() & 0o777, 0o640);
         assert_eq!(
+            super::read_extended_attributes(&fs::File::open(&file_path).unwrap()).unwrap(),
+            snapshot.extended_attributes
+        );
+        assert_eq!(
             fs::read_dir(file_path.parent().unwrap()).unwrap().count(),
             1
         );
@@ -934,10 +986,11 @@ mod tests {
         let snapshot = workspace.read_file_snapshot("notes.txt").unwrap();
         fs::write(&file_path, b"operator edit").unwrap();
 
-        assert!(matches!(
-            workspace.replace_file_atomically(&snapshot, b"agent edit"),
-            Err(WorkspaceFileWriteError::Conflict(_))
-        ));
+        let result = workspace.replace_file_atomically(&snapshot, b"agent edit");
+        assert!(
+            matches!(&result, Err(WorkspaceFileWriteError::Conflict(_))),
+            "unexpected replacement result: {result:?}"
+        );
         assert_eq!(fs::read(file_path).unwrap(), b"operator edit");
         assert_eq!(fs::read_dir(&workspace_path).unwrap().count(), 1);
     }
@@ -954,10 +1007,11 @@ mod tests {
         let snapshot = workspace.read_file_snapshot("notes.txt").unwrap();
         fs::remove_file(&file_path).unwrap();
 
-        assert!(matches!(
-            workspace.replace_file_atomically(&snapshot, b"replacement"),
-            Err(WorkspaceFileWriteError::Conflict(_))
-        ));
+        let result = workspace.replace_file_atomically(&snapshot, b"replacement");
+        assert!(
+            matches!(&result, Err(WorkspaceFileWriteError::Conflict(_))),
+            "unexpected replacement result: {result:?}"
+        );
         assert!(!file_path.exists());
         assert_eq!(fs::read_dir(&workspace_path).unwrap().count(), 0);
     }
@@ -1011,10 +1065,11 @@ mod tests {
 
         fs::remove_file(&source_path).unwrap();
         symlink(&outside_file, &source_path).unwrap();
-        assert!(matches!(
-            workspace.replace_file_atomically(&snapshot, b"replacement"),
-            Err(WorkspaceFileWriteError::UnsafePath(_))
-        ));
+        let result = workspace.replace_file_atomically(&snapshot, b"replacement");
+        assert!(
+            matches!(&result, Err(WorkspaceFileWriteError::UnsafePath(_))),
+            "unexpected replacement result: {result:?}"
+        );
         assert_eq!(fs::read(&outside_file).unwrap(), b"outside");
 
         fs::remove_file(&source_path).unwrap();

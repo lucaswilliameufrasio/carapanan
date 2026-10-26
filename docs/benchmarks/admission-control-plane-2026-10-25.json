@@ -4,7 +4,7 @@
   "source_base_commit": "af607e52179b9cc2676024dc6b38e33f916975ad",
   "uncommitted_candidate": true,
   "rustc": "1.99.1",
-  "build": "cargo build --offline --locked --release -p carapana-cli --example admission_resource_probe",
+  "build": "cargo build --offline --locked --release -p carapanan-cli --example admission_resource_probe",
   "binary_sha256": "70b05cd45124d6b9dfa4a0a089a053565c7fb706c2bd3dd3923f527b86ddfd58",
   "iterations_per_phase": 16,
   "warmup_samples": 1,
