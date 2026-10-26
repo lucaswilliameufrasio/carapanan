@@ -3,11 +3,10 @@
 - **ID:** implementation-plan.
 - **Responsável:** agente que retomar esta tarefa neste checkout; operador para validação manual
   do Mac. ID de sessão do agente não foi persistido neste arquivo.
-- **Atualizado:** 2026-10-26, revisão 3.
+- **Atualizado:** 2026-10-26, revisão 4.
 - **Estado:** parcial; não está concluído nem inteiramente bloqueado.
-- **Checkout de referência:** `feat/delivery-2-local-ipc`, base de código `41201f2`.
-  Esse commit está publicado e validado no CI; a criação deste registro, da política em
-  `AGENTS.md` e da ADR-011 é uma alteração documental local posterior, ainda sem commit/push.
+- **Checkout de referência:** `feat/delivery-2-local-ipc`, base de código `2bd07f6`.
+  O commit documental foi publicado em `origin`; o gate local de formatação e referências passou.
 
 ## Objetivo e limites
 
@@ -96,12 +95,14 @@ do harness. Não escolher defaults finais nem ranquear capacidade dos hosts com 
   do CI não substitui a máquina de referência; essa pendência não bloqueia implementação independente.
 - **Agente:** próxima fatia de implementação é proteção de conteúdo/outputs e origem autenticada
   dos approvals, antes de conectar a primeira jornada operacional CLI/TUI.
-- **Entrega documental:** política/ADR e documentos validados localmente. O operador autorizou
-  agora commit e push apenas deste lote documental para a branch atual; sem merge/deploy.
-- **Próxima ação:** stage somente `AGENTS.md`, `README.md`, `docs/development-plan.md`,
-  `docs/adr/ADR-011-task-progress-lifecycle.md` e `docs/progress/`; conferir diff staged, criar
-  commit documental e fazer push para `origin/feat/delivery-2-local-ipc`. Depois manter este arquivo
-  porque o plano amplo continua parcial. Não há comando de background em execução a recuperar aqui.
+- **Entrega documental:** política/ADR e documentos validados localmente e publicados em
+  `2bd07f6` (`docs(progress): track task lifecycle and roadmap status`) na branch
+  `feat/delivery-2-local-ipc`. Push para `origin` confirmou avanço `41201f2..2bd07f6`; árvore limpa.
+  Sem merge/deploy. O CI deste commit documental ainda não foi consultado.
+- **Próxima ação:** continuar a implementação da etapa atual nos gates de conteúdo/segredos e
+  origem autenticada de approvals; a validação do Mac e workloads representativos seguem com seus
+  responsáveis indicados acima. Manter este arquivo porque o plano amplo continua parcial. Não há
+  comando de background em execução a recuperar aqui.
 
 Remover este registro somente quando o escopo acima estiver concluído e o resultado, evidências,
 decisões e limitações estiverem preservados nos documentos permanentes; não ao terminar uma fatia.
